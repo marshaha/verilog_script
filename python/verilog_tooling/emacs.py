@@ -43,7 +43,7 @@ from typing import Mapping, Sequence
 from .inst import ModuleDef, Port
 from .template import (
     AutoTemplate,
-    _emacs_re_to_python,
+    _auto_re_to_python,
     template_at_value,
     template_connection,
     template_for_module,
@@ -554,7 +554,7 @@ def _filter_regexp(items: list, regexp: str | None) -> list:
     if not regexp:
         return items
     invert = regexp.startswith("?!")
-    rx = re.compile(_emacs_re_to_python(regexp[2:] if invert else regexp), re.IGNORECASE)
+    rx = re.compile(_auto_re_to_python(regexp[2:] if invert else regexp), re.IGNORECASE)
     return [p for p in items if bool(rx.search(p.name)) != invert]
 
 

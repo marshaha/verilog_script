@@ -35,7 +35,6 @@ _TEMPLATE_BLOCK = re.compile(
     re.S | re.IGNORECASE,
 )
 _MODULE_HEADER = re.compile(r"(\w+)\s+AUTO_TEMPLATE\b", re.IGNORECASE)
-_PORT_START = re.compile(r"\.\s*((?:\\.|[^\s()])+)\s*\(")
 
 
 @dataclass(frozen=True)
@@ -60,11 +59,25 @@ class AutoTemplate:
         return module in self.modules
 
 
-def _emacs_re_to_python(pattern: str) -> str:
-    """Translate the Emacs regexp idioms used in templates to Python re.
+def _auto_re_to_python(pattern: str) -> str:
+    """Translate a template/filter regexp to Python ``re``, auto-detecting
+    the dialect.
 
-    Handles ``\\(`` ``\\)`` ``\\|``; keeps ``\\1`` backreferences, char
-    classes and the usual quantifiers untouched.
+    Emacs verilog-mode writes ``\\(`` ``\\)`` for groups and ``\\|`` for
+    alternation; Python users write ``(`` ``)`` and ``|``.  The two only
+    conflict on those three escapes, and a *literal* parenthesis or pipe
+    can never appear in the things these regexps match (port/parameter/
+    instance/type names are identifiers) — so the escapes unambiguously
+    mark the Emacs dialect:
+
+    - contains ``\\(`` ``\\)`` or ``\\|``  -> Emacs dialect: rewrite the
+      escapes to ``(`` ``)`` ``|``; everything else passes through.
+    - otherwise                            -> Python dialect: returned
+      unchanged (``(foo|bar)`` groups, ``|`` alternation, ``\\w`` etc.
+      already are Python).
+
+    Mixed patterns degrade gracefully: Emacs escapes are rewritten,
+    remaining bare parens/pipes are taken as Python constructs.
     """
     out: list[str] = []
     i = 0
@@ -88,8 +101,14 @@ def _emacs_re_to_python(pattern: str) -> str:
     return "".join(out)
 
 
+# back-compatible name (the dialect is auto-detected now)
+_emacs_re_to_python = _auto_re_to_python
+
+
 def _emacs_repl_to_python(repl: str) -> str:
-    """Translate Emacs replacement backrefs ``\\1``/``\\&`` to ``\\g<1>``/``\\g<0>``."""
+    """Translate replacement backrefs for ``re.Match.expand``, accepting both
+    dialects: Emacs ``\\1``/``\\&`` become ``\\g<1>``/``\\g<0>``; Python
+    ``\\g<1>``/``\\g<0>`` pass through unchanged (``\\1`` is valid in both)."""
     out: list[str] = []
     i = 0
     while i < len(repl):
@@ -102,6 +121,12 @@ def _emacs_repl_to_python(repl: str) -> str:
                 continue
             if nxt.isdigit():
                 out.append("\\g<" + nxt + ">")
+                i += 2
+                continue
+            if nxt == "g":
+                # Python-style \g<1> / \g<0>: pass the \g through, the
+                # following <...> are plain replacement text
+                out.append("\\g")
                 i += 2
                 continue
             if nxt == "\\":
@@ -128,6 +153,50 @@ def _balanced_inner(text: str, start: int) -> tuple[str, int]:
                 return text[start + 1 : j], j + 1
         j += 1
     raise ValueError("AUTO_TEMPLATE: unbalanced parentheses")
+
+
+_ENTRY_DOT = re.compile(r"\.\s*")
+_ENTRY_SEPARATORS = " \t\r\n,;"
+
+
+def _scan_entry(inner: str, i: int) -> "tuple[str, str, int] | None":
+    """Scan the next ``.pattern (connection)`` entry at/after index I.
+    Returns ``(pattern, connection, next_index)`` or None when no entry
+    remains.
+
+    The pattern may itself contain parentheses (Python-dialect regexp
+    groups — Emacs dialect escapes them as ``\\(``), so the connection
+    cannot simply be the first paren group.  It is the first unescaped
+    ``(`` whose balanced close is followed only by separators and then the
+    next entry dot or the end of the body; earlier groups belong to the
+    pattern."""
+    m = _ENTRY_DOT.search(inner, i)
+    if not m:
+        return None
+    pat_start = m.end()
+    j = pat_start
+    while j < len(inner):
+        c = inner[j]
+        if c == "\\":
+            j += 2  # escaped char (e.g. emacs \( \) \|) is pattern text
+            continue
+        if c == "(":
+            try:
+                conn, end = _balanced_inner(inner, j)
+            except ValueError:
+                return None
+            k = end
+            while k < len(inner) and inner[k] in _ENTRY_SEPARATORS:
+                k += 1
+            if k >= len(inner) or inner[k] == ".":
+                pattern = inner[pat_start:j].strip()
+                if not pattern:
+                    return None
+                return pattern, conn.strip(), end
+            j = end  # a pattern group (python-dialect regexp): keep scanning
+            continue
+        j += 1
+    return None
 
 
 def _parse_template_body(body: str, line_no: int) -> AutoTemplate:
@@ -160,15 +229,14 @@ def _parse_template_body(body: str, line_no: int) -> AutoTemplate:
     entries: list[TemplateEntry] = []
     i = 0
     while True:
-        pm = _PORT_START.search(inner, i)
-        if not pm:
+        scanned = _scan_entry(inner, i)
+        if scanned is None:
             break
-        pattern = pm.group(1)
-        conn, j = _balanced_inner(inner, pm.end() - 1)
+        pattern, conn, j = scanned
         entries.append(
             TemplateEntry(
                 pattern=pattern,
-                connection=conn.strip(),
+                connection=conn,
                 is_regex=_LITERAL_PORT.fullmatch(pattern) is None,
             )
         )
@@ -214,7 +282,7 @@ def template_at_value(template: AutoTemplate, instance_name: str) -> str:
     (default ``([0-9]+)``) matched against the instance name; '' if no match."""
     rx = template.at_regexp or _DEFAULT_AT_REGEXP
     # verilog-mode matches tpl-regexp with verilog-case-fold (default t)
-    m = re.search(_emacs_re_to_python(rx), instance_name, re.IGNORECASE)
+    m = re.search(_auto_re_to_python(rx), instance_name, re.IGNORECASE)
     if not m:
         return ""
     return m.group(1) if m.groups() else m.group(0)
@@ -450,7 +518,7 @@ def template_connection(
             continue
         pat = entry.pattern.replace("@", r"([0-9]+)")
         try:
-            rx = re.compile("^" + _emacs_re_to_python(pat) + "$")
+            rx = re.compile("^" + _auto_re_to_python(pat) + "$")
         except re.error as exc:
             raise ValueError(
                 f"AUTO_TEMPLATE: invalid regexp entry {entry.pattern!r}: {exc}"

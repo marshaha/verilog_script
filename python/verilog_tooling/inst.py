@@ -47,6 +47,7 @@ from typing import Iterable, Mapping, Sequence, Union
 from .libdirs import resolve_libdirs
 from .template import (
     AutoTemplate,
+    _auto_re_to_python,
     find_auto_templates,
     template_at_value,
     template_connection,
@@ -193,9 +194,11 @@ _TYPEDEF_REGEXP: "re.Pattern[str] | None" = None
 
 def set_typedef_regexp(regexp: str | None) -> None:
     """Set the verilog-typedef-regexp used when parsing port lines: a first
-    word matching it is a TYPE (e.g. reqcmd_t), and the port name follows."""
+    word matching it is a TYPE (e.g. reqcmd_t), and the port name follows.
+    Both Emacs (``\\(...\\)``/``\\|``) and Python (``(...)``/``|``) regexp
+    dialects are accepted (auto-detected)."""
     global _TYPEDEF_REGEXP
-    _TYPEDEF_REGEXP = re.compile(regexp) if regexp else None
+    _TYPEDEF_REGEXP = re.compile(_auto_re_to_python(regexp)) if regexp else None
 
 
 def _parse_port_line(line: str) -> Port | None:
