@@ -8,7 +8,8 @@ EAI         verilog-mode AUTOINST (regexp AUTO_TEMPLATE, .*, interfaces)
 EAP         verilog-mode AUTOINSTPARAM (template, or default value)
 AIT AIU AIU1  instantiate template / update instances (manual connections
               survive unless the AUTO_TEMPLATE declares that port)
-AD ADT      regenerate /*autodef*/ declarations (wire/reg/integer/genvar)
+AD ADT      regenerate /*autodef*/ declarations (wire/reg/integer/genvar;
+              an undriven output is declared reg, matching AREG)
 AR          regenerate /*autoarg*/ header port lists
 AW AREG     AUTOWIRE / AUTOREG
 AF          format: ports, wire/reg, parameter/localparam, instances
@@ -20,6 +21,26 @@ BPN BP BA   module header / always snippets
 
 A count before EAI/AIT/AIU selects the Nth /*autoinst*/ instance.
 Every command reports its change: [verilog_tooling] cmd: line N: a -> b line(s)
+
+==============================================================================
+MAPPINGS                                             *verilog_tooling-mappings*
+
+Default normal-mode leader mappings, installed only when the lhs is still
+unmapped (your own mappings always win):
+
+    <leader>a     AALL        <leader>af    AF
+    <leader>ad    AD          <leader>aif   AIF
+    <leader>adt   ADT         <leader>adf   ADF
+    <leader>ait   AIT         <leader>apf   APF
+    <leader>aiu   AIU         <leader>am    AM
+    <leader>aiu1  AIU1        <leader>ame   AME
+    <leader>ar    AR          <leader>aw    AW
+    <leader>eai   EAI         <leader>arg   AREG
+    <leader>eap   EAP         <leader>d     KI
+    <leader>bpn   BPN         <leader>bp    BP
+    <leader>ba    BA
+
+Disable the whole set with:  let g:verilog_tooling_no_mappings = 1
 
 ==============================================================================
 OPTIONS

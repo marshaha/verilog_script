@@ -41,7 +41,7 @@ cd verilog_script
 | `AALL` (`-a`) | full AUTO set: EAP → EAI → AW → AREG → AD → AR → AF |
 | `EAI` / `EAP` | verilog-mode AUTOINST / AUTOINSTPARAM (regexp templates, `.*`, interfaces) |
 | `AIT` / `AIU` / `AIU1` | instantiate template / update instances (keeps manual connections; AUTO_TEMPLATE wins where declared) |
-| `AD` / `ADT` | regenerate `/*autodef*/` wire/reg/integer/genvar declarations |
+| `AD` / `ADT` | regenerate `/*autodef*/` wire/reg/integer/genvar declarations (undriven outputs become `reg`) |
 | `AR` | regenerate `/*autoarg*/` header port lists |
 | `AW` / `AREG` | AUTOWIRE / AUTOREG |
 | `AF` | format: ports, wire/reg, parameter/localparam, instances |
@@ -55,6 +55,30 @@ cd verilog_script
 
 Every command reports what it did, e.g.
 `[verilog_tooling] eai: line 515: 1005 -> 937 line(s)` (or `no changes`).
+
+## Default key mappings
+
+The plugin installs these normal-mode leader mappings out of the box —
+but only when the lhs is still unmapped, so your own mappings always win:
+
+| Key | Command | Key | Command |
+|---|---|---|---|
+| `<leader>a` | `AALL` | `<leader>af` | `AF` |
+| `<leader>ad` | `AD` | `<leader>aif` `adf` `apf` | `AIF` `ADF` `APF` |
+| `<leader>adt` | `ADT` | `<leader>am` `ame` | `AM` `AME` |
+| `<leader>ait` | `AIT` | `<leader>aw` | `AW` |
+| `<leader>aiu` / `aiu1` | `AIU` / `AIU1` | `<leader>arg` | `AREG` |
+| `<leader>ar` | `AR` | `<leader>eai` `eap` | `EAI` `EAP` |
+| `<leader>d` | `KI` | `<leader>bpn` `bp` `ba` | `BPN` `BP` `BA` |
+
+With the default `mapleader` that is `\a`, `\ad`, …; with
+`let mapleader = "-"` it is `-a`, `-ad`, …
+
+Disable the whole set with:
+
+```vim
+let g:verilog_tooling_no_mappings = 1
+```
 
 ## AUTO_TEMPLATE / Local Variables
 
