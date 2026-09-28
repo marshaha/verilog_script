@@ -11,10 +11,13 @@ template machinery:
 - ``@`` inside a *connection* expands to the instance number.
 - ``[]`` in a connection expands to the connected port's declared packed
   range (removed for scalar ports).
+- ``@"expr"`` evaluates a connection expression: Python expressions, or
+  parenthesised elisp forms through the mini evaluator below (``@`` and
+  the AUTO_LISP bindings are in scope).
 
-Out of scope (raise or left literal): ``@"lisp"`` expressions, ``[].[@]``
-unpacked-element connections, ``[][]`` multi-dimensional comments (treated
-like ``[]``).
+Out of scope (raise or left literal): ``[].[@]`` unpacked-element
+connections; ``[][]`` multi-dimensional comments (treated like ``[]``);
+elisp forms outside the supported subset (``defun`` etc.).
 
 The module is pure syntax/semantic layer: it never touches files.
 """

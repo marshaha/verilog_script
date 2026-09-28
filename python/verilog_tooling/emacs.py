@@ -22,12 +22,16 @@ commands):
   pins, a ``?!`` prefix excludes them (case-insensitive, as
   ``verilog-case-fold`` defaults to t).
 - AUTO_TEMPLATE rules apply to connections (exact/regexp entries, ``@``,
-  ``[]``, ``\\1`` back-references) via :mod:`verilog_tooling.template`.
+  ``[]``, ``\\1`` back-references, ``@"..."`` expressions) via
+  :mod:`verilog_tooling.template`.
 - Re-running on already expanded output is idempotent.
 
-Out of scope (see README): ``verilog-auto-inst-param-value`` (parameter value
-substitution), ``.*`` star expansion, gate primitives, AUTO_LISP,
-``@"lisp"`` templates.
+Also implemented: ``verilog-auto-inst-param-value`` (``#(...)`` values
+substituted into port widths/connections), ``.*`` star expansion
+(``star_expand``/``star_save``), gate primitives, ``/*AUTO_LISP(...)*/``
+and ``@"..."`` template expressions.  Still out of scope: arbitrary elisp
+in ``@"..."`` (only the documented Python/elisp subset — ``defun`` and
+friends are not).
 """
 
 from __future__ import annotations
