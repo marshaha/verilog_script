@@ -193,6 +193,10 @@ mm_cdma_parse u_parse (/*autoinst*/);
 - `[]` expands to the connected port's declared packed range
   (`rdata[7:0]`; removed for scalar ports)
 - `\(...\)` groups in a regexp port pattern back-substitute as `\1`, `\2`…
+- **both Emacs and Python regexp dialects work — auto-detected** (here and
+  in the `AUTO_TEMPLATE "regexp"`, `/*AUTOINST("regex")*/` filter and
+  `verilog-typedef-regexp`): Emacs `\(...\)`/`\|` and Python `(...)`/`|`
+  can even mix; Python-style `\g<1>` backrefs work alongside `\1`
 - `@"expr"` evaluates an expression — Python (`@"'pre_%d' % @"`), or
   parenthesised elisp (`@"(downcase vl-name)"`; supported forms:
   `substring`, `downcase`, `concat`, `if`, `equal`, arithmetic, `let`,
