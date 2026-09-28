@@ -5,6 +5,8 @@ every undeclared signal of a module and emits the declarations after the
 ``/*autodef*/`` marker, in fixed sections:
 
 - ``// Define io wire here``               ports without explicit wire/reg
+                                           (undriven outputs become ``reg``,
+                                           matching AUTOREG in the -a flow)
 - ``// Define flip-flop registers here``    LHS of ``<=`` in clocked always
 - ``// Define combination registers here``  LHS of ``=`` in other always
 - ``// Define wires here``                  LHS of assign
@@ -248,6 +250,7 @@ class Signal:
     width: str = ""
     type: str = ""
     has_defined: bool = False
+    driven: bool = False  # io port driven by assign/always/subinstance
     seq: str = ""
     line: str = ""
     name: str = ""
@@ -484,6 +487,8 @@ class SignalTable:
                 sig.dims_select_only = side.elem_range is None
         if sig.type == "io_wire" and stype in ("freg", "creg"):
             sig.type = "io_reg"
+        if sig.type in ("io_wire", "io_reg") and stype in ("freg", "creg", "wire"):
+            sig.driven = True
 
     def extend_inst_wire_from_line(
         self,
@@ -529,6 +534,8 @@ class SignalTable:
             return
         sig = self.signals.get(net)
         if sig is not None:
+            if sig.type in ("io_wire", "io_reg"):
+                sig.driven = True
             if sig.width == "":
                 sig.width = port_width
             elif sig.type == "usrdef":
@@ -570,8 +577,11 @@ class SignalTable:
             self.signals[net] = Signal(width=new_msb, type="inst_wire")
         elif sig.type == "usrdef":
             self._update_usrdef_width(sig, new_msb)
-        elif sig.width == "" or _wider(new_msb, sig.width):
-            sig.width = new_msb
+        else:
+            if sig.type in ("io_wire", "io_reg"):
+                sig.driven = True
+            if sig.width == "" or _wider(new_msb, sig.width):
+                sig.width = new_msb
 
 
 def _combine_width(hi: "int | str", w: str) -> str:
@@ -1842,7 +1852,16 @@ def _emit_sections(
 ) -> list[str]:
     out = [marker_line, "// Define io wire here"]
     for sig in div.io_wire:
-        out.append(_emit_signal(sig, div.max_len, "wire " if sig.type == "io_wire" else "reg  "))
+        # An undriven OUTPUT is declared reg (matching AUTOREG in the -a
+        # flow): the user will drive it from an always block next, and a
+        # wire would make that illegal.  assign/always/instance-driven
+        # outputs and all inputs/inouts stay wire.
+        kw = (
+            "reg  "
+            if sig.type == "io_reg" or (sig.io_dir == "output" and not sig.driven)
+            else "wire "
+        )
+        out.append(_emit_signal(sig, div.max_len, kw))
     out.append("// Define flip-flop registers here")
     for sig in div.ff_reg:
         out.append(_emit_signal(sig, div.max_len, "reg  "))

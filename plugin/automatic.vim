@@ -21,6 +21,20 @@ command! BPN : call AlBpn()
 command! BP  : call AlBp()
 command! BA  : call AlB()
 
+" Default leader mappings (skipped when the lhs is already mapped; disable
+" with:  let g:verilog_tooling_no_mappings = 1)
+if !exists('g:verilog_tooling_no_mappings')
+    if empty(mapcheck('<leader>bpn', 'n'))
+        nnoremap <leader>bpn :BPN<cr>
+    endif
+    if empty(mapcheck('<leader>bp', 'n'))
+        nnoremap <leader>bp :BP<cr>
+    endif
+    if empty(mapcheck('<leader>ba', 'n'))
+        nnoremap <leader>ba :BA<cr>
+    endif
+endif
+
 function! AddClk() "{{{2
 	let ret = []
 	let ret0 = "//  .   .   ."

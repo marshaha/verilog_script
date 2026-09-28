@@ -29,14 +29,15 @@
 "   AW AREG                   verilog-mode AUTOWIRE / AUTOREG
 " A count selects the Nth /*autoinst*/ instance (0-based): :1AIT → first only.
 "
-" Suggested mappings mirroring your existing automatic.vim leaders:
-"   nnoremap <leader>eai :EAI<cr>   " emacs-equivalent AUTOINST
-"   nnoremap <leader>eap :EAP<cr>   " emacs-equivalent AUTOINSTPARAM
-"   nnoremap <leader>ait :AIT<cr>   " automatic.vim AIT (ctags-free)
-"   nnoremap <leader>aiu :AIU<cr>
-"   nnoremap <leader>af  :AF<cr>
-"   nnoremap <leader>ar  :AAR<cr>
-"   nnoremap <leader>adt :AADT<cr>
+" Default leader mappings are installed at the bottom of this file (only
+" when the lhs is still unmapped — your own mappings always win):
+"   <leader>a   :AALL     <leader>ad  :AD     <leader>adt :ADT
+"   <leader>ait :AIT      <leader>aiu :AIU    <leader>aiu1:AIU1
+"   <leader>ar  :AR       <leader>aw  :AW     <leader>arg :AREG
+"   <leader>aif :AIF      <leader>adf :ADF    <leader>apf :APF  <leader>af :AF
+"   <leader>am  :AM       <leader>ame :AME    <leader>d   :KI
+"   <leader>eai :EAI      <leader>eap :EAP
+" Disable the whole set with:  let g:verilog_tooling_no_mappings = 1
 
 if exists('g:loaded_verilog_tooling')
     finish
@@ -255,3 +256,34 @@ function! s:AutoTemplateBuffer() abort
     endif
     call s:NewFromTemplate(l:fname)
 endfunction
+
+" ---------------------------------------------------------------------
+" Default leader mappings.  Installed only when the lhs is still unmapped
+" (mapcheck), so a mapping from your .vimrc or another plugin always wins.
+" Disable the whole set with:  let g:verilog_tooling_no_mappings = 1
+function! s:DefMap(lhs, cmd) abort
+    if empty(mapcheck(a:lhs, 'n'))
+        execute 'nnoremap ' . a:lhs . ' :' . a:cmd . '<cr>'
+    endif
+endfunction
+
+if !exists('g:verilog_tooling_no_mappings')
+    call s:DefMap('<leader>a',    'AALL')
+    call s:DefMap('<leader>ad',   'AD')
+    call s:DefMap('<leader>adt',  'ADT')
+    call s:DefMap('<leader>ait',  'AIT')
+    call s:DefMap('<leader>aiu',  'AIU')
+    call s:DefMap('<leader>aiu1', 'AIU1')
+    call s:DefMap('<leader>ar',   'AR')
+    call s:DefMap('<leader>aw',   'AW')
+    call s:DefMap('<leader>arg',  'AREG')
+    call s:DefMap('<leader>aif',  'AIF')
+    call s:DefMap('<leader>adf',  'ADF')
+    call s:DefMap('<leader>apf',  'APF')
+    call s:DefMap('<leader>af',   'AF')
+    call s:DefMap('<leader>am',   'AM')
+    call s:DefMap('<leader>ame',  'AME')
+    call s:DefMap('<leader>eai',  'EAI')
+    call s:DefMap('<leader>eap',  'EAP')
+    call s:DefMap('<leader>d',    'KI')
+endif
