@@ -17,11 +17,11 @@ let s:wave_max_wd = s:sig_offset + s:clk_num*s:clk_period
 
 " ---------------------------------------------------------------
 " always-block snippet inserters (command bindings preserved)
-command  BPN : call AlBpn()
-command  BP  : call AlBp()
-command  BA  : call AlB()
+command! BPN : call AlBpn()
+command! BP  : call AlBp()
+command! BA  : call AlB()
 
-function AddClk() "{{{2
+function! AddClk() "{{{2
 	let ret = []
 	let ret0 = "//  .   .   ."
 	let ret1 = "//          +"
@@ -57,7 +57,7 @@ function AddClk() "{{{2
     call cursor(lnum+4,col)
 endfunction "}}}2
 
-function AddSig() "{{{2
+function! AddSig() "{{{2
 	let ret = []
 	let ret0 = "//          "
 	let ret1 = "// sig      "
@@ -76,7 +76,7 @@ function AddSig() "{{{2
     call cursor(lnum+3,col)
 endfunction "}}}2
 
-function AddBus() "{{{2
+function! AddBus() "{{{2
 	let ret = []
 	let ret0 = "//          "
 	let ret1 = "// bus      "
@@ -95,7 +95,7 @@ function AddBus() "{{{2
     call cursor(lnum+3,col)
 endfunction "}}}2
 
-function AddNeg() "{{{2
+function! AddNeg() "{{{2
     let lnum = s:GetSigNameLineNum()
     if lnum == -1
         return
@@ -107,7 +107,7 @@ function AddNeg() "{{{2
     call setline(lnum,line." neg")
 endfunction "}}}2
 
-function AddBlk() "{{{2
+function! AddBlk() "{{{2
 	let ret = []
 	let ret0 = "//          "
 	for idx in range(s:sig_offset,s:wave_max_wd)
@@ -120,7 +120,7 @@ function AddBlk() "{{{2
     call cursor(lnum+1,col)
 endfunction "}}}2
 
-function s:My_mod(int1,int2) "{{{2
+function! s:My_mod(int1,int2) "{{{2
 	let ret = a:int1
 	while 1
 		if ret >= a:int2
@@ -132,7 +132,7 @@ function s:My_mod(int1,int2) "{{{2
 	return ret
 endfunction "}}}2
 
-function s:GetSigNameLineNum() "{{{2
+function! s:GetSigNameLineNum() "{{{2
 	let lnum = -1
 	let cur_lnum = line(".")
 	if getline(cur_lnum) =~ '^\/\/\s*\w\+'
@@ -144,7 +144,7 @@ function s:GetSigNameLineNum() "{{{2
 	endif
 	return lnum
 endfunction "}}}2
-function AlBpn() "{{{2
+function! AlBpn() "{{{2
     let lnum = line(".")
     for idx in range(1,7)
         call append(lnum,"")
@@ -159,7 +159,7 @@ function AlBpn() "{{{2
     call cursor(lnum+3,9)
 endfunction "}}}2
 
-function AlB() "{{{2
+function! AlB() "{{{2
     let lnum = line(".")
     for idx in range(1,3)
         call append(lnum,"")
@@ -170,7 +170,7 @@ function AlB() "{{{2
     call cursor(lnum+2,5)
 endfunction "}}}2
 
-function AlBnn() "{{{2
+function! AlBnn() "{{{2
     let lnum = line(".")
     for idx in range(1,7)
         call append(lnum,"")
@@ -185,7 +185,7 @@ function AlBnn() "{{{2
     call cursor(lnum+3,9)
 endfunction "}}}2
 
-function AlBp() "{{{2
+function! AlBp() "{{{2
     let lnum = line(".")
     for idx in range(1,6)
         call append(lnum,"")
@@ -199,7 +199,7 @@ function AlBp() "{{{2
     call cursor(lnum+3,9)
 endfunction "}}}2
 
-function AlBn() "{{{2
+function! AlBn() "{{{2
     let lnum = line(".")
     for idx in range(1,6)
         call append(lnum,"")
