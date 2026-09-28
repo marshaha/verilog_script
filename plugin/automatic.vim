@@ -21,18 +21,31 @@ command! BPN : call AlBpn()
 command! BP  : call AlBp()
 command! BA  : call AlB()
 
-" Default leader mappings (skipped when the lhs is already mapped; disable
+" Default leader mappings (installed on VimEnter so a mapleader set later
+" in the vimrc is honored; skipped when the lhs is already mapped; disable
 " with:  let g:verilog_tooling_no_mappings = 1)
-if !exists('g:verilog_tooling_no_mappings')
-    if empty(mapcheck('<leader>bpn', 'n'))
+function! s:InstallDefaultMaps() abort
+    if exists('g:verilog_tooling_no_mappings')
+        return
+    endif
+    " maparg (exact lhs), not mapcheck (prefix-matches <leader>bp vs bpn)
+    if empty(maparg('<leader>bpn', 'n'))
         nnoremap <leader>bpn :BPN<cr>
     endif
-    if empty(mapcheck('<leader>bp', 'n'))
+    if empty(maparg('<leader>bp', 'n'))
         nnoremap <leader>bp :BP<cr>
     endif
-    if empty(mapcheck('<leader>ba', 'n'))
+    if empty(maparg('<leader>ba', 'n'))
         nnoremap <leader>ba :BA<cr>
     endif
+endfunction
+
+augroup automatic_maps
+    autocmd!
+    autocmd VimEnter * call s:InstallDefaultMaps()
+augroup END
+if exists('v:vim_did_enter') && v:vim_did_enter
+    call s:InstallDefaultMaps()
 endif
 
 function! AddClk() "{{{2

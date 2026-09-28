@@ -258,16 +258,25 @@ function! s:AutoTemplateBuffer() abort
 endfunction
 
 " ---------------------------------------------------------------------
-" Default leader mappings.  Installed only when the lhs is still unmapped
-" (mapcheck), so a mapping from your .vimrc or another plugin always wins.
-" Disable the whole set with:  let g:verilog_tooling_no_mappings = 1
+" Default leader mappings.  Installed on VimEnter so a mapleader set
+" ANYWHERE in the vimrc is honored — plugin managers (pathogen/vim-plug)
+" source this file before the lines below plug#end()/pathogen#infect()
+" run, and <leader> binds to whatever mapleader is at map-creation time.
+" Each lhs is installed only when it has no exact mapping (maparg — NOT
+" mapcheck, which also matches a shorter lhs prefix like <leader>a for
+" <leader>ad and would skip every two-letter map), so a mapping from your
+" .vimrc or another plugin always wins.  Disable the set with:
+"   let g:verilog_tooling_no_mappings = 1
 function! s:DefMap(lhs, cmd) abort
-    if empty(mapcheck(a:lhs, 'n'))
+    if empty(maparg(a:lhs, 'n'))
         execute 'nnoremap ' . a:lhs . ' :' . a:cmd . '<cr>'
     endif
 endfunction
 
-if !exists('g:verilog_tooling_no_mappings')
+function! s:InstallDefaultMaps() abort
+    if exists('g:verilog_tooling_no_mappings')
+        return
+    endif
     call s:DefMap('<leader>a',    'AALL')
     call s:DefMap('<leader>ad',   'AD')
     call s:DefMap('<leader>adt',  'ADT')
@@ -286,4 +295,13 @@ if !exists('g:verilog_tooling_no_mappings')
     call s:DefMap('<leader>eai',  'EAI')
     call s:DefMap('<leader>eap',  'EAP')
     call s:DefMap('<leader>d',    'KI')
+endfunction
+
+augroup verilog_tooling_maps
+    autocmd!
+    autocmd VimEnter * call s:InstallDefaultMaps()
+augroup END
+if exists('v:vim_did_enter') && v:vim_did_enter
+    " sourced after startup (lazy load / manual :source): install now
+    call s:InstallDefaultMaps()
 endif
