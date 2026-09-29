@@ -57,7 +57,6 @@ _TASK_OPEN = re.compile(r"^\s*task\b")
 _TASK_CLOSE = re.compile(r"^\s*endtask\b")
 _ENDMODULE = re.compile(r"^\s*endmodule\b")
 
-_PORT_DECL = re.compile(r"^\s*(input|output|inout)\b")
 _PORT_PREFIX = re.compile(
     r"^\s*(?:input|output|inout)\b\s*"
     r"(?:\b(?:wire|reg|parameter|localparam|genvar|integer)\b)*\s*"
@@ -65,7 +64,23 @@ _PORT_PREFIX = re.compile(
 )
 _PORT_TAIL = re.compile(r"\s*;.*$")
 _PORT_TRAIL_COMMA = re.compile(r"\s*,\s*$")  # header-style decl: `input clk,`
+_PORT_TRAIL_PAREN = re.compile(r"\s*\)+\s*$")  # single-line header: `input b)`
 _UNPACKED_TAIL = re.compile(r"(?:\s*\[[^\]]*\])+\s*$")  # `val[3:0]` / `val [3:0][7:0]`
+_DIR_BOUNDARY = re.compile(r"\b(input|output|inout)\b")
+
+
+def _dir_segments(text: str) -> "list[tuple[str, str]]":
+    """Split TEXT at direction keywords: one line may hold several
+    declarations (``input a, input [3:0] b, output c``).  Names can never be
+    keywords, so the boundaries are unambiguous."""
+    marks = list(_DIR_BOUNDARY.finditer(text))
+    return [
+        (
+            m.group(1),
+            text[m.start() : marks[k + 1].start() if k + 1 < len(marks) else len(text)],
+        )
+        for k, m in enumerate(marks)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +148,8 @@ def kill_auto_arg(lines: Sequence[str]) -> list[str]:
 def _filter_lines(lines: Sequence[str]) -> list[str]:
     """Drop comments and subprogram bodies, stop at ``endmodule``.
 
-    Line-oriented port of ``s:Filter``: ``//`` tails are removed, a ``/*``
+    Line-oriented port of ``s:Filter``: ``//`` tails are removed, inline
+    ``/* ... */`` comments on one line are stripped, a ``/*``
     without its ``*/`` truncates the line and swallows the block, a line that
     still holds a ``*/`` keeps only the text after it, and function (plus, as
     a deviation, task) bodies are skipped whole.
@@ -143,6 +159,7 @@ def _filter_lines(lines: Sequence[str]) -> list[str]:
     n = len(lines)
     while i < n:
         line = _LINE_COMMENT.sub("", lines[i])
+        line = re.sub(r"/\*.*?\*/", " ", line)  # inline /* ... */ on one line
         if "/*" in line and "*/" not in line:
             out.append(_BLOCK_TAIL.sub("", line))
             i += 1
@@ -173,9 +190,11 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
     One signal per declaration (a comma-separated declaration stays one
     entry, as in the Vim original); the direction, data-type and packed-width
     prefix is stripped, so a vector port contributes its bare name.
-    Robustness: a declaration split after the direction/type/packed-range
-    (``input [7:0]`` newline ``din,``) is joined first, and unpacked
-    dimensions after the name (``val[3:0]`` / ``val [3:0]``) are dropped.
+    Robustness: a line may hold several direction groups (``input a, input
+    [3:0] b, output c``, including the whole header on one line); a
+    declaration split across lines (``input [7:0]`` newline ``din,``) is
+    joined first; unpacked dimensions after the name (``val[3:0]`` /
+    ``val [3:0]``) are dropped.
     """
     inputs: list[str] = []
     outputs: list[str] = []
@@ -184,26 +203,29 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
     i = 0
     n = len(lines)
     while i < n:
-        line = lines[i]
-        m = _PORT_DECL.match(line)
-        if not m:
+        segs = _dir_segments(lines[i])
+        if not segs:
             i += 1
             continue
-        # join a cross-line declaration: only while NO name has appeared yet
-        # (so `input [7:0] din[3:0],` — unpacked dim ending in `]` — is NOT
-        # mistaken for an incomplete line)
+        # join following lines while the LAST segment still has no name
+        # (after a join the segment text is re-split — it may itself carry
+        # more direction groups, and the new last segment may continue the
+        # chain)
         while i + 1 < n and not _PORT_PREFIX.sub(
-            "", line.rstrip().rstrip(",").rstrip()
+            "", segs[-1][1].rstrip().rstrip(",").rstrip()
         ).strip():
             i += 1
-            line = line.rstrip().rstrip(",").rstrip() + " " + lines[i].strip()
-        name = _PORT_PREFIX.sub("", line)
-        name = _PORT_TAIL.sub("", name)  # body style: `input [7:0] a, b; // c`
-        name = _PORT_TRAIL_COMMA.sub("", name)  # header style: `input clk,`
-        name = _UNPACKED_TAIL.sub("", name)  # `val[3:0]` / `val [3:0]`
-        name = name.strip()
-        if name:
-            buckets[m.group(1)].append(name)
+            merged = segs[-1][1].rstrip().rstrip(",").rstrip() + " " + lines[i].strip()
+            segs = segs[:-1] + _dir_segments(merged)
+        for direction, seg in segs:
+            name = _PORT_PREFIX.sub("", seg)
+            name = _PORT_TAIL.sub("", name)  # body style: `input [7:0] a, b; // c`
+            name = _PORT_TRAIL_COMMA.sub("", name)  # header style: `input clk,`
+            name = _PORT_TRAIL_PAREN.sub("", name)  # single-line header: `input b)`
+            name = _UNPACKED_TAIL.sub("", name)  # `val[3:0]` / `val [3:0]`
+            name = name.strip(" ,\t")
+            if name:
+                buckets[direction].append(name)
         i += 1
     return inputs, outputs, inouts
 
