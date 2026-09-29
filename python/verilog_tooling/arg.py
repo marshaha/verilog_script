@@ -61,10 +61,11 @@ _PORT_DECL = re.compile(r"^\s*(input|output|inout)\b")
 _PORT_PREFIX = re.compile(
     r"^\s*(?:input|output|inout)\b\s*"
     r"(?:\b(?:wire|reg|parameter|localparam|genvar|integer)\b)*\s*"
-    r"(?:\[.*:.*\])*\s*"
+    r"(?:\[[^\]]*:[^\]]*\]\s*)*"
 )
 _PORT_TAIL = re.compile(r"\s*;.*$")
 _PORT_TRAIL_COMMA = re.compile(r"\s*,\s*$")  # header-style decl: `input clk,`
+_UNPACKED_TAIL = re.compile(r"(?:\s*\[[^\]]*\])+\s*$")  # `val[3:0]` / `val [3:0][7:0]`
 
 
 # ---------------------------------------------------------------------------
@@ -169,22 +170,41 @@ def _filter_lines(lines: Sequence[str]) -> list[str]:
 def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str]]:
     """(inputs, outputs, inouts) signal texts, in buffer order.
 
-    One signal per line (a comma-separated declaration stays one entry, as in
-    the Vim original); the direction, data-type and packed-width prefix is
-    stripped, so a vector port contributes its bare name.
+    One signal per declaration (a comma-separated declaration stays one
+    entry, as in the Vim original); the direction, data-type and packed-width
+    prefix is stripped, so a vector port contributes its bare name.
+    Robustness: a declaration split after the direction/type/packed-range
+    (``input [7:0]`` newline ``din,``) is joined first, and unpacked
+    dimensions after the name (``val[3:0]`` / ``val [3:0]``) are dropped.
     """
     inputs: list[str] = []
     outputs: list[str] = []
     inouts: list[str] = []
     buckets = {"input": inputs, "output": outputs, "inout": inouts}
-    for line in lines:
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
         m = _PORT_DECL.match(line)
         if not m:
+            i += 1
             continue
+        # join a cross-line declaration: only while NO name has appeared yet
+        # (so `input [7:0] din[3:0],` — unpacked dim ending in `]` — is NOT
+        # mistaken for an incomplete line)
+        while i + 1 < n and not _PORT_PREFIX.sub(
+            "", line.rstrip().rstrip(",").rstrip()
+        ).strip():
+            i += 1
+            line = line.rstrip().rstrip(",").rstrip() + " " + lines[i].strip()
         name = _PORT_PREFIX.sub("", line)
         name = _PORT_TAIL.sub("", name)  # body style: `input [7:0] a, b; // c`
         name = _PORT_TRAIL_COMMA.sub("", name)  # header style: `input clk,`
-        buckets[m.group(1)].append(name.strip())
+        name = _UNPACKED_TAIL.sub("", name)  # `val[3:0]` / `val [3:0]`
+        name = name.strip()
+        if name:
+            buckets[m.group(1)].append(name)
+        i += 1
     return inputs, outputs, inouts
 
 
