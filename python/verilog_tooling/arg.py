@@ -22,8 +22,12 @@ otherwise):
 - the filter drops whole ``task``/``endtask`` bodies as well as
   ``function``/``endfunction`` ones (``s:Filter`` only knows functions, so a
   task's ``input`` arguments leak into the generated port list);
-- the marker/close scans stop at end-of-buffer instead of looping forever on
-  a buffer whose marker line is never terminated by ``);``;
+- a misplaced marker (after the header's own ``);``) is left verbatim by
+  both commands — the Vim original's kill scan eats everything up to the
+  next instance's ``);``;
+- header-style declarations (``input clk,`` inside the parens) have their
+  trailing comma stripped, so the generated list reads ``clk, din`` instead
+  of ``clk,, din,,``;
 - a line ending in ``);`` plus trailing blanks is recognised as terminated
   (Vim's ``);$`` misses it and then eats the rest of the buffer).
 """
@@ -60,19 +64,35 @@ _PORT_PREFIX = re.compile(
     r"(?:\[.*:.*\])*\s*"
 )
 _PORT_TAIL = re.compile(r"\s*;.*$")
+_PORT_TRAIL_COMMA = re.compile(r"\s*,\s*$")  # header-style decl: `input clk,`
 
 
 # ---------------------------------------------------------------------------
 # KillAutoArg
 
 
+# a generated port-list region ends with a bare `);` line (anything else on
+# the line means it is someone else's close paren, e.g. an instance's)
+_REGION_END = re.compile(r"^\s*\);\s*$")
+# a generated port-list region holds only section comments, bare names and
+# blank lines; anything else (a `;`, a declaration/keyword) means the marker
+# sits OUTSIDE a header (e.g. after the header's own `);`) and the scan must
+# not consume real code
+_NOT_PORT_LIST = re.compile(
+    r";|\b(?:input|output|inout|wire|reg|logic|assign|always|module|endmodule)\b"
+)
+
+
 def kill_auto_arg(lines: Sequence[str]) -> list[str]:
     """Collapse every regenerated port list back to a ``... (/*autoarg*/);``
     stub: the marker line is closed with ``);`` and the generated lines up to
-    (and including) the ``);`` terminator are deleted.
+    (and including) the bare ``);`` terminator are deleted.
 
-    A marker line already terminated by ``);`` is copied verbatim.  All other
-    lines are copied unchanged.
+    A marker line already terminated by ``);`` is copied verbatim.  A marker
+    whose following lines are not a plausible port list (misplaced marker,
+    e.g. after the header's ``);``) or that has no bare ``);`` terminator is
+    left untouched — nothing is deleted.  All other lines are copied
+    unchanged.
     """
     out: list[str] = []
     i = 0
@@ -85,14 +105,23 @@ def kill_auto_arg(lines: Sequence[str]) -> list[str]:
             continue
         if _CLOSE.search(line):
             out.append(line)
-        else:
-            out.append(line + ");")
             i += 1
-            while i < n and not _CLOSE.search(lines[i]):
-                i += 1
-            if i >= n:  # unterminated marker: nothing left to keep
+            continue
+        # find the bare `);` region terminator, bailing out on lines that
+        # clearly are not generated port-list content (misplaced marker)
+        j = i + 1
+        plausible = True
+        while j < n and not _REGION_END.search(lines[j]):
+            if _NOT_PORT_LIST.search(lines[j]):
+                plausible = False
                 break
-        i += 1
+            j += 1
+        if plausible and j < n:
+            out.append(line + ");")
+            i = j + 1
+        else:
+            out.append(line)  # misplaced/unterminated marker: keep everything
+            i += 1
     return out
 
 
@@ -153,7 +182,9 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
         if not m:
             continue
         name = _PORT_PREFIX.sub("", line)
-        buckets[m.group(1)].append(_PORT_TAIL.sub("", name).strip())
+        name = _PORT_TAIL.sub("", name)  # body style: `input [7:0] a, b; // c`
+        name = _PORT_TRAIL_COMMA.sub("", name)  # header style: `input clk,`
+        buckets[m.group(1)].append(name.strip())
     return inputs, outputs, inouts
 
 
@@ -229,12 +260,20 @@ def _expand_arg_markers(
     inouts: Sequence[str],
 ) -> list[str]:
     """Expand every /*autoarg*/ marker in one module's LINES with the given
-    Inputs/Outputs/Inouts sections."""
+    Inputs/Outputs/Inouts sections.
+
+    Only markers inside the header (at or before the module's first ``);``
+    line) are expanded; a marker after the header close is misplaced and is
+    left verbatim."""
     sections = (("//Inputs", inputs), ("//Outputs", outputs), ("//Inouts", inouts))
+    close_idx = next((k for k, ln in enumerate(lines) if _CLOSE.search(ln)), None)
     out: list[str] = []
-    for line in lines:
+    for idx, line in enumerate(lines):
         if not _MARK_LINE.search(line):
             out.append(line)
+            continue
+        if close_idx is not None and idx > close_idx:
+            out.append(line)  # misplaced marker (after the header): leave alone
             continue
         if not any(ports for _, ports in sections):
             # nothing to declare: the collapsed one-line stub stays as-is
