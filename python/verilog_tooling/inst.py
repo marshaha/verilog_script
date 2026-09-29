@@ -1168,16 +1168,46 @@ def auto_inst_update_order(
 # CLI (mirrors gen_empty.py so Vim can call it the same way)
 
 
+def _scan_dir_once(path: str) -> frozenset:
+    """File names directly inside PATH (one syscall batch instead of one
+    stat per candidate).  Unreadable/missing dirs scan as empty — the same
+    silent-skip semantics as the old per-candidate is_file() probes."""
+    try:
+        with os.scandir(path) as it:
+            return frozenset(e.name for e in it if e.is_file())
+    except OSError:
+        return frozenset()
+
+
+def _dir_listings(libdirs: Sequence[str]) -> dict[str, frozenset]:
+    """{dir: file names} for every libdir, scanned in parallel — on a large
+    SoC (dozens of -y dirs, possibly NFS) the serial stat-per-module-dir
+    storm dominates the whole command.  Thread-safe: results are merged
+    after the pool joins, keyed by dir."""
+    unique = list(dict.fromkeys(libdirs))
+    if len(unique) <= 2:
+        return {d: _scan_dir_once(d) for d in unique}
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(8, len(unique))) as pool:
+        scanned = list(pool.map(_scan_dir_once, unique))
+    return dict(zip(unique, scanned))
+
+
 def _resolve_module_files(
     module_names: Iterable[str],
     libdirs: Sequence[str],
     inst_files: Mapping[str, str] | None = None,
     vc_files: Sequence[str] | None = None,
     extensions: Sequence[str] | None = None,
+    _dir_cache: "dict[str, frozenset] | None" = None,
 ) -> dict[str, Path]:
     """Resolve module name -> file.  Priority: explicit verilog-inst-file map,
     then vc-file entries (matched by stem), then <dir>/<module><ext> over
-    EXTENSIONS (vc ``+libext+``, default ``.v``/``.sv``)."""
+    EXTENSIONS (vc ``+libext+``, default ``.v``/``.sv``).
+
+    Libdir probing uses a per-dir listing cache (_dir_cache may carry it
+    across calls) instead of one stat() per (name, dir, ext) tuple."""
     files: dict[str, Path] = {}
     inst_files = inst_files or {}
     exts = list(extensions) if extensions else [".v", ".sv"]
@@ -1186,21 +1216,30 @@ def _resolve_module_files(
     for vc in vc_files or []:
         stem = Path(vc).stem
         vc_by_stem.setdefault(stem, vc)
-    for name in module_names:
-        if name in inst_files and Path(inst_files[name]).is_file():
-            files[name] = Path(inst_files[name])
+    names = list(dict.fromkeys(module_names))
+    for name in names:
+        p = inst_files.get(name)
+        if p and Path(p).is_file():
+            files[name] = Path(p)
+    for name in names:
+        if name in files:
             continue
-        if name in vc_by_stem and Path(vc_by_stem[name]).is_file():
-            files[name] = Path(vc_by_stem[name])
-            continue
-        for d in libdirs:
-            for ext in exts:
-                candidate = Path(d) / f"{name}{ext}"
-                if candidate.is_file():
-                    files[name] = candidate
+        p = vc_by_stem.get(name)
+        if p and Path(p).is_file():
+            files[name] = Path(p)
+    remaining = [n for n in names if n not in files]
+    if remaining:
+        cache = _dir_cache if _dir_cache is not None else {}
+        unscanned = [d for d in libdirs if d not in cache]
+        if unscanned:
+            cache.update(_dir_listings(unscanned))
+        for name in remaining:
+            for d in libdirs:
+                listing = cache.get(d) or ()
+                hit = next((e for e in exts if name + e in listing), None)
+                if hit is not None:
+                    files[name] = Path(d) / (name + hit)
                     break
-            if name in files:
-                break
     return files
 
 
@@ -1277,10 +1316,11 @@ def create_by_args(args_l=None):
     )
     parser.add_argument(
         "command",
-        choices=["ait", "aiu", "aiu1", "kill", "eai", "eap", "aif", "apf", "adf", "af"],
+        choices=["ait", "aiu", "aiu1", "kill", "eai", "eap", "aif", "apf", "adf", "af", "aall"],
         help="ait/aiu/aiu1/kill: automatic.vim commands; "
         "eai: verilog-mode AUTOINST; eap: verilog-mode AUTOINSTPARAM; "
-        "aif/apf/adf/af: automatic.vim format commands (buffer-local)",
+        "aif/apf/adf/af: automatic.vim format commands (buffer-local); "
+        "aall: eap+eai+aw+areg+adt+arg+af in one pass (shared module table)",
     )
     parser.add_argument("-i", "--in_file", required=True, help="buffer file with /*autoinst*/ markers")
     parser.add_argument(
@@ -1330,6 +1370,155 @@ def create_by_args(args_l=None):
         help="eai: keep .* expansion with // Implicit .* tags (verilog-auto-star-save)",
     )
     return parser.parse_args(args_l)
+
+
+def _read_module_srcs(files: Mapping[str, Path]) -> dict[str, list[str]]:
+    """{module: source lines}, read in parallel (NFS-friendly); results are
+    merged after the pool joins so nothing depends on thread timing."""
+    items = sorted(files.items())
+    if len(items) <= 2:
+        return {n: p.read_text().splitlines() for n, p in items}
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _read(item: "tuple[str, Path]") -> "tuple[str, list[str]]":
+        name, path = item
+        return name, path.read_text().splitlines()
+
+    with ThreadPoolExecutor(max_workers=min(8, len(items))) as pool:
+        return dict(pool.map(_read, items))
+
+
+def _which_resolvable(
+    lines: list[str], keyword: str, resolved: set[str]
+) -> "tuple[list[int], list[int]]":
+    """Marker ordinals whose instance module resolved, for ``which=``.
+
+    Returns (which, resolvable): WHICH is the resolvable list (the eai/eap
+    missing-module case remaps "all" to an explicit ordinal list); an empty
+    RESOLVABLE means the step should be skipped with a warning (the
+    standalone commands raise SystemExit there)."""
+    from . import emacs
+
+    markers_all = emacs.find_auto_markers(lines, keyword)
+    joined = "\n".join(lines)
+    stacks = emacs._scan_parens_at(joined, [m.offset for m in markers_all])
+    resolvable = []
+    for mi, marker in enumerate(markers_all):
+        try:
+            stack = stacks[marker.offset]
+            mod = emacs._resolve_instance_at(joined, stack[-1])[0]
+        except (ValueError, IndexError):
+            continue
+        if mod in resolved:
+            resolvable.append(mi)
+    return resolvable, resolvable
+
+
+def _eai_like_step(lines: list[str], keyword: str, resolved: set[str], include_star: bool = False) -> "tuple[list[int] | None, list[int], list[str]]":
+    """(which, resolvable, missing) for one eai|eap step, mirroring the
+    standalone _main_emacs command exactly: ``which=None`` (process every
+    marker, including ones the probe cannot parse) while nothing is
+    missing; an explicit resolvable-ordinal remap otherwise."""
+    from . import emacs
+
+    names = set(emacs.marker_modules(lines, keyword, include_star=include_star))
+    missing = sorted(names - resolved)
+    if not missing:
+        return None, [], []
+    which, resolvable = _which_resolvable(lines, keyword, resolved)
+    return which, resolvable, missing
+
+
+def _main_aall(text: str, lines: list[str], args) -> list[str]:
+    """The AALL pipeline in ONE process, emacs verilog-batch-auto order:
+    eap -> eai -> aw -> areg -> adt -> arg -> af.  Instance module files are
+    resolved (dir-listing cached) and read (thread pool) exactly once — the
+    seven separate CLI commands would repeat both per command."""
+    from . import arg, autodef, emacs, fmt, wire
+    from .libdirs import parse_typedef_regexp
+
+    names_emacs: set[str] = set()
+    for kw in ("AUTOINST", "AUTOINSTPARAM"):
+        try:
+            names_emacs |= set(emacs.marker_modules(lines, kw, include_star=args.star_expand))
+        except ValueError:
+            pass
+    # marker-less instances can only be resolved by name (autodef/aw path)
+    names_wire = names_emacs | autodef._candidate_module_names(lines)
+
+    libdirs, inst_files, vc_entries, extensions = _cli_resolve(args, lines)
+    files = _resolve_module_files(
+        sorted(names_wire), libdirs, inst_files, vc_entries, extensions
+    )
+    buffer_mods = buffer_module_defs(text)
+    srcs = _read_module_srcs(files)
+
+    def src_of(name: str) -> "list[str] | None":
+        return srcs.get(name) or buffer_mods.get(name)
+
+    resolved = {n for n in names_wire if src_of(n) is not None}
+    missing = sorted(names_emacs - resolved)
+    if missing:
+        print(
+            f"warning: skipping {len(missing)} instance(s) with no module file: "
+            f"{missing}",
+            file=sys.stderr,
+        )
+    td_re = parse_typedef_regexp(lines)
+    interfaces = set(find_interfaces(libdirs))
+    templates = find_auto_templates(text)
+
+    # 1. EAP (AUTOINSTPARAM)
+    which, resolvable, step_missing = _eai_like_step(
+        lines, "AUTOINSTPARAM", resolved, include_star=args.star_expand
+    )
+    if which is None or resolvable:
+        module_params = {
+            n: emacs.parse_module_params(s) for n in names_emacs if (s := src_of(n))
+        }
+        lines = emacs.auto_param(
+            lines, module_params, which=which, templates=templates, sort=args.sort
+        )
+    else:
+        print(f"warning: AUTOINSTPARAM skipped, module file not found for: {step_missing}", file=sys.stderr)
+
+    # 2. EAI (AUTOINST)
+    which, resolvable, step_missing = _eai_like_step(
+        lines, "AUTOINST", resolved, include_star=args.star_expand
+    )
+    if which is None or resolvable:
+        modules = {
+            n: parse_module_ports(s, with_params=True, interfaces=interfaces, typedef_regexp=td_re)
+            for n in names_emacs
+            if (s := src_of(n))
+        }
+        lines = emacs.auto_inst(
+            lines,
+            modules,
+            which=which,
+            templates=templates,
+            sort=args.sort,
+            dot_name=args.dot_name,
+            param_value=args.param_value,
+            star_expand=args.star_expand,
+            star_save=args.star_save,
+        )
+    else:
+        print(f"warning: AUTOINST skipped, module file not found for: {step_missing}", file=sys.stderr)
+
+    # 3. AW / 4. AREG / 5. AD (autodef) share the plain port mapping
+    modules_w = {
+        n: parse_module_ports(s, typedef_regexp=td_re)
+        for n in names_wire
+        if (s := src_of(n))
+    }
+    lines = wire.auto_wire(lines, modules_w)
+    lines = wire.auto_reg(lines, modules_w)
+    lines = autodef.auto_def_t(lines, modules_w)
+    # 6. AR (autoarg) / 7. AF (all format) need no module table
+    lines = arg.auto_arg(lines)
+    lines = fmt.all_format(lines)
+    return lines
 
 
 def _main_emacs(command: str, text: str, lines: list[str], args) -> list[str]:
@@ -1410,12 +1599,14 @@ def main(argv=None) -> None:
     args = create_by_args(argv)
     text = Path(args.in_file).read_text()
     lines = text.splitlines()
-    if args.command == "eai" and not args.param_value:
+    if args.command in ("eai", "aall") and not args.param_value:
         # the buffer's own Local Variables can switch param-value
         # substitution on, like emacs file-local variables
         if re.search(r"^\s*//\s*verilog-auto-inst-param-value\s*:\s*t\b", text, re.M):
             args.param_value = True
-    if args.command == "kill":
+    if args.command == "aall":
+        out = _main_aall(text, lines, args)
+    elif args.command == "kill":
         out = kill_auto_inst(lines, args.which)
     elif args.command in ("aif", "apf", "adf", "af"):
         from . import fmt

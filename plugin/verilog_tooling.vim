@@ -183,14 +183,10 @@ endfunction
 " Run the full AUTO expansion set in emacs verilog-batch-auto order:
 " EAP (AUTOINSTPARAM) -> EAI (AUTOINST) -> AW (AUTOWIRE) -> AREG (AUTOREG)
 " -> AD (autodef) -> AR (autoarg) -> AF (all format).
+" One python process for the whole pipeline (module files are resolved and
+" read once); g:verilog_tooling_eai_flags (e.g. --sort) is passed through.
 function! s:AutoAll() abort
-    call s:Run('verilog_tooling.inst', 'eap', [], -1)
-    call s:Run('verilog_tooling.inst', 'eai', get(g:, 'verilog_tooling_eai_flags', []), -1)
-    call s:Run('verilog_tooling.wire', 'aw', [], -1)
-    call s:Run('verilog_tooling.wire', 'ar', [], -1)
-    call s:Run('verilog_tooling.autodef', 'adt', [], -1)
-    call s:Run('verilog_tooling.arg', 'ar', [], -1)
-    call s:Run('verilog_tooling.inst', 'af', [], -1)
+    call s:Run('verilog_tooling.inst', 'aall', get(g:, 'verilog_tooling_eai_flags', []), -1)
 endfunction
 
 command! -nargs=0 AALL call s:AutoAll()
