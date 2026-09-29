@@ -1,5 +1,7 @@
 # verilog_script
 
+**English** | [简体中文](README.zh-CN.md)
+
 Emacs `verilog-mode` AUTO expansions and the `automatic.vim` command set,
 rewritten as a self-contained Vim plugin backed by a small Python package.
 
@@ -90,22 +92,27 @@ marker.
 
 ## Commands
 
-| Command | What it does |
-|---|---|
-| `AALL` | full AUTO set: EAP → EAI → AW → AREG → AD → AR → AF |
-| `EAI` / `EAP` | verilog-mode AUTOINST / AUTOINSTPARAM (regexp templates, `.*`, interfaces) |
-| `AIT` / `AIU` / `AIU1` | instantiate template / update instances (keeps manual connections; AUTO_TEMPLATE wins where declared) |
-| `AD` / `ADT` | regenerate `/*autodef*/` wire/reg/integer/genvar declarations (undriven outputs become `reg`) |
-| `AR` | regenerate `/*autoarg*/` header port lists |
-| `AW` / `AREG` | AUTOWIRE / AUTOREG |
-| `AF` | format: ports, wire/reg, parameter/localparam, instances |
-| `AIF` `APF` `ADF` | individual format passes |
-| `AM` `AME` `APM` `AFM` | module/parameter/FSM snippets |
-| `AH` / `ATpl {file}` | file header / new file from template |
-| `KI` `KAR` `KADT` | kill (collapse) the corresponding AUTO regions |
-| `BPN` `BP` `BA` | always-block snippets (from automatic.vim) |
+| Command | What it does | Key |
+|---|---|---|
+| `AALL` | full AUTO set in one pass: EAP → EAI → AW → AREG → AD → AR → AF | `<leader>a` |
+| `EAI` / `EAP` | verilog-mode AUTOINST / AUTOINSTPARAM | `<leader>eai` `eap` |
+| `AIT` | (re)build instance connections from the module definition | `<leader>ait` |
+| `AIU` / `AIU1` | minimal-diff instance updates (keep manual connections) | `<leader>aiu` `aiu1` |
+| `KI` | collapse an instance back to the `/*autoinst*/` stub | `<leader>d` |
+| `AD` / `ADT` | regenerate `/*autodef*/` wire/reg/integer/genvar declarations | `<leader>ad` `adt` |
+| `KADT` | collapse the `/*autodef*/` region | |
+| `AR` | regenerate `/*autoarg*/` header port lists | `<leader>ar` |
+| `KAR` | collapse the `/*autoarg*/` region | |
+| `AW` / `AREG` | AUTOWIRE / AUTOREG | `<leader>aw` `arg` |
+| `AF` | format: ports, wire/reg, parameter/localparam, instances | `<leader>af` |
+| `AIF` `APF` `ADF` | individual format passes | `<leader>aif` `apf` `adf` |
+| `AM` `AME` | instance stub from the word under the cursor | `<leader>am` `ame` |
+| `APM` `AFM` | `/*autopara*/` / `/*autofsm*/` expansion | |
+| `AH` / `ATpl {file}` | file header / new file from template | |
+| `BPN` `BP` `BA` | always-block snippets | `<leader>bpn` `bp` `ba` |
 
-`{count}` before EAI/AIT/AIU selects the Nth instance.
+`{count}` before EAI/AIT/AIU/AIU1 selects the Nth `/*autoinst*/` instance
+(`:1AIT` → the first one only).
 
 Every command reports what it did, e.g.
 `[verilog_tooling] eai: line 515: 1005 -> 937 line(s)` (or `no changes`).
@@ -117,6 +124,132 @@ table shared across all seven passes; module files are located via cached
 directory listings and read on a thread pool (NFS-friendly — no
 stat-per-module-dir storm). Measured on a 199-file project: 3.4× faster
 than the seven separate commands, byte-identical output.
+
+## Command reference
+
+### AALL — everything, in the right order
+
+Runs the emacs `verilog-batch-auto` sequence — EAP → EAI → AW → AREG →
+AD → AR → AF — in a single Python process. The output is byte-identical
+to running the seven commands in that order, but module files are
+resolved and read only once. `g:verilog_tooling_eai_flags` (e.g.
+`--sort`) is honored.
+
+### EAI — verilog-mode AUTOINST
+
+Expands `/*AUTOINST*/`: discards the previous expansion and connects
+every pin of the submodule, grouped into `// Interfaces` / `// Outputs` /
+`// Inouts` / `// Inputs` sections in declaration order (`--sort` sorts
+within each group). The default connection is the port name with its
+range — `.dout (dout[7:0])`. Notes:
+
+- EAI is a **full reset** (emacs semantics): to keep a custom connection,
+  put it in an `AUTO_TEMPLATE` — template-driven pins are marked
+  `// Templated`. Use AIU/AIU1 instead to preserve hand-written
+  connections in place.
+- Pins already connected **before** the marker line are kept.
+- `/*AUTOINST("regex")*/` keeps only matching pins; a `?!` prefix
+  excludes them (case-insensitive; emacs and Python regexp dialects).
+- SystemVerilog `.*` instances expand when star expansion is enabled;
+  interface ports connect as `.bus (bus.master)`.
+- Instances whose module file cannot be found are skipped with a warning
+  listing the searched dirs.
+
+### EAP — AUTOINSTPARAM
+
+Fills the `#(...)` parameter list (`/*AUTOINSTPARAM*/`, or new instances
+created by AIT/EAI). See the priority rules in
+[AUTOINSTPARAM (EAP)](#autoinstparam-eap) below.
+
+### AIT — (re)build an instance
+
+automatic.vim AutoInst: kills the current connections and regenerates
+them from the module definition (identity connections, or AUTO_TEMPLATE
+where declared). Use it on a stub `fifo u0_fifo (/*autoinst*/);` to
+build the full pin list, or to force a clean rebuild. An `--oneline`
+comment on the instance line packs everything onto one line.
+
+### AIU / AIU1 — minimal-diff updates
+
+For daily "the submodule changed" work:
+
+- `AIU1` keeps every existing line, appends new ports before `);`
+  (marked `// INST_NEW`) and comments out deleted ones
+  (marked `// INST_DEL`).
+- `AIU` does the same update but rewrites the instance in module port
+  order, reusing each surviving connection line verbatim — hand-edited
+  `.port (custom_sig)` connections keep their text. An `AUTO_TEMPLATE`
+  entry still wins for the ports it declares.
+
+### KI — collapse an instance
+
+Deletes the generated pin list, leaving the `mod inst (/*autoinst*/);`
+stub. The next EAI/AIT rebuilds from scratch.
+
+### AD / ADT — declare every undeclared signal
+
+Regenerates the `/*autodef*/` region: io wires, flip-flop and
+combinational registers, assign wires, instance-driven wires, and
+for-loop variables (`integer`/`genvar`), with widths inferred from
+drivers. Undriven outputs become `reg`. See [/*autodef*/
+(AD/ADT)](#autodef-adadt) below for the full rules. `KADT` collapses the
+region back to the marker.
+
+### AR — header port list
+
+Regenerates `/*autoarg*/` in the module header from the port
+declarations: `//Inputs` / `//Outputs` / `//Inouts` sections, names
+packed 4 spaces in and wrapped past column 40. Handles header-style
+declarations (`input clk,`), several declarations on one line
+(`input a, input b`), cross-line declarations, and unpacked dimensions
+(`val[3:0]`). A misplaced marker (outside the header) is left untouched.
+`KAR` collapses the list back to the marker.
+
+### AW / AREG — AUTOWIRE / AUTOREG
+
+`/*AUTOWIRE*/` declares wires for nets driven by instance outputs;
+`/*AUTOREG*/` declares `reg` for module outputs with no driver. See
+[AUTOWIRE / AUTOREG](#autowire--autoreg-awareg) below.
+
+### AF family — alignment
+
+Buffer-local formatting (no module files needed):
+
+- `APF` aligns port declarations (`input`/`output`/`inout`),
+- `ADF` aligns `wire`/`reg`/`logic` declarations and
+  `parameter`/`localparam` (`=` signs aligned),
+- `AIF` aligns instance port connections,
+- `AF` runs all three.
+
+Idempotent; reports `no changes` when already aligned.
+
+### AM / AME — instance stubs
+
+Turns the word under the cursor into an instance stub on that line:
+`fifo` → `fifo u0_fifo (/*autoinst*/);` (AM, automatic.vim style) or
+the emacs-flavored stub (AME). The instance index counts the module's
+previous instances in the buffer.
+
+### APM / AFM — parameter / FSM skeletons
+
+`/*autopara*/ (A, B=2, C)` expands into aligned `parameter`
+declarations. `/*autofsm*/ (IDLE,RUN,DONE) state nstate` expands into
+state localparams plus the two-always-block FSM skeleton (state register
++ next-state logic), with the state width derived from the state count.
+
+### AH / ATpl — file header & new file
+
+`AH` prepends the file header comment block (`// +FHDR`).
+`ATpl foo.v` creates a new file from the project skeleton — a `_tb`/`tb`
+suffix produces a testbench skeleton — and opens it. New empty `.v`/`.sv`
+buffers get the skeleton automatically (BufNewFile).
+
+### BPN / BP / BA — always-block snippets
+
+Insert an always skeleton at the cursor: `BPN` —
+`always @(posedge clk or negedge rst_n)` with `if (!rst_n)` reset
+branch; `BP` — `always @(posedge clk)`; `BA` — combinational
+`always @(*)`.
 
 ## Default key mappings
 
