@@ -110,6 +110,14 @@ marker.
 Every command reports what it did, e.g.
 `[verilog_tooling] eai: line 515: 1005 -> 937 line(s)` (or `no changes`).
 
+### Performance (large SoC tops)
+
+`AALL` runs the whole pipeline in **one Python process** with the module
+table shared across all seven passes; module files are located via cached
+directory listings and read on a thread pool (NFS-friendly — no
+stat-per-module-dir storm). Measured on a 199-file project: 3.4× faster
+than the seven separate commands, byte-identical output.
+
 ## Default key mappings
 
 The plugin installs these normal-mode leader mappings at `VimEnter` — so a
