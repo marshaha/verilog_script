@@ -39,7 +39,9 @@ def parse_declaration(line: str) -> Declaration | None:
     This intentionally stays conservative; it is a training scaffold rather
     than a complete SystemVerilog grammar.
     """
-    s = re.sub(r"//.*$", "", line).strip().rstrip(";")
+    from .comments import strip_line_comments
+
+    s = strip_line_comments(line).strip().rstrip(";")
     m = re.match(r"^(?:(?:input|output|inout)\s+)?(wire|reg|logic)\s+(.+)$", s)
     if not m:
         return None

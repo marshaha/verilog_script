@@ -95,10 +95,9 @@ def _balanced(text: str, open_idx: int) -> tuple[str, int]:
 
 
 def _strip_comments(text: str) -> str:
-    text = re.sub(
-        r"/\*.*?\*/", lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S
-    )
-    return re.sub(r"//[^\n]*", "", text)
+    from .comments import strip_comments
+
+    return strip_comments(text)
 
 
 def _split_top_commas(s: str) -> list[str]:
@@ -296,8 +295,7 @@ def read_inst_param_values(text: str, open_idx: int) -> dict[str, str]:
     inner = text[group[0] + 1 : group[1]]
     values: dict[str, str] = {}
     for entry in _split_top_commas(inner):
-        entry = re.sub(r"/\*.*?\*/", " ", entry)
-        entry = re.sub(r"//[^\n]*", "", entry)  # drop // Templated debris
+        entry = _strip_comments(entry)  # drop comments + // Templated debris
         m = re.match(r"\s*\.\s*(\w+)\s*\((.*)\)\s*$", entry, re.S)
         if m:
             values[m.group(1)] = re.sub(r"\s+", "", m.group(2))
@@ -970,7 +968,7 @@ def delete_auto_star_implicit(lines: Sequence[str]) -> list[str]:
         if _IMPLICIT_STAR.search(line):
             # this pin line is deleted; if it carried the "));" terminator,
             # push the close onto the previous real pin, else fold back to ".*);"
-            body = re.sub(r"//.*$", "", line)
+            body = _strip_comments(line)
             if re.search(r"\)\s*;\s*$", body):
                 j = len(out) - 1
                 while j >= 0 and not re.search(r"\.\s*\w+\s*\(|\.\*", out[j]):

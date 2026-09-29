@@ -157,14 +157,18 @@ def _strip_line(line: str) -> str:
         m = re.match(r"^\s*/\*.*?\*/", line)
         if m is not None and not re.match(r"\s*/\*\s*\b(?:autodef|autoinst)\b\s*\*/\s*$", line):
             line = line[m.end() :] if line[m.end() :].strip() else ""
-    line = re.sub(r"//.*$", "", line)
+    from .comments import strip_line_comments
+
+    line = strip_line_comments(line)  # // cut; /* */ markers kept visible
     return re.sub(r"^\s*,", "", line)
 
 
 def _strip_inline_comment(text: str) -> str:
     """The statement text with both comment styles removed: /* ... */ (even
-    multi-line) and // to end of line."""
-    return re.sub(r"//.*$", "", re.sub(r"/\*.*?\*/", " ", text, flags=re.S))
+    multi-line) and // to end of line (string/state aware)."""
+    from .comments import strip_comments
+
+    return strip_comments(text)
 
 
 def _skip_comment_line(lines: Sequence[str], i: int) -> int:
@@ -175,7 +179,11 @@ def _skip_comment_line(lines: Sequence[str], i: int) -> int:
     A line like ``code /* ... */`` is NOT skipped (it carries code); a
     line like ``/*marker*/ rest`` is returned too (the marker line itself
     carries the payload the callers dispatch on).  A /* ... */ pair may
-    open mid-line; when it does, the rest of that line is comment."""
+    open mid-line; when it does, the rest of that line is comment.  The
+    ``//`` cut is state-aware: a ``/*`` inside a line comment does not open
+    a pair, a ``//`` inside a pair is not a line comment."""
+    from .comments import strip_line_comments
+
     in_pair = False
     for j in range(i, len(lines)):
         line = lines[j]
@@ -186,10 +194,10 @@ def _skip_comment_line(lines: Sequence[str], i: int) -> int:
                 if tail.strip() and not re.match(r"^\s*(//|$)", tail):
                     return j  # code after the closing */
             continue
-        if re.match(r"^\s*//", line):
-            pass
-        elif "/*" in line:
-            text = re.sub(r"//.*$", "", line)
+        text = strip_line_comments(line)
+        if not text.strip():
+            pass  # comment-only line
+        elif "/*" in text:
             head, _, tail = text.partition("/*")
             if "*/" in tail:
                 tail = tail.split("*/", 1)[1]

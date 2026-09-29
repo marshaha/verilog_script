@@ -222,9 +222,12 @@ def _parse_template_body(body: str, line_no: int) -> AutoTemplate:
         raise ValueError("AUTO_TEMPLATE block without ( ... ) body") from None
     modules = tuple(m.group(1) for m in _MODULE_HEADER.finditer(body[:paren]))
     inner, _ = _balanced_inner(body, paren)
-    # verilog-mode treats comments inside the template body as whitespace
-    inner = re.sub(r"/\*.*?\*/", " ", inner, flags=re.S)
-    inner = re.sub(r"//[^\n]*", "", inner)
+    # verilog-mode treats comments inside the template body as whitespace;
+    # the state-machine masker keeps @"..." strings (even ones containing
+    # // or /*) intact while blanking real comments to spaces
+    from .comments import mask_comments
+
+    inner = mask_comments(inner)
 
     entries: list[TemplateEntry] = []
     i = 0
@@ -247,12 +250,12 @@ def _parse_template_body(body: str, line_no: int) -> AutoTemplate:
 def _mask_line_comments(text: str) -> str:
     """Replace every ``//`` comment's text with spaces (offsets preserved) so
     a ``/* AUTO_TEMPLATE ( ... ) */`` block sitting INSIDE a line comment is
-    never matched."""
+    never matched.  Block comments stay visible (they may BE the template),
+    but the scan is state-aware: a ``//`` inside a ``/* */`` block or inside
+    a string is not masked."""
+    from .comments import mask_comments
 
-    def repl(m: "re.Match[str]") -> str:
-        return m.group(1) + " " * (len(m.group(0)) - len(m.group(1)))
-
-    return re.sub(r"(?m)^(.*?)//.*$", repl, text)
+    return mask_comments(text, block=False)
 
 
 def find_auto_templates(text: str) -> list[AutoTemplate]:

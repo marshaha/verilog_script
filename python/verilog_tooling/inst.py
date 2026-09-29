@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence, Union
 
+from .comments import strip_comments as _strip_c, strip_line_comments as _strip_lc
 from .libdirs import resolve_libdirs
 from .template import (
     AutoTemplate,
@@ -159,8 +160,7 @@ def parse_interface(lines: Iterable[str]) -> InterfaceDef:
 
     Raises ValueError when no ``interface <name>`` header is found."""
     text = "\n".join(lines)
-    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
-    text = re.sub(r"//[^\n]*", "", text)
+    text = _strip_c(text)
     m = _IFACE_HEADER.search(text)
     if not m:
         raise ValueError("no interface declaration found")
@@ -185,7 +185,7 @@ def find_interfaces(libdirs: Sequence[str]) -> dict[str, Path]:
 def _port_continues(line: str) -> bool:
     """Whether LINE is an incomplete port declaration needing the next line:
     the (only) remaining content is a trailing `,` after a range."""
-    t = re.sub(r"//.*$", "", line).strip().rstrip(",").rstrip()
+    t = _strip_lc(line).strip().rstrip(",").rstrip()
     return t.endswith("]")
 
 
@@ -399,7 +399,7 @@ def parse_module_ports(
             in_block_comment = True
             continue
         if not _LINE_COMMENT.match(line):
-            line = re.sub(r"//.*$", "", line)
+            line = _strip_lc(line)
         line = re.sub(r"input\s*logic", "input ", line)
         line = re.sub(r"output\s*logic", "output ", line)
         line = re.sub(r"inout\s*logic", "inout ", line)
@@ -435,7 +435,7 @@ def parse_module_ports(
                 j += 1
                 if j >= n_lines:
                     break
-                nxt = re.sub(r"//.*$", "", lines[j]).strip()
+                nxt = _strip_lc(lines[j]).strip()
                 if _BREAK_LINE.match(nxt) or re.search(r"\bautodef\b", nxt) or "/*" in nxt:
                     break  # a /*...*/ may carry a marker; never eat a statement
                 if _port_continues(nxt) and _parse_port_line(nxt) is None:
@@ -598,7 +598,7 @@ class VerilogBuffer:
         """Lines with ``//`` comments removed, computed once (the instance
         resolvers scan the buffer prefix for every marker)."""
         if self._stripped is None:
-            self._stripped = [re.sub(r"//.*", "", line) for line in self._lines]
+            self._stripped = [_strip_lc(line) for line in self._lines]
         return self._stripped
 
     @property
@@ -714,7 +714,7 @@ class VerilogBuffer:
             return raw
         m = re.search(r"//.*", raw)
         comments = m.group(0) if m else ""
-        body = re.sub(r"//.*", "", raw)
+        body = _strip_lc(raw)
         if new_last:
             body = re.sub(r"\)\s*,\s*$", ")", body)
         else:
@@ -960,7 +960,7 @@ class VerilogBuffer:
                 m = re.search(r"//.*", line)
                 comments = m.group(0) if m else ""
                 left = head.sub(");", line)
-                left = re.sub(r"//.*", "", left)
+                left = _strip_lc(left)
                 out.append(pre + "  " + comments)
                 out.append(left)
             else:
@@ -1027,7 +1027,7 @@ class VerilogBuffer:
                     continue
                 port = self._get_port_name(line)
                 if port:
-                    body = re.sub(r"//.*$", "", line)
+                    body = _strip_lc(line)
                     old[port] = (line, re.search(r"\)\s*,", body) is None)
                 i += 1
             last_name = moddef.last_port_name()

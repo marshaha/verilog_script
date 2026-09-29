@@ -48,9 +48,6 @@ _MARK = re.compile(r"/\*\s*\b(?:autoarg|AUTOARG)\b")
 _MARK_LINE = re.compile(r"/\*\s*\b(?:autoarg|AUTOARG)\b.*")
 _CLOSE = re.compile(r"\);\s*$")
 
-_LINE_COMMENT = re.compile(r"//.*$")
-_BLOCK_TAIL = re.compile(r"/\*.*$")
-_BLOCK_HEAD = re.compile(r"^.*\*/")
 _FUNCTION_OPEN = re.compile(r"^\s*function\b")
 _FUNCTION_CLOSE = re.compile(r"^\s*endfunction\b")
 _TASK_OPEN = re.compile(r"^\s*task\b")
@@ -148,38 +145,31 @@ def kill_auto_arg(lines: Sequence[str]) -> list[str]:
 def _filter_lines(lines: Sequence[str]) -> list[str]:
     """Drop comments and subprogram bodies, stop at ``endmodule``.
 
-    Line-oriented port of ``s:Filter``: ``//`` tails are removed, inline
-    ``/* ... */`` comments on one line are stripped, a ``/*``
-    without its ``*/`` truncates the line and swallows the block, a line that
-    still holds a ``*/`` keeps only the text after it, and function (plus, as
-    a deviation, task) bodies are skipped whole.
+    Comments are blanked up front by the shared state-machine masker
+    (:mod:`verilog_tooling.comments`) — correct for ``//`` inside ``/* */``,
+    ``/*`` inside ``//``, inline one-line blocks and comment markers inside
+    strings.  Function (plus, as a deviation, task) bodies are skipped whole.
     """
+    from .comments import mask_comments
+
+    lines = mask_comments("\n".join(lines)).split("\n")
     out: list[str] = []
     i = 0
     n = len(lines)
     while i < n:
-        line = _LINE_COMMENT.sub("", lines[i])
-        line = re.sub(r"/\*.*?\*/", " ", line)  # inline /* ... */ on one line
-        if "/*" in line and "*/" not in line:
-            out.append(_BLOCK_TAIL.sub("", line))
-            i += 1
-            while i < n and "*/" not in lines[i]:
-                i += 1
-            continue  # the '*/' line is reprocessed by the else branch
+        line = lines[i]
         if _FUNCTION_OPEN.match(line) or _TASK_OPEN.match(line):
             closer = _FUNCTION_CLOSE if _FUNCTION_OPEN.match(line) else _TASK_CLOSE
             i += 1
-            while i < n and not closer.match(_LINE_COMMENT.sub("", lines[i])):
+            while i < n and not closer.match(lines[i]):
                 i += 1
             continue
         if _ENDMODULE.match(line):
             out.append(line)
             break
-        if "/*" not in line:
-            line = _BLOCK_HEAD.sub("", line)
         line = _FUNCTION_CLOSE.sub("", line)
         i += 1
-        if line:
+        if line.strip():
             out.append(line)
     return out
 
