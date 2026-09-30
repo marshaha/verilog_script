@@ -14,6 +14,9 @@
 "   g:verilog_tooling_python   — python executable (default: python3)
 "   g:verilog_tooling_libdirs  — extra -y module library dirs (list)
 "   g:verilog_tooling_eai_flags — extra flags for :EAI (e.g. ['--sort'])
+"   g:verilog_tooling_interfaces — user-known SV interface type names (list,
+"                             e.g. ['axera_apb_interface'] — supplements the
+"                             ones found by scanning the -y dirs)
 "
 " Commands (same names as the automatic.vim bindings):
 "   AALL                      full AUTO expansion (EAP+EAI+AIO+AW+AREG+AD+AR+AF,
@@ -90,6 +93,19 @@ function! s:LibdirArgs() abort
     let l:args = []
     for l:d in (exists('g:verilog_tooling_libdirs') ? g:verilog_tooling_libdirs : [])
         call extend(l:args, ['-y', l:d])
+    endfor
+    return l:args
+endfunction
+
+" User-known SystemVerilog interface type names (they supplement the ones
+" found by scanning the -y dirs), e.g. in vimrc:
+"   let g:verilog_tooling_interfaces = ['axera_apb_interface', 'axera_axi_interface']
+" Interface-typed ports (axera_apb_interface.master apb) then parse as
+" interface ports for EAI/AIT/AIU/AW/AIO/AD.
+function! s:InterfaceArgs() abort
+    let l:args = []
+    for l:i in (exists('g:verilog_tooling_interfaces') ? g:verilog_tooling_interfaces : [])
+        call extend(l:args, ['--interface', l:i])
     endfor
     return l:args
 endfunction
@@ -187,17 +203,17 @@ endfunction
 " One python process for the whole pipeline (module files are resolved and
 " read once); g:verilog_tooling_eai_flags (e.g. --sort) is passed through.
 function! s:AutoAll() abort
-    call s:Run('verilog_tooling.inst', 'aall', get(g:, 'verilog_tooling_eai_flags', []), -1)
+    call s:Run('verilog_tooling.inst', 'aall', get(g:, 'verilog_tooling_eai_flags', []) + s:InterfaceArgs(), -1)
 endfunction
 
 command! -nargs=0 AALL call s:AutoAll()
 
-command! -count=0 AIT  call s:InstCmd('ait', [])
-command! -count=0 AIU  call s:InstCmd('aiu', [])
-command! -count=0 AIU1 call s:InstCmd('aiu1', [])
+command! -count=0 AIT  call s:InstCmd('ait', s:InterfaceArgs())
+command! -count=0 AIU  call s:InstCmd('aiu', s:InterfaceArgs())
+command! -count=0 AIU1 call s:InstCmd('aiu1', s:InterfaceArgs())
 command! -count=0 KI   call s:InstCmd('kill', [])
-command! -count=0 EAI  call s:InstCmd('eai', get(g:, 'verilog_tooling_eai_flags', []))
-command! -count=0 EAP  call s:InstCmd('eap', [])
+command! -count=0 EAI  call s:InstCmd('eai', get(g:, 'verilog_tooling_eai_flags', []) + s:InterfaceArgs())
+command! -count=0 EAP  call s:InstCmd('eap', s:InterfaceArgs())
 
 command! -nargs=0 AIF  call s:Run('verilog_tooling.inst', 'aif', [], -1)
 command! -nargs=0 APF  call s:Run('verilog_tooling.inst', 'apf', [], -1)
@@ -206,8 +222,8 @@ command! -nargs=0 AF   call s:Run('verilog_tooling.inst', 'af', [], -1)
 
 command! -nargs=0 AR   call s:Run('verilog_tooling.arg', 'ar', [], -1)
 command! -nargs=0 KAR  call s:Run('verilog_tooling.arg', 'kill', [], -1)
-command! -nargs=0 AD   call s:Run('verilog_tooling.autodef', 'adt', [], -1)
-command! -nargs=0 ADT  call s:Run('verilog_tooling.autodef', 'adt', [], -1)
+command! -nargs=0 AD   call s:Run('verilog_tooling.autodef', 'adt', s:InterfaceArgs(), -1)
+command! -nargs=0 ADT  call s:Run('verilog_tooling.autodef', 'adt', s:InterfaceArgs(), -1)
 command! -nargs=0 KADT call s:Run('verilog_tooling.autodef', 'kill', [], -1)
 
 " file header + new-file template (filehdr.py)
@@ -236,11 +252,11 @@ command! -nargs=0 APM  call s:Run('verilog_tooling.gen', 'apm', [], -1)
 command! -nargs=0 AFM  call s:Run('verilog_tooling.gen', 'afm', [], -1)
 
 " verilog-mode wire/reg auto-declaration
-command! -nargs=0 AW   call s:Run('verilog_tooling.wire', 'aw', [], -1)
-command! -nargs=0 AREG call s:Run('verilog_tooling.wire', 'ar', [], -1)
+command! -nargs=0 AW   call s:Run('verilog_tooling.wire', 'aw', s:InterfaceArgs(), -1)
+command! -nargs=0 AREG call s:Run('verilog_tooling.wire', 'ar', s:InterfaceArgs(), -1)
 
 " verilog-mode input/output port auto-declaration (AUTOOUTPUT + AUTOINPUT)
-command! -nargs=0 AIO  call s:Run('verilog_tooling.inout', 'aio', [], -1)
+command! -nargs=0 AIO  call s:Run('verilog_tooling.inout', 'aio', s:InterfaceArgs(), -1)
 
 " Auto-generate the new-file skeleton when creating a .v/.sv file
 " (the old automatic.vim AutoTemplate BufNewFile behaviour, Python-backed).

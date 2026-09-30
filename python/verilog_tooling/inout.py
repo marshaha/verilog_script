@@ -478,11 +478,18 @@ def create_by_args(args_l=None):
         default=[],
         help="library dir holding <module>.v/.sv (repeatable; default: .)",
     )
+    parser.add_argument(
+        "-I",
+        "--interface",
+        action="append",
+        default=[],
+        help="user-known SystemVerilog interface type name (repeatable)",
+    )
     return parser.parse_args(args_l)
 
 
 def main(argv=None) -> None:
-    from .inst import _resolve_module_files, _cli_resolve, buffer_module_defs, _module_lines
+    from .inst import _resolve_module_files, _cli_resolve, buffer_module_defs, _module_lines, find_interfaces
 
     args = create_by_args(argv)
     lines = Path(args.in_file).read_text().splitlines()
@@ -506,10 +513,13 @@ def main(argv=None) -> None:
             from .libdirs import parse_typedef_regexp
 
             td_re = parse_typedef_regexp(lines)
+            interfaces = set(find_interfaces(libdirs)) | set(args.interface)
             for name in names:
                 src = _module_lines(name, files, buffer_mods)
                 if src is not None:
-                    modules[name] = parse_module_ports(src, typedef_regexp=td_re)
+                    modules[name] = parse_module_ports(
+                        src, typedef_regexp=td_re, interfaces=interfaces
+                    )
         out = lines
         if args.command in ("aio", "aout"):
             out = auto_output(out, modules)

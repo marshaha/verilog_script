@@ -535,6 +535,10 @@ class SignalTable:
             return
         net = m.group(0)
         port = inst_io[port_name]
+        if port.direction == "interface":
+            # an interface connection instantiates an interface — it is
+            # neither a wire driver nor a plain input width hint
+            return
         raw = port.width  # ModuleDef stores the 'msb:lsb' range
         port_width = "c0" if raw is None else raw.split(":")[0].strip()
         if param_values:
@@ -2445,11 +2449,18 @@ def create_by_args(args_l=None):
         default=[],
         help="library dir holding <module>.v/.sv (repeatable; default: .)",
     )
+    parser.add_argument(
+        "-I",
+        "--interface",
+        action="append",
+        default=[],
+        help="user-known SystemVerilog interface type name (repeatable)",
+    )
     return parser.parse_args(args_l)
 
 
 def main(argv=None) -> None:
-    from .inst import _resolve_module_files, _cli_resolve, buffer_module_defs, _module_lines
+    from .inst import _resolve_module_files, _cli_resolve, buffer_module_defs, _module_lines, find_interfaces
 
     args = create_by_args(argv)
     lines = Path(args.in_file).read_text().splitlines()
@@ -2474,10 +2485,13 @@ def main(argv=None) -> None:
             from .libdirs import parse_typedef_regexp
 
             td_re = parse_typedef_regexp(lines)
+            interfaces = set(find_interfaces(libdirs)) | set(args.interface)
             for name in names:
                 src = _module_lines(name, files, buffer_mods)
                 if src is not None:
-                    modules[name] = parse_module_ports(src, typedef_regexp=td_re)
+                    modules[name] = parse_module_ports(
+                        src, typedef_regexp=td_re, interfaces=interfaces
+                    )
         out = auto_def_t(lines, modules)
     Path(args.out_file).write_text("\n".join(out) + "\n")
 

@@ -1338,6 +1338,14 @@ def create_by_args(args_l=None):
         help="library dir holding <module>.v/.sv (repeatable; default: .)",
     )
     parser.add_argument(
+        "-I",
+        "--interface",
+        action="append",
+        default=[],
+        help="user-known SystemVerilog interface type name (repeatable; "
+        "supplements the interface names found by scanning the -y dirs)",
+    )
+    parser.add_argument(
         "--which",
         type=int,
         default=None,
@@ -1465,7 +1473,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
             file=sys.stderr,
         )
     td_re = parse_typedef_regexp(lines)
-    interfaces = set(find_interfaces(libdirs))
+    interfaces = set(find_interfaces(libdirs)) | set(args.interface)
     templates = find_auto_templates(text)
 
     # 1. EAP (AUTOINSTPARAM)
@@ -1510,7 +1518,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     # 6. AD (autodef) share the plain port mapping; AIO runs first so the
     # new port declarations are visible to AW/AREG/ADT
     modules_w = {
-        n: parse_module_ports(s, typedef_regexp=td_re)
+        n: parse_module_ports(s, typedef_regexp=td_re, interfaces=interfaces)
         for n in names_wire
         if (s := src_of(n))
     }
@@ -1570,7 +1578,7 @@ def _main_emacs(command: str, text: str, lines: list[str], args) -> list[str]:
 
     td_re = parse_typedef_regexp(lines)
     if command == "eai":
-        interfaces = set(find_interfaces(libdirs))
+        interfaces = set(find_interfaces(libdirs)) | set(args.interface)
         modules = {}
         for name in names:
             src = _module_lines(name, files, buffer_mods)
@@ -1657,7 +1665,8 @@ def main(argv=None) -> None:
                 )
         modules = {
             name: parse_module_ports(
-                path.read_text().splitlines(), interfaces=set(find_interfaces(libdirs))
+                path.read_text().splitlines(),
+                interfaces=set(find_interfaces(libdirs)) | set(args.interface),
             )
             for name, path in files.items()
         }

@@ -279,10 +279,11 @@ def _inst_driven_nets(
     """net -> InstNet for every net connected to an output/inout port of an
     /*autoinst*/ instance whose module is in MODULES (first driver wins).
 
-    DIRECTIONS restricts the port directions considered (default: everything
-    but ``input``, the AUTOWIRE driver set).  SIMPLE_ONLY keeps only
-    connections that are a single bare net (``AUTOINPUT``/``AUTOOUTPUT``
-    candidates — a concat or expression cannot be re-declared).
+    DIRECTIONS restricts the port directions considered (default: outputs
+    and inouts — the AUTOWIRE driver set; interface ports are never wire
+    drivers).  SIMPLE_ONLY keeps only connections that are a single bare
+    net (``AUTOINPUT``/``AUTOOUTPUT`` candidates — a concat or expression
+    cannot be re-declared).
 
     A {...} or (...) connection is skipped when the ignore-concat setting is
     on (``verilog-auto-ignore-concat`` file-local, default on); when off,
@@ -316,7 +317,11 @@ def _inst_driven_nets(
         if moddef is None:
             continue
         if directions is None:
-            inst_io = {p.name: p for p in moddef.ports if p.direction != "input"}
+            # the AUTOWIRE driver set: outputs and inouts — an interface
+            # port connection is an interface instance, never a wire driver
+            inst_io = {
+                p.name: p for p in moddef.ports if p.direction in ("output", "inout")
+            }
         else:
             inst_io = {p.name: p for p in moddef.ports if p.direction in directions}
         param_values = param_by_line.get(idx) or {}
@@ -591,11 +596,18 @@ def create_by_args(args_l=None):
         default=[],
         help="library dir holding <module>.v/.sv (repeatable; default: .)",
     )
+    parser.add_argument(
+        "-I",
+        "--interface",
+        action="append",
+        default=[],
+        help="user-known SystemVerilog interface type name (repeatable)",
+    )
     return parser.parse_args(args_l)
 
 
 def main(argv=None) -> None:
-    from .inst import _resolve_module_files, _cli_resolve, buffer_module_defs, _module_lines
+    from .inst import _resolve_module_files, _cli_resolve, buffer_module_defs, _module_lines, find_interfaces
 
     args = create_by_args(argv)
     lines = Path(args.in_file).read_text().splitlines()
@@ -619,10 +631,13 @@ def main(argv=None) -> None:
             from .libdirs import parse_typedef_regexp
 
             td_re = parse_typedef_regexp(lines)
+            interfaces = set(find_interfaces(libdirs)) | set(args.interface)
             for name in names:
                 src = _module_lines(name, files, buffer_mods)
                 if src is not None:
-                    modules[name] = parse_module_ports(src, typedef_regexp=td_re)
+                    modules[name] = parse_module_ports(
+                        src, typedef_regexp=td_re, interfaces=interfaces
+                    )
         out = auto_wire(lines, modules) if args.command == "aw" else auto_reg(lines, modules)
     Path(args.out_file).write_text("\n".join(out) + "\n")
 
