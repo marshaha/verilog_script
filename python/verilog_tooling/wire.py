@@ -36,6 +36,14 @@ Fidelity decisions vs verilog-mode:
   (no range simplification);
 - with an empty ``modules`` mapping, instance-driven nets cannot be
   resolved, so AUTOREG's not-driven-by-an-instance exclusion is skipped.
+
+Configuration (file-local variables in the ``// Local Variables:``
+section):
+
+- ``verilog-auto-ignore-concat`` — non-nil (our default; emacs defaults to
+  nil) skips pin connections in ``{...}`` or ``(...)``; nil extracts their
+  identifiers instead (see :func:`_expr_nets`);
+- ``verilog-auto-wire-comment`` — nil suppresses the ``// From`` comments.
 """
 
 from __future__ import annotations
@@ -74,6 +82,43 @@ _END_OF_AUTOMATICS = "// End of automatics"
 
 _MAX_LEN_FLOOR = 39  # same floor as automatic.vim s:autodef_max_len
 _COMMENT_COL = 48  # verilog-insert-definition: indent-to (max 48 (+ indent-pt 40))
+
+
+# ---------------------------------------------------------------------------
+# file-local configuration (Local Variables section)
+
+
+# house default: skip {...}/(...) connections; emacs verilog-auto-ignore-concat
+# defaults to nil (extract their signals) — our users wrap signals in {}
+# precisely to exempt them from AUTOINPUT/AUTOOUTPUT/AUTOWIRE
+_IGNORE_CONCAT_DEFAULT = True
+_IGNORE_CONCAT = _IGNORE_CONCAT_DEFAULT
+
+
+def set_ignore_concat(value: bool) -> None:
+    global _IGNORE_CONCAT
+    _IGNORE_CONCAT = value
+
+
+def _local_bool(lines: Sequence[str], name: str, default: bool) -> bool:
+    """A boolean file-local variable: ``// {name}: nil`` -> False,
+    ``// {name}: t`` (or anything else) -> True, absent -> DEFAULT."""
+    m = re.search(r"^\s*//\s*" + name + r"\s*:\s*(\w+)", "\n".join(lines), re.M)
+    if not m:
+        return default
+    return m.group(1).lower() != "nil"
+
+
+def parse_ignore_concat(lines: Sequence[str]) -> bool:
+    """verilog-auto-ignore-concat file-local: non-nil skips pin connections
+    in {...} or (...); nil extracts their signals (emacs default)."""
+    return _local_bool(lines, "verilog-auto-ignore-concat", _IGNORE_CONCAT_DEFAULT)
+
+
+def _wire_comment_enabled(lines: Sequence[str]) -> bool:
+    """verilog-auto-wire-comment file-local (default t): nil suppresses the
+    // To/From comments on generated declarations."""
+    return _local_bool(lines, "verilog-auto-wire-comment", True)
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +183,93 @@ _SIMPLE_CONN = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# concat/expression extraction (verilog-auto-ignore-concat = nil path,
+# mirrors verilog-read-sub-decls-expr)
+
+
+def _split_top_commas(text: str) -> list[str]:
+    """Split TEXT on commas at brace/paren depth 0."""
+    parts: list[str] = []
+    depth = 0
+    cur = ""
+    for ch in text:
+        if ch in "{([":
+            depth += 1
+        elif ch in "})]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return parts
+
+
+_EXPR_LEAD_OPS = re.compile(r"^\s*[~!&|^+\-]+")
+_EXPR_CAST = re.compile(r"^\s*[a-zA-Z_]\w*\s*'")
+_SIZED_LITERAL = re.compile(r"^\s*\d+'")
+_REPLICATION = re.compile(r"^\s*\d+\s*(\{.*\})\s*$")
+_ELEM_NET = re.compile(r"^([a-zA-Z_]\w*)\s*((?:\[[^\]]*\]\s*)*)$")
+
+
+def _expr_nets(expr: str) -> "list[tuple[str, str]]":
+    """(name, width) for every declarable identifier in a connection
+    EXPRESSION: recurses into {…} concatenations and (…), strips unary
+    operators and casts, accepts ``name`` / ``name[msb:lsb]`` (WIDTH is the
+    msb text, 'c0' scalar); literals, numbers and `defines are dropped.
+    Best effort, single line only."""
+    expr = expr.strip()
+    out: list[tuple[str, str]] = []
+    repl = _REPLICATION.match(expr)
+    if repl:  # {2{a}} — the count carries no signal
+        expr = repl.group(1)
+    if expr.startswith("{") and expr.endswith("}"):
+        for part in _split_top_commas(expr[1:-1]):
+            out.extend(_expr_nets(part))
+        return out
+    if expr.startswith("(") and expr.endswith(")"):
+        return _expr_nets(expr[1:-1])
+    expr = _EXPR_LEAD_OPS.sub("", expr)
+    if _SIZED_LITERAL.match(expr) or expr.startswith(("'", "`")):
+        return out
+    expr = _EXPR_CAST.sub("", expr)
+    if expr.startswith("(") and expr.endswith(")"):  # cast around parens
+        return _expr_nets(expr[1:-1])
+    m = _ELEM_NET.match(expr)
+    if not m:
+        return out
+    ranges = re.findall(r"\[[^\]]*\]", m.group(2))
+    width = "c0"
+    if len(ranges) == 1 and ":" in ranges[0]:
+        width = ranges[0][1:-1].split(":")[0].strip()
+    out.append((m.group(1), width))
+    return out
+
+
+def _conn_expr_nets(rest: str) -> "list[tuple[str, str]]":
+    """Extract nets from the text after ``.port(`` when the connection is a
+    {...}/(...) expression; empty unless the whole expression is on this
+    line (balanced before the pin's own close paren)."""
+    text = rest.lstrip()
+    if not text.startswith(("(", "{")):
+        return []
+    open_ch = text[0]
+    close_ch = ")" if open_ch == "(" else "}"
+    depth = 0
+    for k, ch in enumerate(text):
+        if ch in "{(":
+            depth += 1
+        elif ch in "})":
+            depth -= 1
+            if depth == 0:
+                if ch != close_ch:
+                    return []  # unbalanced mix — leave it alone
+                return _expr_nets(text[: k + 1])
+    return []  # unbalanced (multi-line expression): give up, declare nothing
+
+
 def _inst_driven_nets(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef],
@@ -151,6 +283,10 @@ def _inst_driven_nets(
     but ``input``, the AUTOWIRE driver set).  SIMPLE_ONLY keeps only
     connections that are a single bare net (``AUTOINPUT``/``AUTOOUTPUT``
     candidates — a concat or expression cannot be re-declared).
+
+    A {...} or (...) connection is skipped when the ignore-concat setting is
+    on (``verilog-auto-ignore-concat`` file-local, default on); when off,
+    its identifiers are extracted (verilog-read-sub-decls-expr).
 
     The port width is passed through the instance's ``#(...)`` parameter
     overrides (e.g. R_USER_WIDTH -> AR_INFO_WIDTH) so the declared wire
@@ -194,13 +330,18 @@ def _inst_driven_nets(
             m = re.match(r"^\s*\.(\w+)\s*\((.*)", line)
             if m:
                 port_name, rest = m.group(1), m.group(2)
-                # only a `define/literal NET carries no declaration; a
-                # backtick inside a bit-select (net[`MACRO-1:0]) is fine
-                if (
-                    port_name in inst_io
-                    and not rest.lstrip().startswith(("'", "`"))
-                    and not (simple_only and not _SIMPLE_CONN.match(rest))
-                ):
+                if port_name not in inst_io or rest.lstrip().startswith(("'", "`")):
+                    # only a `define/literal NET carries no declaration; a
+                    # backtick inside a bit-select (net[`MACRO-1:0]) is fine
+                    pass
+                elif rest.lstrip().startswith(("(", "{")):
+                    # verilog-auto-ignore-concat: skip (default) or extract
+                    if not _IGNORE_CONCAT:
+                        for net, ewidth in _conn_expr_nets(rest):
+                            if param_values:
+                                ewidth = emacs._apply_param_values(ewidth, param_values)
+                            nets.setdefault(net, InstNet(net, ewidth, inst, module))
+                elif not (simple_only and not _SIMPLE_CONN.match(rest)):
                     nm = re.search(r"\w+", rest)
                     if nm:
                         net = nm.group(0)
@@ -340,6 +481,7 @@ def auto_wire(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[st
 
     typedef_re = parse_typedef_regexp(lines)
     set_typedef_regexp(typedef_re)
+    set_ignore_concat(parse_ignore_concat(lines))
     driven = _inst_driven_nets(lines, modules)
     if not driven:
         return list(lines)
@@ -373,6 +515,8 @@ def auto_wire(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[st
             Signal(width=net.width, type="inst_wire", name=name, packed_dims=net.packed_dims)
         )
         comments[name] = f"// From {net.inst} of {net.module}.v"
+    if not _wire_comment_enabled(lines):
+        comments = {}
     return _regen(lines, _AUTOWIRE_MARK_FULL, _WIRE_HEADER, "wire ", sigs, comments)
 
 
@@ -389,6 +533,7 @@ def auto_reg(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = Non
     instance-driven exclusion, as in :func:`auto_wire`.
     """
     lines = kill_auto_reg(lines)
+    set_ignore_concat(parse_ignore_concat(lines))
     ports, usrdef, assigns = _module_tables(lines)
     driven = set(_inst_driven_nets(lines, modules or {}))
     excluded = set(usrdef.signals) | assigns | driven

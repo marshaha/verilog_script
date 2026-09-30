@@ -47,8 +47,6 @@ Fidelity decisions vs verilog-mode:
   as ``net[width]``; ours also works for hand-written connections;
 - a net driven by a continuous ``assign`` is NOT made an input (verilog-mode
   would — an input port driven inside the module does not compile);
-- a connection that is not a single bare net (concat, expression) is
-  skipped instead of declaring its first identifier;
 - a marker immediately after the header ``(`` expands normally —
   verilog-mode's ``verilog-read-auto-params`` errors out there
   ("Mismatching ()") because its backward-sexp hits the open paren;
@@ -57,6 +55,18 @@ Fidelity decisions vs verilog-mode:
 - AUTOOUTPUT keeps verilog-mode's exclusion set exactly: this module's
   ports plus instance input/inout nets — a hand-declared wire that is an
   instance output and feeds nothing still becomes an output port.
+
+Configuration (file-local variables in the ``// Local Variables:``
+section):
+
+- ``verilog-auto-ignore-concat`` — non-nil (our default; emacs defaults to
+  nil) skips pin connections in ``{...}`` or ``(...)``; nil extracts their
+  identifiers instead (nested concats/unary operators/casts stripped, an
+  element keeps its own ``[msb:lsb]`` width or is scalar).  Our default
+  matches the common workflow of wrapping a signal in {} precisely to
+  exempt it from AUTOINPUT/AUTOOUTPUT;
+- ``verilog-auto-wire-comment`` — nil suppresses the ``// To``/``// From``
+  comments on the generated declarations.
 """
 
 from __future__ import annotations
@@ -389,8 +399,13 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[s
     MODULES maps instance module names to their parsed definitions, as in
     :func:`verilog_tooling.wire.auto_wire`.
     """
+    from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
+
+    set_ignore_concat(parse_ignore_concat(lines))
     lines = kill_auto_input(lines)
     sigs, comments = _input_sigs(lines, modules)
+    if not _wire_comment_enabled(lines):
+        comments = {}
     return _regen(
         lines, "AUTOINPUT", _INPUT_HEADER, "input", sigs, comments, _IGNORE_RE["input"]
     )
@@ -403,8 +418,13 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[
     /*autoinst*/ instance that is not a port of this module and does not
     feed an instance input/inout.
     """
+    from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
+
+    set_ignore_concat(parse_ignore_concat(lines))
     lines = kill_auto_output(lines)
     sigs, comments = _output_sigs(lines, modules)
+    if not _wire_comment_enabled(lines):
+        comments = {}
     return _regen(
         lines, "AUTOOUTPUT", _OUTPUT_HEADER, "output", sigs, comments, _IGNORE_RE["output"]
     )
