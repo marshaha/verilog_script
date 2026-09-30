@@ -460,6 +460,12 @@ AUTOWIRE and friends:
 - `// verilog-auto-wire-comment: nil` — suppress the `// To`/`// From`
   comments on generated declarations.
 
+AIO and `/*autoarg*/`: with `/*autoarg*/` in the header, put the
+AUTOINPUT/AUTOOUTPUT markers in the **body** — autoarg then packs the
+generated port names into the header (the canonical verilog-mode layout).
+When the AIO markers are in the header themselves, autoarg leaves that
+header alone (a name list would duplicate the full declarations).
+
 ## Layout
 
 ```

@@ -436,6 +436,11 @@ verilog-mode 的开/闭逗号修补）；放在模块体内则是 1995 风格（
 - `// verilog-auto-wire-comment: nil` —— 不生成声明行尾的
   `// To`/`// From` 注释。
 
+AIO 与 `/*autoarg*/` 的放置约定：头部有 `/*autoarg*/` 时，把
+AUTOINPUT/AUTOOUTPUT marker 放在模块**体内**——autoarg 会把生成的端口名
+收进头部端口表（这是 verilog-mode 的标准布局）。如果 AIO marker 本身
+就在头部，autoarg 会跳过该头部（名字列表会和完整声明重复）。
+
 ## 目录结构
 
 ```
