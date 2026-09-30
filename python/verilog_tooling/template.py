@@ -505,8 +505,11 @@ def template_connection(
 ) -> str | None:
     """Connection for PORT_NAME under TEMPLATE, or None when no entry matches.
 
-    Exact port-name entries are tried first, then regexp entries; within each
-    class the last entry in file order wins (verilog-mode conses entries).
+    Exact port-name entries are tried first, then regexp entries — matching
+    verilog-mode's ``verilog-auto-inst-port``: an exact ``assoc`` over the
+    consed list makes the LAST exact entry in file order win, while the
+    wildcard ``while`` loop re-assigns on every match, so among regexp
+    entries the FIRST (top-most) in file order wins.
     Regexp entries substitute ``\\1`` groups captured from the port name.
     ENV feeds ``@"..."`` expressions (from AUTO_LISP).
     """
@@ -516,7 +519,7 @@ def template_connection(
                 entry.connection, at_value, port_width, env,
                 vl_name=port_name, vl_cell_name=vl_cell_name, vl_dir=vl_dir,
             )
-    for entry in reversed(template.entries):
+    for entry in template.entries:  # top-most matching regexp wins
         if not entry.is_regex:
             continue
         pat = entry.pattern.replace("@", r"([0-9]+)")
