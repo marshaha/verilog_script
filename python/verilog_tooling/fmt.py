@@ -36,6 +36,7 @@ _INST_MARGIN = " " * 8  # t:vlog_inst_margin
 
 _LINE_COMMENT = re.compile(r"^\s*//")
 _AUTOINST_MARK = re.compile(r"\(\s*/\*\b(?:autoinst|AUTOINST)\b\*/")
+_AUTO_MARK = re.compile(r"/\*\s*\bauto\w+\b", re.IGNORECASE)  # any AUTO marker comment
 _INST_PIN = re.compile(r"^\s*\..*[^\\]\(.*\)\s*.*$")
 _PORT_DECL = re.compile(r"^\s*(input|output|inout)\b")
 _DEFINE_DECL = re.compile(r"^\s*(wire|reg|logic|integer|genvar)\b")
@@ -58,14 +59,15 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str] | None:
     """Split a pin line into (port, connection, terminator, comment).
 
     Returns None when the line is not an instantiation pin connection.
-    A line carrying a ``/*`` comment (instance headers like
-    ``#(...)) inst (/*autoinst*/``, inline ``/* */`` notes) is never a
-    pin — treating it as one would mangle the comment into the
-    "connection".
+    A line carrying an AUTO marker comment (instance headers like
+    ``#(...)) inst (/*autoinst*/``) is never a pin — treating it as one
+    would mangle the marker into the "connection".  A pin whose
+    connection merely CONTAINS a ``/*[dim][dim]*/`` note still aligns
+    normally (the note is spaceless and survives verbatim).
     Terminator is ``')'`` for ``))``, ``');'`` for ``));``, ``''`` for a
     bare ``)`` and ``','`` otherwise.
     """
-    if not _INST_PIN.match(line) or _LINE_COMMENT.match(line) or "/*" in line:
+    if not _INST_PIN.match(line) or _LINE_COMMENT.match(line) or _AUTO_MARK.search(line):
         return None
     cm = re.search(r"//.*", line)
     comment = cm.group(0) if cm else ""

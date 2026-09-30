@@ -448,6 +448,11 @@ class SignalTable:
                 sig.dims_select_only = side.elem_range is None
             self.signals[name] = sig
             return
+        if sig.type == "inst_in_wire" and stype in ("freg", "creg", "wire"):
+            # a real driver (always/assign) trumps the input-port hint: take
+            # both the driver type and its width evidence
+            sig.type = stype
+            sig.width = width
         if (
             side.elem_range is not None
             and not side.dims
@@ -554,6 +559,10 @@ class SignalTable:
         if sig is not None:
             if sig.type == "inst_in_wire":
                 sig.type = "inst_wire"  # a real driver trumps the input-port hint
+                if port_width not in ("", "c0") and (
+                    sig.width in ("", "c0") or _wider(port_width, sig.width)
+                ):
+                    sig.width = port_width
             if sig.type in ("io_wire", "io_reg"):
                 sig.driven = True
             if sig.width == "":
@@ -632,6 +641,8 @@ class SignalTable:
         else:
             if sig.type == "inst_in_wire":
                 sig.type = "inst_wire"  # a real driver trumps the input-port hint
+                if new_msb and (sig.width in ("", "c0") or _wider(new_msb, sig.width)):
+                    sig.width = new_msb
             if sig.type in ("io_wire", "io_reg"):
                 sig.driven = True
             if sig.width == "" or _wider(new_msb, sig.width):
@@ -1388,7 +1399,7 @@ def group_link_dict(link_dict: dict[str, set[str]]) -> dict[str, set[str]]:
 
 
 def update_define(
-    unresolved: set[str], link_dict: Mapping[str, set[str]], signals: SignalTable
+    unresolved: dict[str, str], link_dict: Mapping[str, set[str]], signals: SignalTable
 ) -> None:
     """Propagate width inside each link group (from the first member with a
     non-empty width to the empty-width members), then prune UNRESOLVED:
@@ -1398,12 +1409,14 @@ def update_define(
         group = {key, *members}
         # resolve the group's driving width: prefer a NON-usrdef member (a real
         # driver, not a hand-written declaration) and the numerically widest,
-        # so a stale usrdef width never wins over its driver's width.
+        # so a stale usrdef width never wins over its driver's width.  An
+        # inst_in_wire hint (from a submodule input port) is never evidence —
+        # it must not win, and it must not block the group's resolved width.
         width = ""
         best = -1
         for name in group:
             sig = signals.get(name)
-            if sig is None or sig.width == "" or sig.type == "usrdef":
+            if sig is None or sig.width == "" or sig.type in ("usrdef", "inst_in_wire"):
                 continue
             if re.fullmatch(r"-?\d+", sig.width):
                 if int(sig.width) > best:
@@ -1414,13 +1427,13 @@ def update_define(
         if not width:  # fall back: any non-empty width (e.g. only usrdef)
             for name in group:
                 sig = signals.get(name)
-                if sig is not None and sig.width != "":
+                if sig is not None and sig.width != "" and sig.type != "inst_in_wire":
                     width = sig.width
                     break
         if width:
             for name in group:
                 sig = signals.get(name)
-                if sig is not None and sig.width == "":
+                if sig is not None and (sig.width == "" or sig.type == "inst_in_wire"):
                     sig.width = width
             # a hand-written declaration in the group whose width is stale
             # (the group's resolved width is larger) is grown in place.
@@ -1430,16 +1443,32 @@ def update_define(
                     signals._update_usrdef_width(sig, width)
     for name, sig in signals.signals.items():
         if sig.type in ("io_wire", "io_reg", "usrdef", "inst_wire"):
-            unresolved.discard(name)
+            unresolved.pop(name, None)
         elif sig.type in ("freg", "creg", "wire"):
             # these are always declared now (empty width defaults to scalar in
             # div_signals), so they never belong in unresolved
-            unresolved.discard(name)
+            unresolved.pop(name, None)
         elif sig.type == "inst_in_wire":
             # the input-port hint only earns a declaration when it carries a
             # width; without one the net stays unresolved
             if sig.width:
-                unresolved.discard(name)
+                unresolved.pop(name, None)
+            else:
+                unresolved[name] = "only seen on submodule input port(s), width unknown"
+
+
+def _width_unknown_syms(width: str, known: set[str]) -> list[str]:
+    """Identifiers in a width expression that do NOT resolve locally (not a
+    parameter/localparam of THIS module, not a `` `define``, not a ``$``
+    system function, not a number)."""
+    w = re.sub(r"\d*'[bhdBHD][0-9a-fA-FxXzZ_?]+", "", width)  # sized literals
+    out: list[str] = []
+    for tok in re.findall(r"`?\w+", w):
+        if tok[0].isdigit() or tok.startswith("$") or tok.startswith("`"):
+            continue
+        if tok not in known and tok not in out:
+            out.append(tok)
+    return out
 
 
 def _width_syms_known(width: str, known: set[str]) -> bool:
@@ -1449,13 +1478,7 @@ def _width_syms_known(width: str, known: set[str]) -> bool:
     pass), a ``$`` system function, or a number.  A submodule's own
     parameter names (e.g. IS_SIGNED from the port's range) are not visible
     at the parent."""
-    w = re.sub(r"\d*'[bhdBHD][0-9a-fA-FxXzZ_?]+", "", width)  # sized literals
-    for tok in re.findall(r"`?\w+", w):
-        if tok[0].isdigit() or tok.startswith("$") or tok.startswith("`"):
-            continue
-        if tok not in known:
-            return False
-    return True
+    return not _width_unknown_syms(width, known)
 
 
 # ---------------------------------------------------------------------------
@@ -1910,7 +1933,7 @@ def _scan_inst_body(
 def _emit_sections(
     marker_line: str,
     div: Divided,
-    unresolved: set[str],
+    unresolved: dict[str, str],
     loop_decls: Sequence[tuple[str, str]] = (),
 ) -> list[str]:
     out = [marker_line, "// Define io wire here"]
@@ -1950,8 +1973,9 @@ def _emit_sections(
         # emit as a comment, not `unresolved x;` (which is illegal Verilog and
         # breaks compilation; the Vim original had this bug). Unresolved
         # signals may be declared elsewhere — a comment flags them for manual
-        # review without producing duplicate or invalid declarations.
-        out.append(f"// unresolved: {name}")
+        # review without producing duplicate or invalid declarations.  The
+        # trailing reason tells the user WHY no declaration was generated.
+        out.append(f"// unresolved: {name} // {unresolved[name]}")
     out.append("// End of automatic define")
     return out
 
@@ -2091,11 +2115,18 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     loop_bounds = _loop_bounds(lines)
     sym_hi = _loop_sym_hi(lines)
     loop_decls = _loop_var_decls(lines)
-    unresolved = get_all_signals(lines, alldefs, allparas)
-    unresolved -= _loop_vars(lines)  # for-loop variables are never signals
-    unresolved -= set(_const_symbols(lines))  # named constants are not signals
+    unresolved: dict[str, str] = {
+        name: "no driver or declaration found"
+        for name in get_all_signals(lines, alldefs, allparas)
+    }
+    for excluded in (
+        _loop_vars(lines),  # for-loop variables are never signals
+        set(_const_symbols(lines)),  # named constants are not signals
+        _structure_names(lines, modules),  # genvar/labels/instances
+    ):
+        for name in excluded:
+            unresolved.pop(name, None)
     inst_headers = _instance_headers(lines, modules)
-    unresolved -= _structure_names(lines, modules)  # genvar/labels/instances
 
     signals = SignalTable()
     signals.known = frozenset(set(allparas) | set(_const_symbols(lines)))
@@ -2241,13 +2272,15 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     # compile: mark it unresolved instead of emitting a broken declaration
     known_syms = set(allparas) | set(_const_symbols(lines))
     for name, sig in list(signals.signals.items()):
-        if (
-            sig.width not in ("", "c0")
-            and sig.type != "usrdef"
-            and not _width_syms_known(sig.width, known_syms)
-        ):
+        if sig.width in ("", "c0") or sig.type == "usrdef":
+            continue
+        misses = _width_unknown_syms(sig.width, known_syms)
+        if misses:
             del signals.signals[name]
-            unresolved.add(name)
+            unresolved[name] = (
+                f"width '{sig.width}' references symbol(s) not visible "
+                f"in this module: {', '.join(misses)}"
+            )
     div = div_signals(signals)
 
     # index usrdef declarations by their buffer line so an in-place width fix
