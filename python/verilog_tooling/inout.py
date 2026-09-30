@@ -45,8 +45,6 @@ Fidelity decisions vs verilog-mode:
   parameter overrides substituted), not from the connection's bit-select —
   verilog-mode only gets widths right because AUTOINST rewrites connections
   as ``net[width]``; ours also works for hand-written connections;
-- a net driven by a continuous ``assign`` is NOT made an input (verilog-mode
-  would — an input port driven inside the module does not compile);
 - a marker immediately after the header ``(`` expands normally —
   verilog-mode's ``verilog-read-auto-params`` errors out there
   ("Mismatching ()") because its backward-sexp hits the open paren;
@@ -161,12 +159,14 @@ def _input_sigs(
     lines: Sequence[str], modules: Mapping[str, ModuleDef]
 ) -> "tuple[list[Signal], dict[str, str]]":
     """AUTOINPUT candidates: nets feeding instance INPUT ports, minus
-    everything declared or driven inside the module."""
+    everything declared or driven inside the module.  An undeclared
+    assign-driven net IS a candidate (verilog-mode parity — promote it to a
+    port and drop the assign yourself)."""
     in_nets = _inst_driven_nets(lines, modules, ("input",), simple_only=True)
     driven = set(_inst_driven_nets(lines, modules))
-    ports, usrdef, assigns = _module_tables(lines)
+    ports, usrdef, _ = _module_tables(lines)
     declared = set(ports.signals) | _declared_port_names(lines)
-    declared |= set(usrdef.signals) | assigns | driven
+    declared |= set(usrdef.signals) | driven
     declared |= get_all_defs(lines) | get_all_paras(lines)
     from .libdirs import parse_typedef_regexp
     from .inst import set_typedef_regexp
