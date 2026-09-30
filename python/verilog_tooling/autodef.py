@@ -2250,23 +2250,19 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     n = len(lines)
     in_auto_region = False
     while i < n:
-        # inside an AUTO-generated region (AUTOWIRE/AUTOREG/AUTOINPUT/
-        # AUTOOUTPUT): declarations there are complete by construction and
-        # owned by those commands — record io ports as fully defined so a
-        # bare AUTOINPUT v2k `input foo,` does not get a duplicate body
-        # `wire foo;`, and take nothing else from the region
+        # track AUTO-generated regions (AUTOWIRE/AUTOREG/AUTOINPUT/
+        # AUTOOUTPUT): an io port declared there is complete by construction
+        # (no supplementary body wire/reg may be emitted for it — a bare
+        # AUTOINPUT v2k `input foo,` would otherwise get a duplicate
+        # `wire foo;`), while the region's wire/reg declarations are read
+        # like any other usrdef declaration (AUTOWIRE runs before ADT in the
+        # pipeline; missing them would duplicate the wires)
         if re.match(r"^\s*// Beginning of automatic\b", lines[i]):
             in_auto_region = True
             i += 1
             continue
-        if in_auto_region:
-            if "// End of automatics" in lines[i]:
-                in_auto_region = False
-                i += 1
-                continue
-            stripped = _strip_line(lines[i])
-            if _PORT_LINE.match(stripped):
-                io_seq = signals.extend_io_from_line(stripped, io_seq, complete=True)
+        if in_auto_region and "// End of automatics" in lines[i]:
+            in_auto_region = False
             i += 1
             continue
         i = _skip_autodef_off(lines, i)
@@ -2275,21 +2271,20 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
         j = _skip_comment_line(lines, i)
         if j == -1:
             break
-        # the comment batch-skip may have jumped over a region header hiding
-        # in the comment span (marker line + `// Beginning ...` are both
-        # comment-only) — resume region tracking at the header
-        region_start = next(
-            (
-                k
-                for k in range(i, j)
-                if re.match(r"^\s*// Beginning of automatic\b", lines[k])
-            ),
-            None,
-        )
-        if region_start is not None:
-            in_auto_region = True
-            i = region_start + 1
-            continue
+        if not in_auto_region:
+            # the comment batch-skip may have jumped over a region header
+            # hiding in the comment span (marker line + `// Beginning ...`
+            # are both comment-only) — resume region tracking at the header
+            region_start = next(
+                (
+                    k
+                    for k in range(i, j)
+                    if re.match(r"^\s*// Beginning of automatic\b", lines[k])
+                ),
+                None,
+            )
+            if region_start is not None:
+                in_auto_region = True
         i = j
         line = _strip_line(lines[i])
         if _PORT_LINE.match(line) or _DATA_LINE.match(line) or _is_typedef_decl(line):
@@ -2327,7 +2322,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
                 stmt += " " + lines[k]
             stmt = _strip_inline_comment(stmt)
             if _PORT_LINE.match(stmt):
-                io_seq = signals.extend_io_from_line(stmt, io_seq)
+                io_seq = signals.extend_io_from_line(stmt, io_seq, complete=in_auto_region)
             elif _DATA_LINE.match(stmt):
                 if ";" in _strip_inline_comment(lines[k]):
                     usr_line = lines[k]  # the declaration ends on this line
