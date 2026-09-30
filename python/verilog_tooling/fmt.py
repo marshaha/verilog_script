@@ -55,15 +55,16 @@ def _extract_width(text: str) -> str:
     return re.sub(r"\]\s*[A-Za-z]", "]", m.group(0))
 
 
-def _inst_pin_parts(line: str) -> tuple[str, str, str, str] | None:
-    """Split a pin line into (port, connection, terminator, comment).
+def _inst_pin_parts(line: str) -> tuple[str, str, str, str, str] | None:
+    """Split a pin line into (port, connection, terminator, comment,
+    header_tail).
 
     Returns None when the line is not an instantiation pin connection.
     A line carrying an AUTO marker comment is an instance HEADER, not a
     pin — except the last-param line of an AUTOINSTPARAM expansion
     (``#(...)) inst (/*autoinst*/``): its pin part is aligned like its
-    siblings and the ``)) inst (/*autoinst*/`` header tail rides along in
-    the comment slot, kept verbatim.
+    siblings and the instance header (``inst (/*autoinst*/``) is returned
+    separately as header_tail, to be emitted on its own line.
     Terminator is ``')'`` for ``))``, ``');'`` for ``));``, ``''`` for a
     bare ``)`` and ``','`` otherwise.
     """
@@ -89,10 +90,10 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str] | None:
             j += 1
         if j >= len(line):
             return None
-        tail = line[j + 1 :]
-        if not re.match(r"^\s*\)\s*\w+\s*\(\s*/\*", tail):
+        tm = re.match(r"^\s*\)\s*(\w+\s*\(\s*/\*.*)$", line[j + 1 :])
+        if not tm:
             return None
-        header_tail = tail  # `)   inst (/*autoinst*/...`, verbatim
+        header_tail = tm.group(1)  # `inst (/*autoinst*/...`
         line = line[: j + 1]  # parse the pin part normally below
     cm = re.search(r"//.*", line)
     comment = cm.group(0) if cm else ""
@@ -113,7 +114,7 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str] | None:
     else:
         terminator = ","
         conn = re.sub(r"\)\s*,\s*$", "", conn)
-    return port, re.sub(r"\s", "", conn), terminator, comment + header_tail
+    return port, re.sub(r"\s", "", conn), terminator, comment, header_tail
 
 
 def auto_define_len(lines: Sequence[str]) -> int:
@@ -177,7 +178,7 @@ def _auto_inst_format(self: VerilogBuffer) -> VerilogBuffer:
         parts = _inst_pin_parts(line)
         if parts is None:
             continue
-        port, conn, _, _ = parts
+        port, conn, _, _, _ = parts
         prefix_max_len = max(prefix_max_len, len(port))
         suffix_max_len = max(suffix_max_len, len(conn))
     prefix_max_len += 2
@@ -193,8 +194,8 @@ def _auto_inst_format(self: VerilogBuffer) -> VerilogBuffer:
         if parts is None:
             final.append(line)
             continue
-        port, conn, terminator, comment = parts
-        final.append(
+        port, conn, terminator, comment, header_tail = parts
+        pin_line = (
             _INST_MARGIN
             + "."
             + port
@@ -206,6 +207,19 @@ def _auto_inst_format(self: VerilogBuffer) -> VerilogBuffer:
             + terminator
             + comment
         )
+        if header_tail:
+            # the `#(` close stays with the last param; the instance header
+            # gets its own line at the instance opener's indent
+            final.append(pin_line + ")")
+            indent = ""
+            for prev in reversed(final):
+                hm = re.match(r"^(\s*)\w+\s*#\s*\(", prev)
+                if hm:
+                    indent = hm.group(1)
+                    break
+            final.append(indent + header_tail)
+        else:
+            final.append(pin_line)
     return VerilogBuffer(final)
 
 
