@@ -512,6 +512,7 @@ class SignalTable:
         inst_io: Mapping[str, Port],
         loop_bounds: Mapping[str, tuple[int, int]] | None = None,
         sym_hi: Mapping[str, str] | None = None,
+        param_values: Mapping[str, str] | None = None,
     ) -> None:
         """automatic.vim s:ExtendInstWireFromLine: one ``.port(net)`` line of
         an autoinst body; INST_IO maps submodule port name -> Port.
@@ -536,12 +537,19 @@ class SignalTable:
         port = inst_io[port_name]
         raw = port.width  # ModuleDef stores the 'msb:lsb' range
         port_width = "c0" if raw is None else raw.split(":")[0].strip()
+        if param_values:
+            # the instance's #(...) overrides make the submodule's own
+            # parameter names resolvable at the parent (R_MASTER_NUM ->
+            # R_MASTER_NUM_ITP); AUTOWIRE does the same substitution
+            from .emacs import _apply_param_values
+
+            port_width = _apply_param_values(port_width, param_values)
         if port.direction == "input":
             # a submodule INPUT port consumes the net — it is no driver, but
             # its range is a valid width fallback when nothing else declares
             # the net (an undriven net between two instances would otherwise
             # be flagged unresolved)
-            self._record_inst_input_net(net, rest, port_width, port)
+            self._record_inst_input_net(net, rest, port_width, port, param_values)
             return
         # a symbolic (parameter/expression) width is kept verbatim — the
         # declaration stays symbolic (wire [APB_BUS_ADDR_WIDTH-1:0]); blanking
@@ -560,6 +568,10 @@ class SignalTable:
         pdims = _conn_packed_dims(rest) or (
             tuple(_clean_dim(d) for d in port.packed) if len(port.packed) > 1 else ()
         )
+        if param_values and pdims:
+            from .emacs import _apply_param_values
+
+            pdims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in pdims)
         if sig is not None:
             if sig.type == "inst_in_wire":
                 sig.type = "inst_wire"  # a real driver trumps the input-port hint
@@ -582,7 +594,14 @@ class SignalTable:
         else:
             self.signals[net] = Signal(width=port_width, type="inst_wire", packed_dims=pdims)
 
-    def _record_inst_input_net(self, net: str, rest: str, port_width: str, port: "Port") -> None:
+    def _record_inst_input_net(
+        self,
+        net: str,
+        rest: str,
+        port_width: str,
+        port: "Port",
+        param_values: Mapping[str, str] | None = None,
+    ) -> None:
         """Weakest width source: a net connected to a submodule INPUT port.
 
         The width candidate is an explicit full-range select in the
@@ -606,6 +625,13 @@ class SignalTable:
         pdims = _conn_packed_dims(rest) or (
             tuple(_clean_dim(d) for d in port.packed) if len(port.packed) > 1 else ()
         )
+        if param_values:
+            from .emacs import _apply_param_values
+
+            if width:
+                width = _apply_param_values(width, param_values)
+            if pdims:
+                pdims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in pdims)
         if not width and not pdims:
             return
         sig = self.signals.get(net)
@@ -1959,6 +1985,7 @@ def _scan_inst_body(
     signals: SignalTable,
     loop_bounds: Mapping[str, tuple[int, int]] | None = None,
     sym_hi: Mapping[str, str] | None = None,
+    param_values: Mapping[str, str] | None = None,
 ) -> int:
     """Consume an instance body (after the marker / header line) up to ``);``,
     recording output-port nets as inst_wire (and input-port nets as the
@@ -1977,7 +2004,7 @@ def _scan_inst_body(
         if _INST_PORT.match(line):
             m = re.match(r"^\s*\.(\w+)\s*\((.*)", line)
             signals.extend_inst_wire_from_line(
-                m.group(1) + " " + m.group(2), inst_io, loop_bounds, sym_hi
+                m.group(1) + " " + m.group(2), inst_io, loop_bounds, sym_hi, param_values
             )
         if re.search(r"\);\s*$", line) or ");" in line:
             i += 1
@@ -2184,6 +2211,25 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             unresolved.pop(name, None)
     inst_headers = _instance_headers(lines, modules)
 
+    # the #(...) overrides of every instance, keyed by marker line (and by
+    # header line for marker-less instances): lets port widths referencing
+    # the submodule's own parameters resolve to parent-visible names
+    from . import emacs as _emacs
+
+    _text = "\n".join(lines)
+    _markers = _emacs.find_auto_markers(lines, "autoinst")
+    _stacks = _emacs._scan_parens_at(_text, [m.offset for m in _markers])
+    param_by_line: dict[int, dict[str, str]] = {}
+    for _mk in _markers:
+        _st = _stacks[_mk.offset]
+        if _st:
+            param_by_line[_text.count("\n", 0, _mk.offset)] = _emacs.read_inst_param_values(
+                _text, _st[-1]
+            )
+    _line_off = [0]
+    for _l in lines:
+        _line_off.append(_line_off[-1] + len(_l) + 1)
+
     signals = SignalTable()
     signals.known = frozenset(set(allparas) | set(_const_symbols(lines)))
     link_dict: dict[str, set[str]] = {}
@@ -2301,7 +2347,10 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             moddef = modules.get(module)
             if moddef is not None:
                 inst_io = {p.name: p for p in moddef.ports}
-                i = _scan_inst_body(lines, i + 1, inst_io, signals, loop_bounds, sym_hi)
+                i = _scan_inst_body(
+                    lines, i + 1, inst_io, signals, loop_bounds, sym_hi,
+                    param_by_line.get(i),
+                )
                 continue
         elif i in inst_headers:
             # marker-less instantiation (module resolved in MODULES): scan
@@ -2310,7 +2359,11 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             moddef = modules[module]
             inst_io = {p.name: p for p in moddef.ports}
             start = (hdr_end + 1) if hdr_end >= 0 else (i + 1)
-            i = _scan_inst_body(lines, start, inst_io, signals, loop_bounds, sym_hi)
+            # the pin-list open paren: last '(' of the header's final line
+            hl = hdr_end if hdr_end >= 0 else i
+            pin_off = _line_off[hl] + lines[hl].rfind("(")
+            pvals = _emacs.read_inst_param_values(_text, pin_off) if pin_off >= 0 else {}
+            i = _scan_inst_body(lines, start, inst_io, signals, loop_bounds, sym_hi, pvals)
             continue
         elif _ENDMODULE.match(line):
             break
