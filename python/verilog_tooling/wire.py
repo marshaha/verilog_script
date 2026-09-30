@@ -126,13 +126,31 @@ class InstNet:
     inst: str
     module: str
     packed_dims: tuple = ()
+    unpacked_dims: tuple = ()  # unpacked port dims — not declarable here
+
+
+# a declarable connection: a bare identifier with optional bit/part selects
+# and an optional EAI multidim note — not a concat, expression or literal.
+# The last pin of an instance ends with `));` (or `))`), a middle one `),`.
+_SIMPLE_CONN = re.compile(
+    r"^\s*\w+\s*(?:\[[^\]\n]*\]\s*)*(?:/\*[^*\n]*\*/\s*)?"
+    r"\)\s*,?\s*\)?\s*;?\s*(?://.*)?$"
+)
 
 
 def _inst_driven_nets(
-    lines: Sequence[str], modules: Mapping[str, ModuleDef]
+    lines: Sequence[str],
+    modules: Mapping[str, ModuleDef],
+    directions: "tuple[str, ...] | None" = None,
+    simple_only: bool = False,
 ) -> dict[str, InstNet]:
     """net -> InstNet for every net connected to an output/inout port of an
     /*autoinst*/ instance whose module is in MODULES (first driver wins).
+
+    DIRECTIONS restricts the port directions considered (default: everything
+    but ``input``, the AUTOWIRE driver set).  SIMPLE_ONLY keeps only
+    connections that are a single bare net (``AUTOINPUT``/``AUTOOUTPUT``
+    candidates — a concat or expression cannot be re-declared).
 
     The port width is passed through the instance's ``#(...)`` parameter
     overrides (e.g. R_USER_WIDTH -> AR_INFO_WIDTH) so the declared wire
@@ -161,7 +179,10 @@ def _inst_driven_nets(
         moddef = modules.get(module)
         if moddef is None:
             continue
-        inst_io = {p.name: p for p in moddef.ports if p.direction != "input"}
+        if directions is None:
+            inst_io = {p.name: p for p in moddef.ports if p.direction != "input"}
+        else:
+            inst_io = {p.name: p for p in moddef.ports if p.direction in directions}
         param_values = param_by_line.get(idx) or {}
         i = idx + 1
         while i < n:
@@ -175,7 +196,11 @@ def _inst_driven_nets(
                 port_name, rest = m.group(1), m.group(2)
                 # only a `define/literal NET carries no declaration; a
                 # backtick inside a bit-select (net[`MACRO-1:0]) is fine
-                if port_name in inst_io and not rest.lstrip().startswith(("'", "`")):
+                if (
+                    port_name in inst_io
+                    and not rest.lstrip().startswith(("'", "`"))
+                    and not (simple_only and not _SIMPLE_CONN.match(rest))
+                ):
                     nm = re.search(r"\w+", rest)
                     if nm:
                         net = nm.group(0)
@@ -196,7 +221,9 @@ def _inst_driven_nets(
                                 _clean_dim(emacs._apply_param_values(d, param_values))
                                 for d in pdims
                             )
-                        nets.setdefault(net, InstNet(net, width, inst, module, pdims))
+                        nets.setdefault(
+                            net, InstNet(net, width, inst, module, pdims, port.unpacked)
+                        )
             if re.search(r"\);\s*$", line) or ");" in line:
                 i += 1
                 break

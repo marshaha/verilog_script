@@ -16,7 +16,7 @@
 "   g:verilog_tooling_eai_flags — extra flags for :EAI (e.g. ['--sort'])
 "
 " Commands (same names as the automatic.vim bindings):
-"   AALL                      full AUTO expansion (EAP+EAI+AW+AREG+AD+AR+AF,
+"   AALL                      full AUTO expansion (EAP+EAI+AIO+AW+AREG+AD+AR+AF,
 "                             emacs verilog-batch-auto order)
 "   AIT AIU AIU1 KI           instance commands (automatic.vim AIT/AIU/AIU1 + kill)
 "   EAI EAP                   verilog-mode AUTOINST / AUTOINSTPARAM
@@ -27,6 +27,7 @@
 "   AM AME                    instance stub generators (cursor line)
 "   APM AFM                   automatic.vim AutoPara / AutoFsm
 "   AW AREG                   verilog-mode AUTOWIRE / AUTOREG
+"   AIO                       verilog-mode AUTOOUTPUT + AUTOINPUT
 " A count selects the Nth /*autoinst*/ instance (0-based): :1AIT → first only.
 "
 " Default leader mappings are installed at the bottom of this file (only
@@ -36,7 +37,7 @@
 "   <leader>ar  :AR       <leader>aw  :AW     <leader>arg :AREG
 "   <leader>aif :AIF      <leader>adf :ADF    <leader>apf :APF  <leader>af :AF
 "   <leader>am  :AM       <leader>ame :AME    <leader>d   :KI
-"   <leader>eai :EAI      <leader>eap :EAP
+"   <leader>eai :EAI      <leader>eap :EAP    <leader>aio :AIO
 " Disable the whole set with:  let g:verilog_tooling_no_mappings = 1
 
 if exists('g:loaded_verilog_tooling')
@@ -238,6 +239,9 @@ command! -nargs=0 AFM  call s:Run('verilog_tooling.gen', 'afm', [], -1)
 command! -nargs=0 AW   call s:Run('verilog_tooling.wire', 'aw', [], -1)
 command! -nargs=0 AREG call s:Run('verilog_tooling.wire', 'ar', [], -1)
 
+" verilog-mode input/output port auto-declaration (AUTOOUTPUT + AUTOINPUT)
+command! -nargs=0 AIO  call s:Run('verilog_tooling.inout', 'aio', [], -1)
+
 " Auto-generate the new-file skeleton when creating a .v/.sv file
 " (the old automatic.vim AutoTemplate BufNewFile behaviour, Python-backed).
 autocmd BufNewFile *.v,*.sv call s:AutoTemplateBuffer()
@@ -290,6 +294,7 @@ function! s:InstallDefaultMaps() abort
     call s:DefMap('<leader>ame',  'AME')
     call s:DefMap('<leader>eai',  'EAI')
     call s:DefMap('<leader>eap',  'EAP')
+    call s:DefMap('<leader>aio',  'AIO')
     call s:DefMap('<leader>d',    'KI')
 endfunction
 

@@ -1320,7 +1320,7 @@ def create_by_args(args_l=None):
         help="ait/aiu/aiu1/kill: automatic.vim commands; "
         "eai: verilog-mode AUTOINST; eap: verilog-mode AUTOINSTPARAM; "
         "aif/apf/adf/af: automatic.vim format commands (buffer-local); "
-        "aall: eap+eai+aw+areg+adt+arg+af in one pass (shared module table)",
+        "aall: eap+eai+aio+aw+areg+adt+arg+af in one pass (shared module table)",
     )
     parser.add_argument("-i", "--in_file", required=True, help="buffer file with /*autoinst*/ markers")
     parser.add_argument(
@@ -1431,10 +1431,10 @@ def _eai_like_step(lines: list[str], keyword: str, resolved: set[str], include_s
 
 def _main_aall(text: str, lines: list[str], args) -> list[str]:
     """The AALL pipeline in ONE process, emacs verilog-batch-auto order:
-    eap -> eai -> aw -> areg -> adt -> arg -> af.  Instance module files are
+    eap -> eai -> aio -> aw -> areg -> adt -> arg -> af.  Instance module files are
     resolved (dir-listing cached) and read (thread pool) exactly once — the
     seven separate CLI commands would repeat both per command."""
-    from . import arg, autodef, emacs, fmt, wire
+    from . import arg, autodef, emacs, fmt, inout, wire
     from .libdirs import parse_typedef_regexp
 
     names_emacs: set[str] = set()
@@ -1506,16 +1506,20 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     else:
         print(f"warning: AUTOINST skipped, module file not found for: {step_missing}", file=sys.stderr)
 
-    # 3. AW / 4. AREG / 5. AD (autodef) share the plain port mapping
+    # 3. AIO (AUTOOUTPUT/AUTOINPUT, emacs order) / 4. AW / 5. AREG /
+    # 6. AD (autodef) share the plain port mapping; AIO runs first so the
+    # new port declarations are visible to AW/AREG/ADT
     modules_w = {
         n: parse_module_ports(s, typedef_regexp=td_re)
         for n in names_wire
         if (s := src_of(n))
     }
+    lines = inout.auto_output(lines, modules_w)
+    lines = inout.auto_input(lines, modules_w)
     lines = wire.auto_wire(lines, modules_w)
     lines = wire.auto_reg(lines, modules_w)
     lines = autodef.auto_def_t(lines, modules_w)
-    # 6. AR (autoarg) / 7. AF (all format) need no module table
+    # 7. AR (autoarg) / 8. AF (all format) need no module table
     lines = arg.auto_arg(lines)
     lines = fmt.all_format(lines)
     return lines
