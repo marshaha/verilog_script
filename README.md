@@ -273,6 +273,23 @@ Disable the whole set with:
 let g:verilog_tooling_no_mappings = 1
 ```
 
+## Insert abbreviations (optional, off by default)
+
+`plugin/verilog_abbrev.vim` ports automatic.vim's global insert
+abbreviations, scoped to `*.v`/`*.vh`/`*.sv`/`*.svh` buffers only:
+
+| Type | Expands to |
+|---|---|
+| `<=` | `<= #\`RD` |
+| `beg` | `begin` |
+| `begni` (typo) | `begin` |
+
+**Disabled by default** — enable in your vimrc:
+
+```vim
+let g:verilog_abbrev_enable = 1
+```
+
 ## How module files are found
 
 EAI/AIT/AW need the submodule's source file to read its ports. Search order:
@@ -410,7 +427,7 @@ Both skip anything already declared and resolve widths symbolically.
 ```
 plugin/verilog_tooling.vim   Vim front-end (auto-loaded)
 plugin/automatic.vim         header/waveform snippets (BPN/BP/BA, AddClk/AddSig/AddBus)
-plugin/verilog_abbrev.vim    buffer-local iabbrevs for .v/.vh/.sv/.svh (<=, beg, begni)
+plugin/verilog_abbrev.vim    opt-in buffer-local iabbrevs for .v/.vh/.sv/.svh (off by default)
 python/verilog_tooling/      the Python package (stdlib only)
 doc/verilog_tooling.txt      vim help
 install.sh                   one-click installer / env checker
@@ -423,4 +440,5 @@ let g:verilog_tooling_python = '/usr/bin/python3'   " interpreter override
 let g:verilog_tooling_libdirs = ['/path/to/rtl']    " extra -y search dirs
 let g:verilog_tooling_eai_flags = ['--sort']        " extra EAI flags
 let g:verilog_tooling_no_mappings = 1               " no default mappings
+let g:verilog_abbrev_enable = 1                     " opt-in insert abbrevs (<=>`<= #`RD`, beg, begni)
 ```

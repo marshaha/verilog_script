@@ -260,6 +260,23 @@ AME 生成 emacs 风格的空壳。实例编号按 buffer 中该模块已有实�
 let g:verilog_tooling_no_mappings = 1
 ```
 
+## 插入缩写（可选，默认关闭）
+
+`plugin/verilog_abbrev.vim` 移植了 automatic.vim 的全局插入缩写，
+并且只在 `*.v`/`*.vh`/`*.sv`/`*.svh` buffer 内生效：
+
+| 输入 | 展开为 |
+|---|---|
+| `<=` | `<= #\`RD` |
+| `beg` | `begin` |
+| `begni`（笔误） | `begin` |
+
+**默认关闭**，在 vimrc 中开启：
+
+```vim
+let g:verilog_abbrev_enable = 1
+```
+
 ## 模块文件如何查找
 
 EAI/AIT/AW 需要读取子模块的源文件才能拿到端口。搜索顺序：
@@ -390,7 +407,7 @@ modport):`cpu_bus.master bus` 连为 `.bus (bus.master)`。
 ```
 plugin/verilog_tooling.vim   Vim 前端（自动加载）
 plugin/automatic.vim         文件头/波形片段（BPN/BP/BA, AddClk/AddSig/AddBus）
-plugin/verilog_abbrev.vim    .v/.vh/.sv/.svh buffer 局部缩写（<=、beg、begni）
+plugin/verilog_abbrev.vim    .v/.vh/.sv/.svh buffer 局部缩写（默认关闭，需显式开启）
 python/verilog_tooling/      Python 包（只用标准库）
 doc/verilog_tooling.txt      vim 帮助文档
 install.sh                   一键安装 / 环境检查
@@ -403,4 +420,5 @@ let g:verilog_tooling_python = '/usr/bin/python3'   " 指定 Python 解释器
 let g:verilog_tooling_libdirs = ['/path/to/rtl']    " 额外的 -y 搜索目录
 let g:verilog_tooling_eai_flags = ['--sort']        " EAI 的额外参数
 let g:verilog_tooling_no_mappings = 1               " 不装默认按键映射
+let g:verilog_abbrev_enable = 1                     " 开启插入缩写（默认关闭）
 ```
