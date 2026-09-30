@@ -410,6 +410,7 @@ Both skip anything already declared and resolve widths symbolically.
 ```
 plugin/verilog_tooling.vim   Vim front-end (auto-loaded)
 plugin/automatic.vim         header/waveform snippets (BPN/BP/BA, AddClk/AddSig/AddBus)
+plugin/verilog_abbrev.vim    buffer-local iabbrevs for .v/.vh/.sv/.svh (<=, beg, begni)
 python/verilog_tooling/      the Python package (stdlib only)
 doc/verilog_tooling.txt      vim help
 install.sh                   one-click installer / env checker

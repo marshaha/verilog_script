@@ -390,6 +390,7 @@ modport):`cpu_bus.master bus` 连为 `.bus (bus.master)`。
 ```
 plugin/verilog_tooling.vim   Vim 前端（自动加载）
 plugin/automatic.vim         文件头/波形片段（BPN/BP/BA, AddClk/AddSig/AddBus）
+plugin/verilog_abbrev.vim    .v/.vh/.sv/.svh buffer 局部缩写（<=、beg、begni）
 python/verilog_tooling/      Python 包（只用标准库）
 doc/verilog_tooling.txt      vim 帮助文档
 install.sh                   一键安装 / 环境检查
