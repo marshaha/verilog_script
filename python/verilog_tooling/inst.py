@@ -1523,7 +1523,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     else:
         print(f"warning: AUTOINST skipped, module file not found for: {step_missing}", file=sys.stderr)
 
-    # 3. AIO (AUTOOUTPUT/AUTOINPUT, emacs order) / 4. AW / 5. AREG /
+    # 3. AIO (AUTOOUTPUT/AUTOINPUT/AUTOINOUT, emacs order) / 4. AW / 5. AREG /
     # 6. AD (autodef) share the plain port mapping; AIO runs first so the
     # new port declarations are visible to AW/AREG/ADT
     modules_w = {
@@ -1533,6 +1533,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     }
     lines = inout.auto_output(lines, modules_w)
     lines = inout.auto_input(lines, modules_w)
+    lines = inout.auto_inout(lines, modules_w)
     lines = wire.auto_wire(lines, modules_w)
     lines = wire.auto_reg(lines, modules_w)
     lines = autodef.auto_def_t(lines, modules_w)

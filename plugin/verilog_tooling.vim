@@ -30,7 +30,7 @@
 "   AM AME                    instance stub generators (cursor line)
 "   APM AFM                   automatic.vim AutoPara / AutoFsm
 "   AW AREG                   verilog-mode AUTOWIRE / AUTOREG
-"   AIO                       verilog-mode AUTOOUTPUT + AUTOINPUT
+"   AIO                       verilog-mode AUTOOUTPUT + AUTOINPUT + AUTOINOUT
 " A count selects the Nth /*autoinst*/ instance (0-based): :1AIT → first only.
 "
 " Default leader mappings are installed at the bottom of this file (only
@@ -255,7 +255,7 @@ command! -nargs=0 AFM  call s:Run('verilog_tooling.gen', 'afm', [], -1)
 command! -nargs=0 AW   call s:Run('verilog_tooling.wire', 'aw', s:InterfaceArgs(), -1)
 command! -nargs=0 AREG call s:Run('verilog_tooling.wire', 'ar', s:InterfaceArgs(), -1)
 
-" verilog-mode input/output port auto-declaration (AUTOOUTPUT + AUTOINPUT)
+" verilog-mode input/output/inout port auto-declaration (AUTOOUTPUT + AUTOINPUT + AUTOINOUT)
 command! -nargs=0 AIO  call s:Run('verilog_tooling.inout', 'aio', s:InterfaceArgs(), -1)
 
 " Auto-generate the new-file skeleton when creating a .v/.sv file

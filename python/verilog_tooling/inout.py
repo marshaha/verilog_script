@@ -1,7 +1,7 @@
-"""Python rewrite of verilog-mode's AUTOINPUT / AUTOOUTPUT declarations.
+"""Python rewrite of verilog-mode's AUTOINPUT / AUTOOUTPUT / AUTOINOUT.
 
-Implements ``verilog-auto-input`` and ``verilog-auto-output``
-(verilog-mode.el ~lines 13482/13334):
+Implements ``verilog-auto-input``, ``verilog-auto-output`` and
+``verilog-auto-inout`` (verilog-mode.el ~lines 13482/13334/13570):
 
 - ``/*AUTOINPUT*/`` declares an ``input`` port for every net connected to an
   input port of an /*autoinst*/ instance that is not otherwise declared in
@@ -12,12 +12,17 @@ Implements ``verilog-auto-input`` and ``verilog-auto-output``
   an output port of an /*autoinst*/ instance that is not already a port of
   this module and does not feed an instance input/inout (those stay internal
   and belong to /*AUTOWIRE*/).  Comment: ``// From {inst} of {module}.v``.
+- ``/*AUTOINOUT*/`` declares an ``inout`` port for every net connected to an
+  inout port of an /*autoinst*/ instance that is not a port of this module
+  and is not seen on an instance input/output port.  Comment:
+  ``// To/From {inst} of {module}.v``.
 
-Both regions end with the shared ``// End of automatics`` closer; the
+All regions end with the shared ``// End of automatics`` closer; the
 headers are verilog-mode's::
 
     // Beginning of automatic inputs (from unused autoinst inputs)
     // Beginning of automatic outputs (from unused autoinst outputs)
+    // Beginning of automatic inouts (from unused autoinst inouts)
 
 Marker regexp argument (``/*AUTOINPUT("^i_")*/``, ``?!`` inverts) and the
 ``verilog-auto-input-ignore-regexp`` / ``verilog-auto-output-ignore-regexp``
@@ -92,16 +97,19 @@ from .wire import (
 
 _INPUT_HEADER = "// Beginning of automatic inputs (from unused autoinst inputs)"
 _OUTPUT_HEADER = "// Beginning of automatic outputs (from unused autoinst outputs)"
+_INOUT_HEADER = "// Beginning of automatic inouts (from unused autoinst inouts)"
 _END_OF_AUTOMATICS = "// End of automatics"
 _INPUT_HEADER_RE = re.compile(r"^\s*// Beginning of automatic inputs\b")
 # not "(every signal)": an AUTOOUTPUTEVERY region is not ours to delete
 _OUTPUT_HEADER_RE = re.compile(
     r"^\s*// Beginning of automatic outputs\b(?!\s*\(every signal\b)"
 )
+_INOUT_HEADER_RE = re.compile(r"^\s*// Beginning of automatic inouts\b")
 
 _IGNORE_RE = {
     "input": "verilog-auto-input-ignore-regexp",
     "output": "verilog-auto-output-ignore-regexp",
+    "inout": "verilog-auto-inout-ignore-regexp",
 }
 
 
@@ -117,6 +125,11 @@ def kill_auto_input(lines: Sequence[str]) -> list[str]:
 def kill_auto_output(lines: Sequence[str]) -> list[str]:
     """Delete the /*AUTOOUTPUT*/ region, keeping the marker."""
     return _kill_region(lines, _OUTPUT_HEADER_RE)
+
+
+def kill_auto_inout(lines: Sequence[str]) -> list[str]:
+    """Delete the /*AUTOINOUT*/ region, keeping the marker."""
+    return _kill_region(lines, _INOUT_HEADER_RE)
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +237,41 @@ def _output_sigs(
             Signal(width=net.width, type="io_output", name=name, packed_dims=net.packed_dims)
         )
         comments[name] = f"// From {net.inst} of {net.module}.v"
+    return sigs, comments
+
+
+def _inout_sigs(
+    lines: Sequence[str], modules: Mapping[str, ModuleDef]
+) -> "tuple[list[Signal], dict[str, str]]":
+    """AUTOINOUT candidates: nets on instance INOUT ports, minus this
+    module's ports and nets seen on instance input/output ports (verilog-mode
+    exclusion set exactly — declared wires/params are NOT excluded)."""
+    inout_nets = _inst_driven_nets(lines, modules, ("inout",), simple_only=True)
+    in_nets = _inst_driven_nets(lines, modules, ("input",), simple_only=True)
+    out_nets = _inst_driven_nets(lines, modules, ("output",), simple_only=True)
+    ports, _, _ = _module_tables(lines)
+    excluded = set(ports.signals) | _declared_port_names(lines)
+    excluded |= set(in_nets) | set(out_nets)
+    from .libdirs import parse_typedef_regexp
+    from .inst import set_typedef_regexp
+
+    typedef_re = parse_typedef_regexp(lines)
+    set_typedef_regexp(typedef_re)
+    local_syms = _local_syms(lines)
+    sigs: list[Signal] = []
+    comments: dict[str, str] = {}
+    for name in sorted(inout_nets):
+        if name in excluded:
+            continue
+        if typedef_re and re.search(typedef_re, name):
+            continue
+        net = inout_nets[name]
+        if not _widths_ok(net, local_syms):
+            continue
+        sigs.append(
+            Signal(width=net.width, type="io_inout", name=name, packed_dims=net.packed_dims)
+        )
+        comments[name] = f"// To/From {net.inst} of {net.module}.v"
     return sigs, comments
 
 
@@ -431,8 +479,30 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[
 
 
 def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[str]:
-    """AUTOOUTPUT then AUTOINPUT — the verilog-auto order (AIO command)."""
-    return auto_input(auto_output(lines, modules), modules)
+    """Regenerate the /*AUTOINOUT*/ inout declarations of a module.
+
+    Declares an inout port for every net connected to an inout port of an
+    /*autoinst*/ instance that is not a port of this module and is not seen
+    on an instance input/output port.
+    """
+    from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
+
+    set_ignore_concat(parse_ignore_concat(lines))
+    lines = kill_auto_inout(lines)
+    sigs, comments = _inout_sigs(lines, modules)
+    if not _wire_comment_enabled(lines):
+        comments = {}
+    return _regen(
+        lines, "AUTOINOUT", _INOUT_HEADER, "inout", sigs, comments, _IGNORE_RE["inout"]
+    )
+
+
+def auto_io(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[str]:
+    """AUTOOUTPUT then AUTOINPUT then AUTOINOUT — the verilog-auto order
+    (the AIO command)."""
+    lines = auto_output(lines, modules)
+    lines = auto_input(lines, modules)
+    return auto_inout(lines, modules)
 
 
 # ---------------------------------------------------------------------------
@@ -449,8 +519,14 @@ def _vb_auto_output(self: VerilogBuffer, modules: Mapping[str, ModuleDef]) -> Ve
     return VerilogBuffer(auto_output(self._lines, modules))
 
 
+def _vb_auto_inout(self: VerilogBuffer, modules: Mapping[str, ModuleDef]) -> VerilogBuffer:
+    """Regenerate the /*AUTOINOUT*/ inout declarations of the buffer."""
+    return VerilogBuffer(auto_inout(self._lines, modules))
+
+
 VerilogBuffer.auto_input = _vb_auto_input
 VerilogBuffer.auto_output = _vb_auto_output
+VerilogBuffer.auto_inout = _vb_auto_inout
 
 
 # ---------------------------------------------------------------------------
@@ -460,13 +536,13 @@ VerilogBuffer.auto_output = _vb_auto_output
 def create_by_args(args_l=None):
     parser = argparse.ArgumentParser(
         prog="verilog_tooling.inout",
-        description="verilog-mode AUTOINPUT/AUTOOUTPUT rewrite",
+        description="verilog-mode AUTOINPUT/AUTOOUTPUT/AUTOINOUT rewrite",
     )
     parser.add_argument(
         "command",
-        choices=["aio", "ain", "aout", "kill-ain", "kill-aout"],
-        help="aio: AUTOOUTPUT+AUTOINPUT; ain/aout: individually; "
-        "kill-ain/kill-aout: delete the region",
+        choices=["aio", "ain", "aout", "ainout", "kill-ain", "kill-aout", "kill-ainout"],
+        help="aio: AUTOOUTPUT+AUTOINPUT+AUTOINOUT; ain/aout/ainout: individually; "
+        "kill-*: delete the region",
     )
     parser.add_argument("-i", "--in_file", required=True, help="buffer file with /*AUTOINPUT*// /*AUTOOUTPUT*/ markers")
     parser.add_argument("--ref_file", default=None, help="real source file anchoring Local-Variables relative paths (default: in_file)")
@@ -497,6 +573,8 @@ def main(argv=None) -> None:
         out = kill_auto_input(lines)
     elif args.command == "kill-aout":
         out = kill_auto_output(lines)
+    elif args.command == "kill-ainout":
+        out = kill_auto_inout(lines)
     else:
         buf = VerilogBuffer(lines)
         modules = {}
@@ -525,6 +603,8 @@ def main(argv=None) -> None:
             out = auto_output(out, modules)
         if args.command in ("aio", "ain"):
             out = auto_input(out, modules)
+        if args.command in ("aio", "ainout"):
+            out = auto_inout(out, modules)
     Path(args.out_file).write_text("\n".join(out) + "\n")
 
 

@@ -172,6 +172,7 @@ class InstNet:
     module: str
     packed_dims: tuple = ()
     unpacked_dims: tuple = ()  # unpacked port dims — not declarable here
+    direction: str = ""  # port direction ('output' | 'inout' | 'input')
 
 
 # a declarable connection: a bare identifier with optional bit/part selects
@@ -368,7 +369,11 @@ def _inst_driven_nets(
                                 for d in pdims
                             )
                         nets.setdefault(
-                            net, InstNet(net, width, inst, module, pdims, port.unpacked)
+                            net,
+                            InstNet(
+                                net, width, inst, module, pdims, port.unpacked,
+                                port.direction,
+                            ),
                         )
             if re.search(r"\);\s*$", line) or ");" in line:
                 i += 1
@@ -519,7 +524,10 @@ def auto_wire(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[st
         sigs.append(
             Signal(width=net.width, type="inst_wire", name=name, packed_dims=net.packed_dims)
         )
-        comments[name] = f"// From {net.inst} of {net.module}.v"
+        # an inout-driven net is commented To/From (verilog-mode), an
+        # output-driven one From
+        direction = "To/From" if net.direction == "inout" else "From"
+        comments[name] = f"// {direction} {net.inst} of {net.module}.v"
     if not _wire_comment_enabled(lines):
         comments = {}
     return _regen(lines, _AUTOWIRE_MARK_FULL, _WIRE_HEADER, "wire ", sigs, comments)
