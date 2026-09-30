@@ -37,7 +37,10 @@ friends are not).
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
+
+from .comments import mask_comments
 from typing import Mapping, Sequence
 
 from .inst import ModuleDef, Port
@@ -464,12 +467,15 @@ def find_auto_markers(
     skipping ones inside // comments. With require_comment=False, keyword is
     matched as a bare token (used for SystemVerilog .* expansion)."""
     text = "\n".join(lines)
+    # line comments blanked (block comments kept — markers ARE block
+    # comments), so a match whose first char was masked sits inside a //
+    # comment, including a trailing one (``code; // /*autoinst*/``)
+    masked = mask_comments(text, block=False)
     out = []
     for m in _marker_regex(keyword, require_comment).finditer(text):
+        if masked[m.start()] == " ":
+            continue  # inside a // comment
         if require_comment:
-            line_start = text.rfind("\n", 0, m.start()) + 1
-            if text[line_start : m.start()].lstrip().startswith("//"):
-                continue
             regexp = m.group(1)
         else:
             regexp = None
@@ -796,7 +802,14 @@ def auto_inst(
     for marker in reversed(markers):
         stack = stacks[marker.offset]
         if not stack:
-            raise ValueError(f"AUTOINST: cannot find opening '(' for marker at offset {marker.offset}")
+            # a stray marker outside any instance pin list (typically left
+            # in a comment or pasted as documentation) — warn, don't abort
+            print(
+                f"warning: AUTOINST marker outside an instance pin list "
+                f"(offset {marker.offset}), skipped",
+                file=sys.stderr,
+            )
+            continue
         open_idx = stack[-1]
         close_idx = _matching_paren(text, open_idx)
         is_star = text[marker.offset : marker.end] == ".*"
@@ -907,9 +920,14 @@ def auto_param(
     for marker in reversed(markers):
         stack = stacks[marker.offset]
         if not stack:
-            raise ValueError(
-                f"AUTOINSTPARAM: cannot find opening '(' for marker at offset {marker.offset}"
+            # a stray marker outside any instance parameter list — warn,
+            # don't abort (same treatment as AUTOINST)
+            print(
+                f"warning: AUTOINSTPARAM marker outside an instance parameter "
+                f"list (offset {marker.offset}), skipped",
+                file=sys.stderr,
             )
+            continue
         open_idx = stack[-1]
         close_idx = _matching_paren(text, open_idx)
         try:
