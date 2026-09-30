@@ -252,7 +252,9 @@ class Signal:
 
     ``width`` is 'c0' for a scalar, '' when unresolved, otherwise the msb
     text ('7', 'W-1').  ``type`` is one of 'io_wire', 'io_reg', 'usrdef',
-    'freg', 'creg', 'wire', 'inst_wire', 'keep'.
+    'freg', 'creg', 'wire', 'inst_wire', 'inst_in_wire', 'keep'.
+    'inst_in_wire' is the weakest source: a net only seen on submodule
+    input ports; it is upgraded to 'inst_wire' by any real driver.
     """
 
     width: str = ""
@@ -525,8 +527,16 @@ class SignalTable:
         if not m or port_name not in inst_io:
             return
         net = m.group(0)
-        raw = inst_io[port_name].width  # ModuleDef stores the 'msb:lsb' range
+        port = inst_io[port_name]
+        raw = port.width  # ModuleDef stores the 'msb:lsb' range
         port_width = "c0" if raw is None else raw.split(":")[0].strip()
+        if port.direction == "input":
+            # a submodule INPUT port consumes the net — it is no driver, but
+            # its range is a valid width fallback when nothing else declares
+            # the net (an undriven net between two instances would otherwise
+            # be flagged unresolved)
+            self._record_inst_input_net(net, rest, port_width)
+            return
         # a symbolic (parameter/expression) width is kept verbatim — the
         # declaration stays symbolic (wire [APB_BUS_ADDR_WIDTH-1:0]); blanking
         # it here would silently drop the net from emission entirely
@@ -542,6 +552,8 @@ class SignalTable:
             return
         sig = self.signals.get(net)
         if sig is not None:
+            if sig.type == "inst_in_wire":
+                sig.type = "inst_wire"  # a real driver trumps the input-port hint
             if sig.type in ("io_wire", "io_reg"):
                 sig.driven = True
             if sig.width == "":
@@ -551,6 +563,38 @@ class SignalTable:
                 self._update_usrdef_width(sig, port_width)
         else:
             self.signals[net] = Signal(width=port_width, type="inst_wire")
+
+    def _record_inst_input_net(self, net: str, rest: str, port_width: str) -> None:
+        """Weakest width source: a net connected to a submodule INPUT port.
+
+        The width candidate is an explicit full-range select in the
+        connection (``net[MSB:LSB]`` — template ``[]`` expansions carry the
+        port's own, already param-value-substituted range here), else the
+        input port's declared msb.  A bit-select connection (``net[3]``)
+        says nothing about the net's width and is ignored.  Only fills empty
+        widths (or provably widens an earlier hint) and never marks the net
+        driven; any real driver (instance output, assign, always) trumps it.
+        """
+        if net[0].isdigit():
+            return
+        mrest = rest.lstrip()[len(net):] if rest.lstrip().startswith(net) else ""
+        width = ""
+        rm = re.match(r"\s*\[\s*([^:\[\]]+?)\s*:\s*([^\[\]]+?)\s*\]", mrest)
+        if rm:
+            width = rm.group(1).strip()  # explicit full range in the connection
+        elif not re.match(r"\s*\[", mrest):
+            width = port_width  # plain net: the input port's declared msb
+        # else: a bit/part select — no usable width info
+        if not width:
+            return
+        sig = self.signals.get(net)
+        if sig is None:
+            self.signals[net] = Signal(width=width, type="inst_in_wire")
+        elif sig.type == "inst_in_wire":
+            if sig.width in ("", "c0") or _wider(width, sig.width):
+                sig.width = width
+        elif sig.width == "" and sig.type in ("freg", "creg", "wire"):
+            sig.width = width
 
     def _extend_inst_wire_partselect(
         self,
@@ -586,6 +630,8 @@ class SignalTable:
         elif sig.type == "usrdef":
             self._update_usrdef_width(sig, new_msb)
         else:
+            if sig.type == "inst_in_wire":
+                sig.type = "inst_wire"  # a real driver trumps the input-port hint
             if sig.type in ("io_wire", "io_reg"):
                 sig.driven = True
             if sig.width == "" or _wider(new_msb, sig.width):
@@ -1389,6 +1435,11 @@ def update_define(
             # these are always declared now (empty width defaults to scalar in
             # div_signals), so they never belong in unresolved
             unresolved.discard(name)
+        elif sig.type == "inst_in_wire":
+            # the input-port hint only earns a declaration when it carries a
+            # width; without one the net stays unresolved
+            if sig.width:
+                unresolved.discard(name)
 
 
 def _width_syms_known(width: str, known: set[str]) -> bool:
@@ -1444,7 +1495,7 @@ def div_signals(signals: SignalTable) -> Divided:
                 sig.width = "c0"
             sig.name = name
             div.wire.append(sig)
-        elif sig.type == "inst_wire":
+        elif sig.type in ("inst_wire", "inst_in_wire"):
             if sig.width != "":
                 sig.name = name
                 div.inst_wire.append(sig)
@@ -1831,23 +1882,27 @@ def _scan_inst_body(
     sym_hi: Mapping[str, str] | None = None,
 ) -> int:
     """Consume an instance body (after the marker / header line) up to ``);``,
-    recording output-port nets as inst_wire."""
+    recording output-port nets as inst_wire (and input-port nets as the
+    inst_in_wire width fallback).  A pin sitting on the SAME line as the
+    closing ``));`` — the last pin of every emacs-style expansion — is
+    processed before the body is considered closed."""
     loop_bounds = loop_bounds or {}
     sym_hi = sym_hi or {}
     i = start
-    while i < len(lines) and not re.search(r"\);\s*$", lines[i]):
+    while i < len(lines):
         j = _skip_comment_line(lines, i)
         if j == -1:
             return len(lines)
         i = j
         line = lines[i]
-        if ");" in line:
-            break
         if _INST_PORT.match(line):
             m = re.match(r"^\s*\.(\w+)\s*\((.*)", line)
             signals.extend_inst_wire_from_line(
                 m.group(1) + " " + m.group(2), inst_io, loop_bounds, sym_hi
             )
+        if re.search(r"\);\s*$", line) or ");" in line:
+            i += 1
+            break
         i += 1
     return i
 
@@ -2158,7 +2213,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
                 module = m.group(1) if m else ""
             moddef = modules.get(module)
             if moddef is not None:
-                inst_io = {p.name: p for p in moddef.ports if p.direction != "input"}
+                inst_io = {p.name: p for p in moddef.ports}
                 i = _scan_inst_body(lines, i + 1, inst_io, signals, loop_bounds, sym_hi)
                 continue
         elif i in inst_headers:
@@ -2166,7 +2221,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             # its named .port(net) connections for output/inout nets too
             module, _inst, hdr_end = inst_headers[i]
             moddef = modules[module]
-            inst_io = {p.name: p for p in moddef.ports if p.direction != "input"}
+            inst_io = {p.name: p for p in moddef.ports}
             start = (hdr_end + 1) if hdr_end >= 0 else (i + 1)
             i = _scan_inst_body(lines, start, inst_io, signals, loop_bounds, sym_hi)
             continue

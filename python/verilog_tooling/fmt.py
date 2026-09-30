@@ -58,10 +58,14 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str] | None:
     """Split a pin line into (port, connection, terminator, comment).
 
     Returns None when the line is not an instantiation pin connection.
+    A line carrying a ``/*`` comment (instance headers like
+    ``#(...)) inst (/*autoinst*/``, inline ``/* */`` notes) is never a
+    pin — treating it as one would mangle the comment into the
+    "connection".
     Terminator is ``')'`` for ``))``, ``');'`` for ``));``, ``''`` for a
     bare ``)`` and ``','`` otherwise.
     """
-    if not _INST_PIN.match(line) or _LINE_COMMENT.match(line):
+    if not _INST_PIN.match(line) or _LINE_COMMENT.match(line) or "/*" in line:
         return None
     cm = re.search(r"//.*", line)
     comment = cm.group(0) if cm else ""
