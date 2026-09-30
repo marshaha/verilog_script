@@ -102,7 +102,7 @@ endmodule
 | `AR` | 重新生成 `/*autoarg*/` 模块头端口表 | `<leader>ar` |
 | `KAR` | 折叠 `/*autoarg*/` 区域 | |
 | `AW` / `AREG` | AUTOWIRE / AUTOREG | `<leader>aw` `arg` |
-| `AIO` | AUTOOUTPUT + AUTOINPUT（封装模块端口生成） | `<leader>aio` |
+| `AIO` | AUTOOUTPUT + AUTOINPUT + AUTOINOUT（封装模块端口生成） | `<leader>aio` |
 | `AF` | 对齐：端口、wire/reg、parameter/localparam、实例 | `<leader>af` |
 | `AIF` `APF` `ADF` | 单独的各路对齐 | `<leader>aif` `apf` `adf` |
 | `AM` `AME` | 把光标下的单词变成实例空壳 | `<leader>am` `ame` |
@@ -404,16 +404,20 @@ modport):`cpu_bus.master bus` 连为 `.bus (bus.master)`。
 （assign/always/实例）的模块 output 声明 `reg`。两者都跳过已声明的
 信号，位宽保持符号化。
 
-## AUTOINPUT / AUTOOUTPUT (AIO)
+## AUTOINPUT / AUTOOUTPUT / AUTOINOUT (AIO)
 
-verilog-mode 的封装模块端口生成（`:AIO` 先 AUTOOUTPUT 后 AUTOINPUT，
-`AALL` 也包含这两步）：
+verilog-mode 的封装模块端口生成（`:AIO` 依次执行 AUTOOUTPUT、AUTOINPUT、
+AUTOINOUT，`AALL` 也包含这三步）：
 
 - `/*AUTOINPUT*/` 为每个"喂给实例 input、但模块内未声明也无驱动"的
   线网声明 `input` 端口（注释 `// To u_x of mod.v`）；
 - `/*AUTOOUTPUT*/` 为每个"由实例 output 驱动、不是本模块端口、也不
   喂给其他实例"的线网声明 `output` 端口（喂给其他实例的留在内部，
-  归 AUTOWIRE 管）。
+  归 AUTOWIRE 管）；
+- `/*AUTOINOUT*/` 为每个"连到实例 inout、且不是本模块端口"的线网
+  声明 `inout` 端口（注释 `// To/From u_x of mod.v`）。不加该 marker
+  时，inout 线网按内部线处理——AUTOWIRE 会声明成 wire 并带
+  `// To/From` 注释。
 
 标记放在模块头括号内时按 Verilog-2001 风格展开（逗号分隔，带
 verilog-mode 的开/闭逗号修补）；放在模块体内则是 1995 风格（`;`）。

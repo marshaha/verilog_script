@@ -12,8 +12,9 @@ AD ADT      regenerate /*autodef*/ declarations (wire/reg/integer/genvar;
               an undriven output is declared reg, matching AREG)
 AR          regenerate /*autoarg*/ header port lists
 AW AREG     AUTOWIRE / AUTOREG
-AIO         AUTOOUTPUT + AUTOINPUT (wrapper ports; v2k comma repair inside
-              the module header, /*AUTOINPUT("^i_")*/ regexp filter)
+AIO         AUTOOUTPUT + AUTOINPUT + AUTOINOUT (wrapper ports; v2k comma
+              repair inside the module header, /*AUTOINPUT("^i_")*/ regexp
+              filter)
 AF          format: ports, wire/reg, parameter/localparam, instances
 AIF APF ADF   individual format passes
 AM AME APM AFM  module/parameter/FSM snippets

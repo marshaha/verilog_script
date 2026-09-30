@@ -104,7 +104,7 @@ marker.
 | `AR` | regenerate `/*autoarg*/` header port lists | `<leader>ar` |
 | `KAR` | collapse the `/*autoarg*/` region | |
 | `AW` / `AREG` | AUTOWIRE / AUTOREG | `<leader>aw` `arg` |
-| `AIO` | AUTOOUTPUT + AUTOINPUT (wrapper port generation) | `<leader>aio` |
+| `AIO` | AUTOOUTPUT + AUTOINPUT + AUTOINOUT (wrapper port generation) | `<leader>aio` |
 | `AF` | format: ports, wire/reg, parameter/localparam, instances | `<leader>af` |
 | `AIF` `APF` `ADF` | individual format passes | `<leader>aif` `apf` `adf` |
 | `AM` `AME` | instance stub from the word under the cursor | `<leader>am` `ame` |
@@ -424,17 +424,21 @@ outputs (with a `// From u_x of mod.v` comment). `/*AUTOREG*/` declares
 `reg` for module outputs that have no driver (assign/always/instance).
 Both skip anything already declared and resolve widths symbolically.
 
-## AUTOINPUT / AUTOOUTPUT (AIO)
+## AUTOINPUT / AUTOOUTPUT / AUTOINOUT (AIO)
 
-The wrapper-module pair from verilog-mode (`:AIO` runs AUTOOUTPUT then
-AUTOINPUT, and `AALL` includes both):
+The wrapper-module trio from verilog-mode (`:AIO` runs AUTOOUTPUT then
+AUTOINPUT then AUTOINOUT, and `AALL` includes all three):
 
 - `/*AUTOINPUT*/` declares an `input` port for every net feeding an
   instance input that is not declared or driven inside the module
   (`// To u_x of mod.v` comment);
 - `/*AUTOOUTPUT*/` declares an `output` port for every net driven by an
   instance output that is not already a port and does not feed another
-  instance (those stay internal — AUTOWIRE territory).
+  instance (those stay internal — AUTOWIRE territory);
+- `/*AUTOINOUT*/` declares an `inout` port for every net on an instance
+  inout that is not already a port (`// To/From u_x of mod.v` comment).
+  Without the marker, inout-connected nets stay internal wires — AUTOWIRE
+  declares them with a `// To/From` comment.
 
 Placed inside the module header parens they expand Verilog-2001 style
 (comma-separated, with verilog-mode's open/close comma repair); in the
