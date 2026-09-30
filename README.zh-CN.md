@@ -92,7 +92,7 @@ endmodule
 
 | 命令 | 作用 | 按键 |
 |---|---|---|
-| `AALL` | 一次跑完整套 AUTO：EAP → EAI → AW → AREG → AD → AR → AF | `<leader>a` |
+| `AALL` | 一次跑完整套 AUTO：EAP → EAI → AIO → AW → AREG → AD → AR → AF | `<leader>a` |
 | `EAI` / `EAP` | verilog-mode 的 AUTOINST / AUTOINSTPARAM | `<leader>eai` `eap` |
 | `AIT` | 按模块定义（重）建实例连接 | `<leader>ait` |
 | `AIU` / `AIU1` | 最小差异的实例更新（保留手动连接） | `<leader>aiu` `aiu1` |
@@ -102,6 +102,7 @@ endmodule
 | `AR` | 重新生成 `/*autoarg*/` 模块头端口表 | `<leader>ar` |
 | `KAR` | 折叠 `/*autoarg*/` 区域 | |
 | `AW` / `AREG` | AUTOWIRE / AUTOREG | `<leader>aw` `arg` |
+| `AIO` | AUTOOUTPUT + AUTOINPUT（封装模块端口生成） | `<leader>aio` |
 | `AF` | 对齐：端口、wire/reg、parameter/localparam、实例 | `<leader>af` |
 | `AIF` `APF` `ADF` | 单独的各路对齐 | `<leader>aif` `apf` `adf` |
 | `AM` `AME` | 把光标下的单词变成实例空壳 | `<leader>am` `ame` |
@@ -117,17 +118,17 @@ endmodule
 
 ### 性能（大型 SoC 顶层）
 
-`AALL` 在**单个 Python 进程**里跑完整个流水线，七步共享同一份模块表；
+`AALL` 在**单个 Python 进程**里跑完整个流水线，八步共享同一份模块表；
 模块文件通过目录列表缓存定位、用线程池读取（对 NFS 友好——没有
 "每个模块×每个目录一次 stat"的风暴）。在 199 个文件的工程上实测：
-比分开跑七个命令快 3.4 倍，输出逐字节一致。
+比分开跑八个命令快 3.4 倍，输出逐字节一致。
 
 ## 命令详解
 
 ### AALL —— 按正确顺序跑全部
 
 在单个 Python 进程中按 emacs `verilog-batch-auto` 的顺序执行
-EAP → EAI → AW → AREG → AD → AR → AF。输出与依次执行七个命令
+EAP → EAI → AIO → AW → AREG → AD → AR → AF。输出与依次执行八个命令
 逐字节一致，但模块文件只解析和读取一次。
 支持 `g:verilog_tooling_eai_flags`（如 `--sort`）。
 
@@ -251,6 +252,7 @@ AME 生成 emacs 风格的空壳。实例编号按 buffer 中该模块已有实�
 | `<leader>adt` | `ADT` | `<leader>am` `ame` | `AM` `AME` |
 | `<leader>ait` | `AIT` | `<leader>aw` | `AW` |
 | `<leader>aiu` / `aiu1` | `AIU` / `AIU1` | `<leader>arg` | `AREG` |
+| `<leader>aio` | `AIO` | | |
 | `<leader>ar` | `AR` | `<leader>eai` `eap` | `EAI` `EAP` |
 | `<leader>d` | `KI` | `<leader>bpn` `bp` `ba` | `BPN` `BP` `BA` |
 
@@ -401,6 +403,27 @@ modport):`cpu_bus.master bus` 连为 `.bus (bus.master)`。
 （带 `// From u_x of mod.v` 注释）。`/*AUTOREG*/` 为没有驱动
 （assign/always/实例）的模块 output 声明 `reg`。两者都跳过已声明的
 信号，位宽保持符号化。
+
+## AUTOINPUT / AUTOOUTPUT (AIO)
+
+verilog-mode 的封装模块端口生成（`:AIO` 先 AUTOOUTPUT 后 AUTOINPUT，
+`AALL` 也包含这两步）：
+
+- `/*AUTOINPUT*/` 为每个"喂给实例 input、但模块内未声明也无驱动"的
+  线网声明 `input` 端口（注释 `// To u_x of mod.v`）；
+- `/*AUTOOUTPUT*/` 为每个"由实例 output 驱动、不是本模块端口、也不
+  喂给其他实例"的线网声明 `output` 端口（喂给其他实例的留在内部，
+  归 AUTOWIRE 管）。
+
+标记放在模块头括号内时按 Verilog-2001 风格展开（逗号分隔，带
+verilog-mode 的开/闭逗号修补）；放在模块体内则是 1995 风格（`;`）。
+每个标记支持正则过滤——`/*AUTOINPUT("^i_")*/`，`?!` 前缀取反——
+也支持 `verilog-auto-input-ignore-regexp` /
+`verilog-auto-output-ignore-regexp` 文件局部变量。位宽取自子模块端口
+并代入实例 `#(...)` 参数（verilog-mode 自己只对 AUTOINST 重写过的
+连接才能拿到位宽；标记紧跟在模块头 `(` 后时 emacs 会直接报错，我们
+正常展开）。由 `assign` 驱动的线网不会被声明成 input，拼接/表达式
+连接直接跳过——这两种情况生成了也编译不过。
 
 ## 目录结构
 

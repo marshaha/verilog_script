@@ -94,7 +94,7 @@ marker.
 
 | Command | What it does | Key |
 |---|---|---|
-| `AALL` | full AUTO set in one pass: EAP → EAI → AW → AREG → AD → AR → AF | `<leader>a` |
+| `AALL` | full AUTO set in one pass: EAP → EAI → AIO → AW → AREG → AD → AR → AF | `<leader>a` |
 | `EAI` / `EAP` | verilog-mode AUTOINST / AUTOINSTPARAM | `<leader>eai` `eap` |
 | `AIT` | (re)build instance connections from the module definition | `<leader>ait` |
 | `AIU` / `AIU1` | minimal-diff instance updates (keep manual connections) | `<leader>aiu` `aiu1` |
@@ -104,6 +104,7 @@ marker.
 | `AR` | regenerate `/*autoarg*/` header port lists | `<leader>ar` |
 | `KAR` | collapse the `/*autoarg*/` region | |
 | `AW` / `AREG` | AUTOWIRE / AUTOREG | `<leader>aw` `arg` |
+| `AIO` | AUTOOUTPUT + AUTOINPUT (wrapper port generation) | `<leader>aio` |
 | `AF` | format: ports, wire/reg, parameter/localparam, instances | `<leader>af` |
 | `AIF` `APF` `ADF` | individual format passes | `<leader>aif` `apf` `adf` |
 | `AM` `AME` | instance stub from the word under the cursor | `<leader>am` `ame` |
@@ -120,19 +121,19 @@ Every command reports what it did, e.g.
 ### Performance (large SoC tops)
 
 `AALL` runs the whole pipeline in **one Python process** with the module
-table shared across all seven passes; module files are located via cached
+table shared across all eight passes; module files are located via cached
 directory listings and read on a thread pool (NFS-friendly — no
 stat-per-module-dir storm). Measured on a 199-file project: 3.4× faster
-than the seven separate commands, byte-identical output.
+than the eight separate commands, byte-identical output.
 
 ## Command reference
 
 ### AALL — everything, in the right order
 
-Runs the emacs `verilog-batch-auto` sequence — EAP → EAI → AW → AREG →
-AD → AR → AF — in a single Python process. The output is byte-identical
-to running the seven commands in that order, but module files are
-resolved and read only once. `g:verilog_tooling_eai_flags` (e.g.
+Runs the emacs `verilog-batch-auto` sequence — EAP → EAI → AIO → AW →
+AREG → AD → AR → AF — in a single Python process. The output is
+byte-identical to running the eight commands in that order, but module
+files are resolved and read only once. `g:verilog_tooling_eai_flags` (e.g.
 `--sort`) is honored.
 
 ### EAI — verilog-mode AUTOINST
@@ -264,6 +265,7 @@ has no mapping yet, so your own mappings always win:
 | `<leader>adt` | `ADT` | `<leader>am` `ame` | `AM` `AME` |
 | `<leader>ait` | `AIT` | `<leader>aw` | `AW` |
 | `<leader>aiu` / `aiu1` | `AIU` / `AIU1` | `<leader>arg` | `AREG` |
+| `<leader>aio` | `AIO` | | |
 | `<leader>ar` | `AR` | `<leader>eai` `eap` | `EAI` `EAP` |
 | `<leader>d` | `KI` | `<leader>bpn` `bp` `ba` | `BPN` `BP` `BA` |
 
@@ -421,6 +423,30 @@ Type rules:
 outputs (with a `// From u_x of mod.v` comment). `/*AUTOREG*/` declares
 `reg` for module outputs that have no driver (assign/always/instance).
 Both skip anything already declared and resolve widths symbolically.
+
+## AUTOINPUT / AUTOOUTPUT (AIO)
+
+The wrapper-module pair from verilog-mode (`:AIO` runs AUTOOUTPUT then
+AUTOINPUT, and `AALL` includes both):
+
+- `/*AUTOINPUT*/` declares an `input` port for every net feeding an
+  instance input that is not declared or driven inside the module
+  (`// To u_x of mod.v` comment);
+- `/*AUTOOUTPUT*/` declares an `output` port for every net driven by an
+  instance output that is not already a port and does not feed another
+  instance (those stay internal — AUTOWIRE territory).
+
+Placed inside the module header parens they expand Verilog-2001 style
+(comma-separated, with verilog-mode's open/close comma repair); in the
+body, Verilog-1995 style (`;`). Each marker accepts a regexp filter —
+`/*AUTOINPUT("^i_")*/`, prefix `?!` to invert — and
+`verilog-auto-input-ignore-regexp` / `verilog-auto-output-ignore-regexp`
+file-local variables are honored. Widths come from the submodule port with
+the instance's `#(...)` parameter overrides substituted (verilog-mode
+itself only gets widths right for AUTOINST-rewritten connections; a marker
+immediately after the header `(` expands normally where emacs errors out).
+A net driven by an `assign` is never made an input, and concat/expression
+connections are skipped — both cases would not compile.
 
 ## Layout
 

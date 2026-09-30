@@ -3,7 +3,7 @@
 ==============================================================================
 COMMANDS                                                      *verilog_tooling*
 
-AALL        full AUTO set (EAP -> EAI -> AW -> AREG -> AD -> AR -> AF)
+AALL        full AUTO set (EAP -> EAI -> AIO -> AW -> AREG -> AD -> AR -> AF)
 EAI         verilog-mode AUTOINST (regexp AUTO_TEMPLATE, .*, interfaces)
 EAP         verilog-mode AUTOINSTPARAM (template, or default value)
 AIT AIU AIU1  instantiate template / update instances (manual connections
@@ -12,6 +12,8 @@ AD ADT      regenerate /*autodef*/ declarations (wire/reg/integer/genvar;
               an undriven output is declared reg, matching AREG)
 AR          regenerate /*autoarg*/ header port lists
 AW AREG     AUTOWIRE / AUTOREG
+AIO         AUTOOUTPUT + AUTOINPUT (wrapper ports; v2k comma repair inside
+              the module header, /*AUTOINPUT("^i_")*/ regexp filter)
 AF          format: ports, wire/reg, parameter/localparam, instances
 AIF APF ADF   individual format passes
 AM AME APM AFM  module/parameter/FSM snippets
@@ -35,8 +37,9 @@ unmapped (your own mappings always win):
     <leader>aiu   AIU         <leader>am    AM
     <leader>aiu1  AIU1        <leader>ame   AME
     <leader>ar    AR          <leader>aw    AW
-    <leader>eai   EAI         <leader>arg   AREG
-    <leader>eap   EAP         <leader>d     KI
+    <leader>aio   AIO         <leader>arg   AREG
+    <leader>eai   EAI         <leader>eap   EAP
+    <leader>d     KI
     <leader>bpn   BPN         <leader>bp    BP
     <leader>ba    BA
 
