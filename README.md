@@ -478,4 +478,12 @@ let g:verilog_tooling_libdirs = ['/path/to/rtl']    " extra -y search dirs
 let g:verilog_tooling_eai_flags = ['--sort']        " extra EAI flags
 let g:verilog_tooling_no_mappings = 1               " no default mappings
 let g:verilog_abbrev_enable = 1                     " opt-in insert abbrevs (<=>`<= #`RD`, beg, begni)
+let g:verilog_tooling_interfaces = ['axera_apb_interface']  " user-known SV interface types
 ```
+
+`g:verilog_tooling_interfaces` lists SystemVerilog interface type names the
+library scan cannot find (the file is not under any `-y` dir). Ports like
+`axera_apb_interface.master apb` then parse as interface ports for
+EAI/AIT/AIU — EAI puts them in the `// Interfaces` section with a
+`name.modport` connection — and are never mistaken for wires by
+AW/AREG/AD/AIO.

@@ -454,4 +454,11 @@ let g:verilog_tooling_libdirs = ['/path/to/rtl']    " 额外的 -y 搜索目录
 let g:verilog_tooling_eai_flags = ['--sort']        " EAI 的额外参数
 let g:verilog_tooling_no_mappings = 1               " 不装默认按键映射
 let g:verilog_abbrev_enable = 1                     " 开启插入缩写（默认关闭）
+let g:verilog_tooling_interfaces = ['axera_apb_interface']  " 自定义 SV interface 类型名
 ```
+
+`g:verilog_tooling_interfaces` 列出库扫描找不到的 SystemVerilog
+interface 类型名（文件不在任何 `-y` 目录下）。这样
+`axera_apb_interface.master apb` 这类端口在 EAI/AIT/AIU 中被识别为
+interface 端口——EAI 会把它放进 `// Interfaces` 节、连接写成
+`name.modport`——且不会被 AW/AREG/AD/AIO 误当成 wire。

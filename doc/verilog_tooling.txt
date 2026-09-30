@@ -51,6 +51,10 @@ OPTIONS
 g:verilog_tooling_python      interpreter override (default: python3)
 g:verilog_tooling_libdirs     extra -y module search dirs (list)
 g:verilog_tooling_eai_flags   extra flags for :EAI (list, e.g. ['--sort'])
+g:verilog_tooling_interfaces  user-known SV interface type names (list;
+                              supplements the interface files found by
+                              scanning the -y dirs; interface ports parse
+                              for EAI/AIT/AIU and are never declared wires)
 
 Requires Python >= 3.8. The plugin checks once and warns if too old.
 
@@ -59,7 +63,9 @@ LOCAL VARIABLES
 
 Honored: verilog-library-directories (single/multi-line),
 verilog-library-flags ("-y dir" "-f file.vc"), verilog-inst-file,
-verilog-typedef-regexp, verilog-auto-inst-param-value.
+verilog-typedef-regexp, verilog-auto-inst-param-value,
+verilog-auto-ignore-concat, verilog-auto-wire-comment,
+verilog-auto-input-ignore-regexp, verilog-auto-output-ignore-regexp.
 vc files: -y / +incdir+ / -I / -v / +libext+.
 
  vim:tw=78:ts=8:noet:ft=help:norl:
