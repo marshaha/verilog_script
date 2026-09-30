@@ -689,10 +689,27 @@ def _connect(
     width = port.width
     if width and param_values:
         width = _apply_param_values(width, param_values)
+    # a multidim port's shape rides as a verilog-mode /*[D1][D2]*/ note —
+    # in default connections AND as the []/[][] expansion in templates.
+    # Dims get the instance's #(...) substitutions, redundant-paren
+    # stripping and pure-numeric folding (2*16-1 -> 31); symbols stay
+    # verbatim.
+    packed_note = ""
+    if port.is_multidim:
+        from .autodef import _clean_dim
+
+        dims = port.packed
+        if param_values:
+            dims = tuple(_apply_param_values(d, param_values) for d in dims)
+        inner = "".join(f"[{_clean_dim(d)}]" for d in dims)
+        if port.unpacked:
+            inner += "." + "".join(f"[{u}]" for u in port.unpacked)
+        packed_note = f"/*{inner}*/"
     if template is not None:
         conn = template_connection(
             template, port.name, at_value, width, env,
             vl_cell_name=inst_name, vl_dir=port.direction or "",
+            packed_note=packed_note,
         )
         if conn is not None:
             if param_values:
@@ -705,10 +722,7 @@ def _connect(
     # verilog-mode: multidimensional ports are not expanded into the
     # connection; their full shape is attached as a /*...*/ comment.
     if port.is_multidim:
-        packed = "".join(f"[{p}]" for p in port.packed)
-        if port.unpacked:
-            packed += "." + "".join(f"[{u}]" for u in port.unpacked)
-        return f"{port.name}/*{packed}*/", False
+        return f"{port.name}{packed_note}", False
     return port.name + (f"[{width}]" if width else ""), False
 
 

@@ -55,7 +55,7 @@ from .autodef import (
     _PORT_LINE,
     _conn_packed_dims,
     _emit_signal,
-    _normalize_dim,
+    _clean_dim,
     _sig_decl_len,
     _skip_comment_line,
     _strip_line,
@@ -188,12 +188,12 @@ def _inst_driven_nets(
                         # connection note (already param-value substituted),
                         # else the port's own packed ranges
                         pdims = _conn_packed_dims(rest) or (
-                            tuple(_normalize_dim(d) for d in port.packed)
+                            tuple(_clean_dim(d) for d in port.packed)
                             if len(port.packed) > 1 else ()
                         )
                         if pdims and param_values:
                             pdims = tuple(
-                                _normalize_dim(emacs._apply_param_values(d, param_values))
+                                _clean_dim(emacs._apply_param_values(d, param_values))
                                 for d in pdims
                             )
                         nets.setdefault(net, InstNet(net, width, inst, module, pdims))

@@ -59,16 +59,41 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str] | None:
     """Split a pin line into (port, connection, terminator, comment).
 
     Returns None when the line is not an instantiation pin connection.
-    A line carrying an AUTO marker comment (instance headers like
-    ``#(...)) inst (/*autoinst*/``) is never a pin — treating it as one
-    would mangle the marker into the "connection".  A pin whose
-    connection merely CONTAINS a ``/*[dim][dim]*/`` note still aligns
-    normally (the note is spaceless and survives verbatim).
+    A line carrying an AUTO marker comment is an instance HEADER, not a
+    pin — except the last-param line of an AUTOINSTPARAM expansion
+    (``#(...)) inst (/*autoinst*/``): its pin part is aligned like its
+    siblings and the ``)) inst (/*autoinst*/`` header tail rides along in
+    the comment slot, kept verbatim.
     Terminator is ``')'`` for ``))``, ``');'`` for ``));``, ``''`` for a
     bare ``)`` and ``','`` otherwise.
     """
-    if not _INST_PIN.match(line) or _LINE_COMMENT.match(line) or _AUTO_MARK.search(line):
+    if not _INST_PIN.match(line) or _LINE_COMMENT.match(line):
         return None
+    header_tail = ""
+    if _AUTO_MARK.search(line):
+        # try the `#(...)) inst (/*autoinst*/` last-param shape: find the
+        # pin connection's balanced close, then require `)` + instance
+        # name + marker; anything else with a marker is left untouched
+        pm = re.match(r"^\s*\.\w+\s*\(", line)
+        if not pm:
+            return None
+        depth = 0
+        j = pm.end() - 1
+        while j < len(line):
+            if line[j] == "(":
+                depth += 1
+            elif line[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if j >= len(line):
+            return None
+        tail = line[j + 1 :]
+        if not re.match(r"^\s*\)\s*\w+\s*\(\s*/\*", tail):
+            return None
+        header_tail = tail  # `)   inst (/*autoinst*/...`, verbatim
+        line = line[: j + 1]  # parse the pin part normally below
     cm = re.search(r"//.*", line)
     comment = cm.group(0) if cm else ""
     body = re.sub(r"//.*", "", line)
@@ -88,7 +113,7 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str] | None:
     else:
         terminator = ","
         conn = re.sub(r"\)\s*,\s*$", "", conn)
-    return port, re.sub(r"\s", "", conn), terminator, comment
+    return port, re.sub(r"\s", "", conn), terminator, comment + header_tail
 
 
 def auto_define_len(lines: Sequence[str]) -> int:

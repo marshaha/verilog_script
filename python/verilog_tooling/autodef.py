@@ -558,7 +558,7 @@ class SignalTable:
             return
         sig = self.signals.get(net)
         pdims = _conn_packed_dims(rest) or (
-            tuple(_normalize_dim(d) for d in port.packed) if len(port.packed) > 1 else ()
+            tuple(_clean_dim(d) for d in port.packed) if len(port.packed) > 1 else ()
         )
         if sig is not None:
             if sig.type == "inst_in_wire":
@@ -604,7 +604,7 @@ class SignalTable:
             width = port_width  # plain net: the input port's declared msb
         # else: a bit/part select — no usable width info
         pdims = _conn_packed_dims(rest) or (
-            tuple(_normalize_dim(d) for d in port.packed) if len(port.packed) > 1 else ()
+            tuple(_clean_dim(d) for d in port.packed) if len(port.packed) > 1 else ()
         )
         if not width and not pdims:
             return
@@ -1620,6 +1620,16 @@ def _normalize_dim(dim: str) -> str:
     return _REDUNDANT_PARENS.sub(r"\1", dim.strip())
 
 
+def _clean_dim(dim: str) -> str:
+    """Full dim cleanup: strip redundant parens, then fold pure-numeric
+    expressions (``12-1`` -> ``11``, ``2*16-1`` -> ``31``) the way
+    verilog-mode writes notes/declarations; anything with an identifier
+    stays symbolic."""
+    from .emacs import _fold_numeric_expr
+
+    return _fold_numeric_expr(_normalize_dim(dim))
+
+
 def _conn_packed_dims(text: str) -> tuple[str, ...]:
     """Packed dims from an EAI multidim connection note ``net/*[D1][D2]*/``:
     the dims the template expansion already param-value-substituted, so they
@@ -1627,7 +1637,7 @@ def _conn_packed_dims(text: str) -> tuple[str, ...]:
     m = _CONN_DIM_COMMENT.search(text)
     if not m:
         return ()
-    return tuple(_normalize_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
+    return tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
 
 
 # ---------------------------------------------------------------------------

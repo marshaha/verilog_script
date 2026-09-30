@@ -460,6 +460,7 @@ def _elisp_eval(form, scope: dict):
 def expand_connection(
     expr: str, at_value: str, port_width: str | None, env: dict | None = None,
     *, vl_name: str = "", vl_cell_name: str = "", vl_dir: str = "",
+    packed_note: str = "",
 ) -> str:
     """Apply ``@``, ``@"expr"`` and ``[]`` expansion to a connection.
 
@@ -487,8 +488,10 @@ def expand_connection(
 
         expr = re.sub(r'@"((?:[^"\\]|\\.)*)"', _eval, expr)
     expr = expr.replace("@", at_value)
-    rng = f"[{port_width}]" if port_width else ""
-    expr = expr.replace("[][]", rng)  # no multidim modeling: treat like []
+    # a multidim port has no single range: []/[][] expand to the
+    # verilog-mode dimensions note /*[D1][D2]*/ instead (packed_note)
+    rng = f"[{port_width}]" if port_width else packed_note
+    expr = expr.replace("[][]", rng)
     expr = expr.replace("[]", rng)
     return expr
 
@@ -502,6 +505,7 @@ def template_connection(
     *,
     vl_cell_name: str = "",
     vl_dir: str = "",
+    packed_note: str = "",
 ) -> str | None:
     """Connection for PORT_NAME under TEMPLATE, or None when no entry matches.
 
@@ -518,6 +522,7 @@ def template_connection(
             return expand_connection(
                 entry.connection, at_value, port_width, env,
                 vl_name=port_name, vl_cell_name=vl_cell_name, vl_dir=vl_dir,
+                packed_note=packed_note,
             )
     for entry in template.entries:  # top-most matching regexp wins
         if not entry.is_regex:
@@ -535,5 +540,6 @@ def template_connection(
             return expand_connection(
                 expr, at_value, port_width, env,
                 vl_name=port_name, vl_cell_name=vl_cell_name, vl_dir=vl_dir,
+                packed_note=packed_note,
             )
     return None
