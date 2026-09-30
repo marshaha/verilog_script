@@ -59,6 +59,7 @@ _PORT_PREFIX = re.compile(
     r"(?:\b(?:wire|reg|parameter|localparam|genvar|integer)\b)*\s*"
     r"(?:\[[^\]]*:[^\]]*\]\s*)*"
 )
+_AIO_MARK = re.compile(r"/\*\s*\b(?:autoinput|autooutput)\b", re.IGNORECASE)
 _PORT_TAIL = re.compile(r"\s*;.*$")
 _PORT_TRAIL_COMMA = re.compile(r"\s*,\s*$")  # header-style decl: `input clk,`
 _PORT_TRAIL_PAREN = re.compile(r"\s*\)+\s*$")  # single-line header: `input b)`
@@ -121,11 +122,13 @@ def kill_auto_arg(lines: Sequence[str]) -> list[str]:
             i += 1
             continue
         # find the bare `);` region terminator, bailing out on lines that
-        # clearly are not generated port-list content (misplaced marker)
+        # clearly are not generated port-list content (misplaced marker) or
+        # on AUTOINPUT/AUTOOUTPUT markers (the header is AIO-owned — never
+        # eat those markers as if they were a collapsed port list)
         j = i + 1
         plausible = True
         while j < n and not _REGION_END.search(lines[j]):
-            if _NOT_PORT_LIST.search(lines[j]):
+            if _NOT_PORT_LIST.search(lines[j]) or _AIO_MARK.search(lines[j]):
                 plausible = False
                 break
             j += 1
@@ -279,6 +282,18 @@ def auto_arg(lines: Sequence[str]) -> list[str]:
             j += 1
         j = min(j + 1, n)  # [i, j) is this module's span
         body = lines[i:j]
+        close_idx = next((k for k, ln in enumerate(body) if _CLOSE.search(ln)), None)
+        if close_idx is not None and any(
+            _AIO_MARK.search(ln) for ln in body[: close_idx + 1]
+        ):
+            # the header carries AUTOINPUT/AUTOOUTPUT markers: those regions
+            # own the port declarations — a packed /*autoarg*/ name list
+            # would duplicate them (and its `);` would split the header).
+            # The canonical combo is /*autoarg*/ in the header with the
+            # AIO markers in the body; leave this header alone.
+            out.extend(body)
+            i = j
+            continue
         inputs, outputs, inouts = _collect_ports(_filter_lines(body))
         out.extend(_expand_arg_markers(body, inputs, outputs, inouts))
         i = j

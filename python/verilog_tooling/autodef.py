@@ -302,12 +302,16 @@ class SignalTable:
     def discard(self, name: str) -> None:
         self.signals.pop(name, None)
 
-    def extend_io_from_line(self, line: str, seq: int) -> int:
+    def extend_io_from_line(self, line: str, seq: int, *, complete: bool = False) -> int:
         """automatic.vim s:ExtendIoFromLine: one ``input/output/inout`` line.
-        Returns the next io sequence number."""
+        Returns the next io sequence number.  COMPLETE marks declarations
+        inside an AUTO region: they are complete by construction (no
+        supplementary body wire/reg may be emitted for them)."""
         io_dir = re.match(r"\s*(\w+)", line).group(1)
         rest = re.sub(r"^\s*(input|output|inout)\s*", "", line)
         sig = Signal(width="c0", type="io_wire", io_dir=io_dir)
+        if complete:
+            sig.has_defined = True
         if rest.startswith("wire") and (len(rest) == 4 or not rest[4].isalnum()):
             sig.has_defined = True
             rest = re.sub(r"^wire\s*", "", rest)
@@ -2206,10 +2210,13 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
         name: "no driver or declaration found"
         for name in get_all_signals(lines, alldefs, allparas)
     }
+    from .inst import buffer_module_defs
+
     for excluded in (
         _loop_vars(lines),  # for-loop variables are never signals
         set(_const_symbols(lines)),  # named constants are not signals
         _structure_names(lines, modules),  # genvar/labels/instances
+        set(buffer_module_defs("\n".join(lines))),  # the module's own name
     ):
         for name in excluded:
             unresolved.pop(name, None)
@@ -2241,13 +2248,48 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     usr_seq = 0
     i = 0
     n = len(lines)
+    in_auto_region = False
     while i < n:
+        # inside an AUTO-generated region (AUTOWIRE/AUTOREG/AUTOINPUT/
+        # AUTOOUTPUT): declarations there are complete by construction and
+        # owned by those commands — record io ports as fully defined so a
+        # bare AUTOINPUT v2k `input foo,` does not get a duplicate body
+        # `wire foo;`, and take nothing else from the region
+        if re.match(r"^\s*// Beginning of automatic\b", lines[i]):
+            in_auto_region = True
+            i += 1
+            continue
+        if in_auto_region:
+            if "// End of automatics" in lines[i]:
+                in_auto_region = False
+                i += 1
+                continue
+            stripped = _strip_line(lines[i])
+            if _PORT_LINE.match(stripped):
+                io_seq = signals.extend_io_from_line(stripped, io_seq, complete=True)
+            i += 1
+            continue
         i = _skip_autodef_off(lines, i)
         if i >= n:
             break
         j = _skip_comment_line(lines, i)
         if j == -1:
             break
+        # the comment batch-skip may have jumped over a region header hiding
+        # in the comment span (marker line + `// Beginning ...` are both
+        # comment-only) — resume region tracking at the header
+        region_start = next(
+            (
+                k
+                for k in range(i, j)
+                if re.match(r"^\s*// Beginning of automatic\b", lines[k])
+            ),
+            None,
+        )
+        if region_start is not None:
+            in_auto_region = True
+            i = region_start + 1
+            continue
         i = j
         line = _strip_line(lines[i])
         if _PORT_LINE.match(line) or _DATA_LINE.match(line) or _is_typedef_decl(line):

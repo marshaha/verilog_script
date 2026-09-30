@@ -1445,6 +1445,15 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     from . import arg, autodef, emacs, fmt, inout, wire
     from .libdirs import parse_typedef_regexp
 
+    # emacs verilog-delete-auto-buffer ("Clear existing autos else we'll be
+    # screwed by existing ones"): drop last round's wire/reg regions up
+    # front — left in place, their declarations would poison this round's
+    # AUTOINPUT/AUTOWIRE exclusions (the regions are regenerated below)
+    lines = wire.kill_auto_wire(lines)
+    lines = wire.kill_auto_reg(lines)
+    lines = autodef.kill_auto_def_t(lines)
+    text = "\n".join(lines)
+
     names_emacs: set[str] = set()
     for kw in ("AUTOINST", "AUTOINSTPARAM"):
         try:
