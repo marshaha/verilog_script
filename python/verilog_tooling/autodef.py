@@ -261,6 +261,7 @@ class Signal:
     type: str = ""
     has_defined: bool = False
     driven: bool = False  # io port driven by assign/always/subinstance
+    packed_dims: tuple[str, ...] = ()  # multi-dim packed port: ("W-1:0", "3:0")
     seq: str = ""
     line: str = ""
     name: str = ""
@@ -540,7 +541,7 @@ class SignalTable:
             # its range is a valid width fallback when nothing else declares
             # the net (an undriven net between two instances would otherwise
             # be flagged unresolved)
-            self._record_inst_input_net(net, rest, port_width)
+            self._record_inst_input_net(net, rest, port_width, port)
             return
         # a symbolic (parameter/expression) width is kept verbatim — the
         # declaration stays symbolic (wire [APB_BUS_ADDR_WIDTH-1:0]); blanking
@@ -556,6 +557,9 @@ class SignalTable:
             )
             return
         sig = self.signals.get(net)
+        pdims = _conn_packed_dims(rest) or (
+            tuple(_normalize_dim(d) for d in port.packed) if len(port.packed) > 1 else ()
+        )
         if sig is not None:
             if sig.type == "inst_in_wire":
                 sig.type = "inst_wire"  # a real driver trumps the input-port hint
@@ -565,15 +569,20 @@ class SignalTable:
                     sig.width = port_width
             if sig.type in ("io_wire", "io_reg"):
                 sig.driven = True
+            if pdims and not sig.packed_dims and sig.type in (
+                "inst_wire", "inst_in_wire", "freg", "creg", "wire"
+            ):
+                # io/usrdef signals keep their own declaration's dims
+                sig.packed_dims = pdims
             if sig.width == "":
                 sig.width = port_width
             elif sig.type == "usrdef":
                 # instance output port wider than the hand-written net
                 self._update_usrdef_width(sig, port_width)
         else:
-            self.signals[net] = Signal(width=port_width, type="inst_wire")
+            self.signals[net] = Signal(width=port_width, type="inst_wire", packed_dims=pdims)
 
-    def _record_inst_input_net(self, net: str, rest: str, port_width: str) -> None:
+    def _record_inst_input_net(self, net: str, rest: str, port_width: str, port: "Port") -> None:
         """Weakest width source: a net connected to a submodule INPUT port.
 
         The width candidate is an explicit full-range select in the
@@ -594,15 +603,21 @@ class SignalTable:
         elif not re.match(r"\s*\[", mrest):
             width = port_width  # plain net: the input port's declared msb
         # else: a bit/part select — no usable width info
-        if not width:
+        pdims = _conn_packed_dims(rest) or (
+            tuple(_normalize_dim(d) for d in port.packed) if len(port.packed) > 1 else ()
+        )
+        if not width and not pdims:
             return
         sig = self.signals.get(net)
         if sig is None:
-            self.signals[net] = Signal(width=width, type="inst_in_wire")
+            self.signals[net] = Signal(width=width, type="inst_in_wire", packed_dims=pdims)
         elif sig.type == "inst_in_wire":
-            if sig.width in ("", "c0") or _wider(width, sig.width):
-                sig.width = width
-        elif sig.width == "" and sig.type in ("freg", "creg", "wire"):
+            if sig.width in ("", "c0") or (width and _wider(width, sig.width)):
+                if width:
+                    sig.width = width
+            if pdims and not sig.packed_dims:
+                sig.packed_dims = pdims  # only inst_in_wire reaches here
+        elif sig.width == "" and sig.type in ("freg", "creg", "wire") and width:
             sig.width = width
 
     def _extend_inst_wire_partselect(
@@ -1519,13 +1534,11 @@ def div_signals(signals: SignalTable) -> Divided:
             sig.name = name
             div.wire.append(sig)
         elif sig.type in ("inst_wire", "inst_in_wire"):
-            if sig.width != "":
+            if sig.width != "" or sig.packed_dims:
                 sig.name = name
                 div.inst_wire.append(sig)
-        if sig.type != "usrdef" and sig.width != "":
-            # 'reg  '/'wire ' is 5 chars; '[width:0]' adds len(width)+4
-            tmp_len = 5 if sig.width == "c0" else 5 + len(sig.width) + 4
-            div.max_len = max(div.max_len, tmp_len)
+        if sig.type != "usrdef" and (sig.width != "" or sig.packed_dims):
+            div.max_len = max(div.max_len, _sig_decl_len(sig))
     div.io_wire.sort(key=lambda s: s.seq)
     for bucket in (div.ff_reg, div.comb_reg, div.wire, div.inst_wire):
         bucket.sort(key=lambda s: s.name)
@@ -1576,12 +1589,45 @@ def _rewrite_usrdef_range(line: str, new_msb: str) -> str | None:
 
 def _emit_signal(sig: Signal, max_len: int, keyword: str) -> str:
     line = keyword + _cal_margin(_TYPE_FIELD, len(keyword))
-    if sig.width != "c0":
+    if sig.packed_dims:
+        # multi-dim packed port: keep the original dimensions verbatim —
+        # readable, and exactly what the submodule port declares
+        line += "".join(f"[{d}]" for d in sig.packed_dims)
+    elif sig.width != "c0":
         line += f"[{sig.width}:0]"
     line += _cal_margin(max_len, len(line)) + sig.name
     if sig.dims:
         line += " " + " ".join(f"[{d}]" for d in sig.dims)
     return line + ";"
+
+
+def _sig_decl_len(sig: Signal) -> int:
+    """Column contribution of one declaration: ``5 + len(width) + 4`` for a
+    vector ('reg  '/'wire ' is 5 chars; '[width:0]' adds 4), 5 for scalar;
+    multi-dim packed dims add their bracketed text."""
+    if sig.packed_dims:
+        return 5 + sum(len(d) + 2 for d in sig.packed_dims)
+    return 5 if sig.width == "c0" else 5 + len(sig.width) + 4
+
+
+_CONN_DIM_COMMENT = re.compile(r"/\*\s*((?:\[[^\]]+\])+)\s*\*/")
+_REDUNDANT_PARENS = re.compile(r"\((\w+)\)")
+
+
+def _normalize_dim(dim: str) -> str:
+    """Cosmetic: strip redundant parens around a lone symbol so all dims
+    read alike — ``(W)-1:0`` and ``W-1:0`` become ``W-1:0``."""
+    return _REDUNDANT_PARENS.sub(r"\1", dim.strip())
+
+
+def _conn_packed_dims(text: str) -> tuple[str, ...]:
+    """Packed dims from an EAI multidim connection note ``net/*[D1][D2]*/``:
+    the dims the template expansion already param-value-substituted, so they
+    name parent-visible symbols."""
+    m = _CONN_DIM_COMMENT.search(text)
+    if not m:
+        return ()
+    return tuple(_normalize_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
 
 
 # ---------------------------------------------------------------------------
@@ -2272,7 +2318,21 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     # compile: mark it unresolved instead of emitting a broken declaration
     known_syms = set(allparas) | set(_const_symbols(lines))
     for name, sig in list(signals.signals.items()):
-        if sig.width in ("", "c0") or sig.type == "usrdef":
+        if sig.type == "usrdef":
+            continue
+        if sig.packed_dims:
+            dims_text = "".join(f"[{d}]" for d in sig.packed_dims)
+            misses = sorted(
+                {s for d in sig.packed_dims for s in _width_unknown_syms(d, known_syms)}
+            )
+            if misses:
+                del signals.signals[name]
+                unresolved[name] = (
+                    f"packed dims '{dims_text}' reference symbol(s) not visible "
+                    f"in this module: {', '.join(misses)}"
+                )
+            continue
+        if sig.width in ("", "c0"):
             continue
         misses = _width_unknown_syms(sig.width, known_syms)
         if misses:

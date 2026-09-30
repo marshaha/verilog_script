@@ -53,7 +53,10 @@ from .autodef import (
     _DATA_LINE,
     _ENDMODULE,
     _PORT_LINE,
+    _conn_packed_dims,
     _emit_signal,
+    _normalize_dim,
+    _sig_decl_len,
     _skip_comment_line,
     _strip_line,
     get_all_defs,
@@ -115,12 +118,14 @@ def kill_auto_reg(lines: Sequence[str]) -> list[str]:
 @dataclass(frozen=True)
 class InstNet:
     """A net connected to an output/inout port of an /*autoinst*/ instance.
-    ``width`` is the port's msb text ('7', 'W-1') or 'c0' for a scalar."""
+    ``width`` is the port's msb text ('7', 'W-1') or 'c0' for a scalar;
+    ``packed_dims`` holds every packed range of a multi-dim port."""
 
     name: str
     width: str
     inst: str
     module: str
+    packed_dims: tuple = ()
 
 
 def _inst_driven_nets(
@@ -159,14 +164,12 @@ def _inst_driven_nets(
         inst_io = {p.name: p for p in moddef.ports if p.direction != "input"}
         param_values = param_by_line.get(idx) or {}
         i = idx + 1
-        while i < n and not re.search(r"\);\s*$", lines[i]):
+        while i < n:
             j = _skip_comment_line(lines, i)
             if j == -1:
                 return nets
             i = j
             line = lines[i]
-            if ");" in line:
-                break
             m = re.match(r"^\s*\.(\w+)\s*\((.*)", line)
             if m:
                 port_name, rest = m.group(1), m.group(2)
@@ -176,11 +179,27 @@ def _inst_driven_nets(
                     nm = re.search(r"\w+", rest)
                     if nm:
                         net = nm.group(0)
-                        raw = inst_io[port_name].width  # 'msb:lsb', None for scalar
+                        port = inst_io[port_name]
+                        raw = port.width  # 'msb:lsb', None for scalar
                         width = "c0" if raw is None else raw.split(":")[0].strip()
                         if param_values:
                             width = emacs._apply_param_values(width, param_values)
-                        nets.setdefault(net, InstNet(net, width, inst, module))
+                        # multi-dim packed port: prefer the dims in the EAI
+                        # connection note (already param-value substituted),
+                        # else the port's own packed ranges
+                        pdims = _conn_packed_dims(rest) or (
+                            tuple(_normalize_dim(d) for d in port.packed)
+                            if len(port.packed) > 1 else ()
+                        )
+                        if pdims and param_values:
+                            pdims = tuple(
+                                _normalize_dim(emacs._apply_param_values(d, param_values))
+                                for d in pdims
+                            )
+                        nets.setdefault(net, InstNet(net, width, inst, module, pdims))
+            if re.search(r"\);\s*$", line) or ");" in line:
+                i += 1
+                break
             i += 1
     return nets
 
@@ -231,12 +250,12 @@ def _module_tables(lines: Sequence[str]) -> tuple[SignalTable, SignalTable, set[
 
 
 def _name_col_max(sigs: Sequence[Signal]) -> int:
-    """autodef name-column width: floor 39, plus 5 + len(width) + 4 per
-    non-scalar signal ('reg  '/'wire ' is 5 chars; '[width:0]' adds 4)."""
+    """autodef name-column width: floor 39, plus the declaration length of
+    each non-scalar signal (multi-dim packed dims included)."""
     max_len = _MAX_LEN_FLOOR
     for sig in sigs:
-        if sig.width != "c0":
-            max_len = max(max_len, 5 + len(sig.width) + 4)
+        if sig.width != "c0" or sig.packed_dims:
+            max_len = max(max_len, _sig_decl_len(sig))
     return max_len
 
 
@@ -314,9 +333,18 @@ def auto_wire(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[st
         if typedef_re and re.search(typedef_re, name):
             continue  # a typedef, not a net (verilog-typedef-regexp)
         net = driven[name]
-        if net.width not in ("", "c0") and not _width_syms_known(net.width, local_syms):
+        if net.packed_dims:
+            # multi-dim declaration compiles only when every dim's symbols
+            # are visible here (the EAI note / #(...) map usually provides them)
+            if any(
+                not _width_syms_known(d, local_syms) for d in net.packed_dims
+            ):
+                continue
+        elif net.width not in ("", "c0") and not _width_syms_known(net.width, local_syms):
             continue
-        sigs.append(Signal(width=net.width, type="inst_wire", name=name))
+        sigs.append(
+            Signal(width=net.width, type="inst_wire", name=name, packed_dims=net.packed_dims)
+        )
         comments[name] = f"// From {net.inst} of {net.module}.v"
     return _regen(lines, _AUTOWIRE_MARK_FULL, _WIRE_HEADER, "wire ", sigs, comments)
 
