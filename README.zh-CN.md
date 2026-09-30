@@ -422,8 +422,9 @@ verilog-mode 的开/闭逗号修补）；放在模块体内则是 1995 风格（
 `verilog-auto-output-ignore-regexp` 文件局部变量。位宽取自子模块端口
 并代入实例 `#(...)` 参数（verilog-mode 自己只对 AUTOINST 重写过的
 连接才能拿到位宽；标记紧跟在模块头 `(` 后时 emacs 会直接报错，我们
-正常展开）。由 `assign` 驱动的线网不会被声明成 input，拼接/表达式
-连接直接跳过——这两种情况生成了也编译不过。
+正常展开）。未声明的 assign 驱动线网**会**被声明成 input（与 emacs
+一致——提升为端口后自行删掉那条 assign）；拼接/表达式连接默认跳过
+（`verilog-auto-ignore-concat` 设为 nil 可改为提取）。
 
 文件局部变量（写在 `// Local Variables:` 段里），对 AIO、AUTOWIRE
 等生效：

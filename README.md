@@ -445,8 +445,9 @@ file-local variables are honored. Widths come from the submodule port with
 the instance's `#(...)` parameter overrides substituted (verilog-mode
 itself only gets widths right for AUTOINST-rewritten connections; a marker
 immediately after the header `(` expands normally where emacs errors out).
-A net driven by an `assign` is never made an input, and concat/expression
-connections are skipped — both cases would not compile.
+An undeclared assign-driven net IS made an input (verilog-mode parity —
+promote it to a port and drop the assign yourself); concat/expression
+connections are skipped unless `verilog-auto-ignore-concat` is nil.
 
 File-local variables (in the `// Local Variables:` section) tuning AIO,
 AUTOWIRE and friends:
