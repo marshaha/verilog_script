@@ -7,7 +7,8 @@
 "   begni  ->  begin        (typo fix)
 "
 " Triggered for *.v, *.vh, *.sv, *.svh buffers.
-" Disable with:  let g:verilog_abbrev_disable = 1
+" OFF by default — enable in your vimrc with:
+"   let g:verilog_abbrev_enable = 1
 
 if exists('g:loaded_verilog_abbrev')
     finish
@@ -20,7 +21,7 @@ augroup verilog_abbrev
 augroup END
 
 function! s:VerilogAbbrev() abort
-    if exists('g:verilog_abbrev_disable')
+    if !get(g:, 'verilog_abbrev_enable', 0)
         return
     endif
     iabbrev <buffer> <= <= #`RD
