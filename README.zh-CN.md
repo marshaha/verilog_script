@@ -425,6 +425,16 @@ verilog-mode 的开/闭逗号修补）；放在模块体内则是 1995 风格（
 正常展开）。由 `assign` 驱动的线网不会被声明成 input，拼接/表达式
 连接直接跳过——这两种情况生成了也编译不过。
 
+文件局部变量（写在 `// Local Variables:` 段里），对 AIO、AUTOWIRE
+等生效：
+
+- `// verilog-auto-ignore-concat: t` —— **我们的默认值**（emacs 默认
+  nil)：忽略 `{...}` / `(...)` 形式的引脚连接，正好对应"用 {} 把信号
+  括起来豁免"的用法。设成 `nil` 则改为提取其中的信号（支持嵌套
+  拼接、单目运算符和 cast；元素保留自己的 `[msb:lsb]` 位宽）；
+- `// verilog-auto-wire-comment: nil` —— 不生成声明行尾的
+  `// To`/`// From` 注释。
+
 ## 目录结构
 
 ```

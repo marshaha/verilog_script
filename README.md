@@ -448,6 +448,17 @@ immediately after the header `(` expands normally where emacs errors out).
 A net driven by an `assign` is never made an input, and concat/expression
 connections are skipped — both cases would not compile.
 
+File-local variables (in the `// Local Variables:` section) tuning AIO,
+AUTOWIRE and friends:
+
+- `// verilog-auto-ignore-concat: t` — **our default** (emacs defaults to
+  nil): pin connections in `{...}` or `(...)` are ignored, which is
+  exactly the "wrap it in {} to exempt it" workflow. Set it to `nil` to
+  extract the identifiers instead (nested concats, unary operators and
+  casts are stripped; an element keeps its own `[msb:lsb]` width);
+- `// verilog-auto-wire-comment: nil` — suppress the `// To`/`// From`
+  comments on generated declarations.
+
 ## Layout
 
 ```
