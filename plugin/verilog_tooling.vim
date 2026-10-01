@@ -110,12 +110,107 @@ function! s:InterfaceArgs() abort
     return l:args
 endfunction
 
-" Run python -m {mod} {cmd} [extra] on the current buffer.
+" Apply the transformed lines to buffer a:bufnr with a minimal-diff update
+" (undo history, marks, folds and cursor survive); reports what changed.
+function! s:ApplyResult(bufnr, new, cmd) abort
+    let l:cur = bufnr('%')
+    if l:cur != a:bufnr
+        " the update helpers (setline/deletebufline/append) target the
+        " current buffer — bail out rather than touch the wrong one
+        echohl ErrorMsg
+        echom printf('[verilog_tooling] %s: finished, but you switched buffers — result left unapplied (re-run the command)', a:cmd)
+        echohl None
+        return
+    endif
+    let l:old = getline(1, '$')
+    if a:new ==# l:old
+        echom '[verilog_tooling] ' . a:cmd . ': no changes'
+        return
+    endif
+    let l:view = winsaveview()
+    " minimal-diff update: only replace the lines that actually differ,
+    " so Vim redraws less and marks/folds outside the change survive
+    let l:min = min([len(l:old), len(a:new)])
+    let l:i = 0
+    while l:i < l:min && l:old[l:i] ==# a:new[l:i]
+        let l:i += 1
+    endwhile
+    let l:j = 0
+    while l:j < l:min - l:i && l:old[len(l:old) - 1 - l:j] ==# a:new[len(a:new) - 1 - l:j]
+        let l:j += 1
+    endwhile
+    let l:mid = a:new[l:i : len(a:new) - l:j - 1]
+    if l:i == 0 && l:j == 0
+        " no common head/tail: plain whole-buffer replace (deleting all
+        " lines would leave a stray empty line behind)
+        call setline(1, l:mid)
+        if line('$') > len(l:mid)
+            call deletebufline('', len(l:mid) + 1, '$')
+        endif
+    else
+        " deletebufline()/append() instead of an ex :delete range: a
+        " 'N,Mdelete _' via :execute was observed to delete ~10 lines
+        " beyond M on large buffers, silently corrupting the buffer
+        if len(l:old) - l:j >= l:i + 1
+            call deletebufline('', l:i + 1, len(l:old) - l:j)
+        endif
+        if !empty(l:mid)
+            call append(l:i, l:mid)
+        endif
+    endif
+    call winrestview(l:view)
+    setlocal modified
+    let l:deleted = len(l:old) - l:j - l:i
+    echom printf('[verilog_tooling] %s: line %d: %d -> %d line(s)',
+          \ a:cmd, l:i + 1, l:deleted, len(l:mid))
+endfunction
+
+" stderr lines of the async job: python progress logs and tracebacks.
+" Show them live in :messages so a big top visibly makes progress.
+" Long lines (module lists) are truncated — an overlong echom triggers a
+" hit-enter prompt that would stall a headless run.
+function! s:OnLog(cmd, channel, msg) abort
+    if a:msg !=# ''
+        echom strpart(a:msg, 0, 200) . (len(a:msg) > 200 ? ' …' : '')
+    endif
+endfunction
+
+function! s:OnExit(cmd, bufnr, tick, infile, outfile, job, code) abort
+    if getbufvar(a:bufnr, 'verilog_tooling_running')
+        call setbufvar(a:bufnr, 'verilog_tooling_running', 0)
+    endif
+    if a:code != 0
+        echohl ErrorMsg
+        echom printf('[verilog_tooling] %s: failed (exit %d) — see :messages', a:cmd, a:code)
+        echohl None
+    elseif getbufvar(a:bufnr, 'changedtick') != a:tick
+        echohl WarningMsg
+        echom printf('[verilog_tooling] %s: buffer was edited while running — result NOT applied (re-run)', a:cmd)
+        echohl None
+    elseif filereadable(a:outfile)
+        call s:ApplyResult(a:bufnr, readfile(a:outfile), a:cmd)
+    endif
+    call delete(a:infile)
+    call delete(a:outfile)
+endfunction
+
+" Run python -m {mod} {cmd} [extra] on the current buffer, ASYNCHRONOUSLY:
+" python progress logs stream into :messages while it works (proof it is
+" alive on big tops), the buffer is refreshed on completion.  Re-entry on
+" the same buffer is blocked; edits made while it runs abort the apply.
 " a:which >= 0 passes --which (Nth /*autoinst*/ instance).
 function! s:Run(mod, cmd, extra, which) abort
     if !s:CheckPython()
         return
     endif
+    if get(b:, 'verilog_tooling_running')
+        echohl WarningMsg
+        echom '[verilog_tooling] a command is already running on this buffer'
+        echohl None
+        return
+    endif
+    let b:verilog_tooling_running = 1
+    let l:tick = b:changedtick
     let l:in = tempname() . '.v'
     let l:out = tempname() . '.v'
     call writefile(getline(1, '$'), l:in)
@@ -130,66 +225,16 @@ function! s:Run(mod, cmd, extra, which) abort
     call extend(l:argv, a:extra)
     call extend(l:argv, s:LibdirArgs())
 
-    " PYTHONPATH covers src/ so no editable install is needed.
-    let l:save_pp = $PYTHONPATH
-    let $PYTHONPATH = s:py_path . (empty(l:save_pp) ? '' : ':' . l:save_pp)
-    " system() with a list misfires under some locales; build a string cmd.
-    let l:cmdstr = join(map(copy(l:argv), 'shellescape(v:val)'), ' ')
-    let l:result = system(l:cmdstr)
-    let $PYTHONPATH = l:save_pp
-
-    if v:shell_error != 0
-        echohl ErrorMsg
-        echom '[verilog_tooling] ' . substitute(l:result, '\n$', '', '')
-        echohl None
-        call delete(l:in)
-        return
+    echom printf('[verilog_tooling] %s: running ...', a:cmd)
+    let l:job = job_start(l:argv, {
+          \ 'env': {'PYTHONPATH': s:py_path . (empty($PYTHONPATH) ? '' : ':' . $PYTHONPATH)},
+          \ 'err_cb': function('s:OnLog', [a:cmd]),
+          \ 'exit_cb': function('s:OnExit', [a:cmd, bufnr('%'), l:tick, l:in, l:out]),
+          \ })
+    if job_status(l:job) ==# 'fail'
+        let b:verilog_tooling_running = 0
+        echohl ErrorMsg | echom '[verilog_tooling] failed to start python job' | echohl None
     endif
-
-    let l:new = readfile(l:out)
-    let l:old = getline(1, '$')
-    if l:new !=# l:old
-        let l:view = winsaveview()
-        " minimal-diff update: only replace the lines that actually differ,
-        " so Vim redraws less and marks/folds outside the change survive
-        let l:min = min([len(l:old), len(l:new)])
-        let l:i = 0
-        while l:i < l:min && l:old[l:i] ==# l:new[l:i]
-            let l:i += 1
-        endwhile
-        let l:j = 0
-        while l:j < l:min - l:i && l:old[len(l:old) - 1 - l:j] ==# l:new[len(l:new) - 1 - l:j]
-            let l:j += 1
-        endwhile
-        let l:mid = l:new[l:i : len(l:new) - l:j - 1]
-        if l:i == 0 && l:j == 0
-            " no common head/tail: plain whole-buffer replace (deleting all
-            " lines would leave a stray empty line behind)
-            call setline(1, l:mid)
-            if line('$') > len(l:mid)
-                call deletebufline('', len(l:mid) + 1, '$')
-            endif
-        else
-            " deletebufline()/append() instead of an ex :delete range: a
-            " 'N,Mdelete _' via :execute was observed to delete ~10 lines
-            " beyond M on large buffers, silently corrupting the buffer
-            if len(l:old) - l:j >= l:i + 1
-                call deletebufline('', l:i + 1, len(l:old) - l:j)
-            endif
-            if !empty(l:mid)
-                call append(l:i, l:mid)
-            endif
-        endif
-        call winrestview(l:view)
-        setlocal modified
-        let l:deleted = len(l:old) - l:j - l:i
-        echom printf('[verilog_tooling] %s: line %d: %d -> %d line(s)',
-              \ a:cmd, l:i + 1, l:deleted, len(l:mid))
-    else
-        echom '[verilog_tooling] ' . a:cmd . ': no changes'
-    endif
-    call delete(l:in)
-    call delete(l:out)
 endfunction
 
 function! s:InstCmd(cmd, extra) abort

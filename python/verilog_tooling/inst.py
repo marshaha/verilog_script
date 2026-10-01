@@ -40,9 +40,27 @@ import datetime
 import os
 import sys
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence, Union
+
+
+_LOG_T0: float | None = None
+
+
+def _log(msg: str) -> None:
+    """Progress log on stderr with a per-step delta — visible in a terminal
+    and streamed into vim :messages by the plugin's async job, so a large
+    top visibly makes progress instead of looking hung.  Set
+    VERILOG_TOOLING_QUIET=1 to silence."""
+    global _LOG_T0
+    if os.environ.get("VERILOG_TOOLING_QUIET"):
+        return
+    now = time.monotonic()
+    dt = 0.0 if _LOG_T0 is None else now - _LOG_T0
+    _LOG_T0 = now
+    print(f"[verilog_tooling] {msg} (+{dt:.1f}s)", file=sys.stderr)
 
 from .comments import strip_comments as _strip_c, strip_line_comments as _strip_lc
 from .libdirs import resolve_libdirs
@@ -1456,6 +1474,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     lines = autodef.kill_auto_def_t(lines)
     text = "\n".join(lines)
 
+    _log(f"aall: {Path(args.ref_file or args.in_file).name}: resolving instance modules ...")
     names_emacs: set[str] = set()
     for kw in ("AUTOINST", "AUTOINSTPARAM"):
         try:
@@ -1477,6 +1496,10 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
 
     resolved = {n for n in names_wire if src_of(n) is not None}
     missing = sorted(names_emacs - resolved)
+    _log(
+        f"aall: {len(files)} module file(s) read"
+        + (f", {len(missing)} unresolved (skipped)" if missing else "")
+    )
     if missing:
         print(
             f"warning: skipping {len(missing)} instance(s) with no module file: "
@@ -1498,6 +1521,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
         lines = emacs.auto_param(
             lines, module_params, which=which, templates=templates, sort=args.sort
         )
+        _log(f"aall: AUTOINSTPARAM done ({len(emacs.find_auto_markers(lines, 'AUTOINSTPARAM'))} instance(s))")
     else:
         print(f"warning: AUTOINSTPARAM skipped, module file not found for: {step_missing}", file=sys.stderr)
 
@@ -1522,6 +1546,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
             star_expand=args.star_expand,
             star_save=args.star_save,
         )
+        _log(f"aall: AUTOINST done ({len(emacs.find_auto_markers(lines, 'AUTOINST'))} instance(s))")
     else:
         print(f"warning: AUTOINST skipped, module file not found for: {step_missing}", file=sys.stderr)
 
@@ -1536,12 +1561,15 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     lines = inout.auto_output(lines, modules_w)
     lines = inout.auto_input(lines, modules_w)
     lines = inout.auto_inout(lines, modules_w)
+    _log("aall: AUTOOUTPUT/AUTOINPUT/AUTOINOUT done")
     lines = wire.auto_wire(lines, modules_w)
     lines = wire.auto_reg(lines, modules_w)
     lines = autodef.auto_def_t(lines, modules_w)
+    _log("aall: AUTOWIRE/AUTOREG/autodef done")
     # 7. AR (autoarg) / 8. AF (all format) need no module table
     lines = arg.auto_arg(lines)
     lines = fmt.all_format(lines)
+    _log("aall: autoarg + format done")
     return lines
 
 
@@ -1629,7 +1657,9 @@ def main(argv=None) -> None:
         if re.search(r"^\s*//\s*verilog-auto-inst-param-value\s*:\s*t\b", text, re.M):
             args.param_value = True
     if args.command == "aall":
+        _t0 = time.monotonic()
         out = _main_aall(text, lines, args)
+        _log(f"aall: done, {len(lines)} -> {len(out)} line(s), {time.monotonic() - _t0:.1f}s total")
     elif args.command == "kill":
         out = kill_auto_inst(lines, args.which)
     elif args.command in ("aif", "apf", "adf", "af"):
