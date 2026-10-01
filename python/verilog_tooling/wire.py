@@ -498,6 +498,17 @@ def auto_wire(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[st
     ports, usrdef, _ = _module_tables(lines)
     declared = set(ports.signals) | set(usrdef.signals)
     declared |= get_all_defs(lines) | get_all_paras(lines)
+    # a port-list name on an instance inout pin is an inout PORT by intent
+    # (autoarg emits the inout declaration) — never an AUTOWIRE wire
+    from .inst import auto_arg_port_names
+
+    port_names = auto_arg_port_names(lines)
+    if port_names:
+        declared |= {
+            name
+            for name, net in driven.items()
+            if net.direction == "inout" and name in port_names
+        }
     # widths must name LOCAL symbols; a still-foreign width (a submodule
     # parameter the instance map does not cover) would not compile — skip it
     # here and let autodef flag the net as unresolved instead

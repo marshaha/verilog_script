@@ -290,6 +290,9 @@ class SignalTable:
     # width referencing anything else (a VARIABLE index like chn_sel_idx) is
     # not a constant msb and is discarded
     known: frozenset = frozenset()
+    # names in /*autoarg*/ port lists: such a name on an instance inout pin
+    # is an inout PORT by intent (autoarg declares it) — never an inst_wire
+    port_names: frozenset = frozenset()
 
     def __contains__(self, name: str) -> bool:
         return name in self.signals
@@ -563,6 +566,13 @@ class SignalTable:
         if port.direction == "interface":
             # an interface connection instantiates an interface — it is
             # neither a wire driver nor a plain input width hint
+            return
+        if port.direction == "inout" and net in self.port_names:
+            # a port-list name on an inout pin: autoarg emits the inout
+            # port declaration — record it as an inout port (no wire, no
+            # unresolved), never an inst_wire
+            if net not in self.signals:
+                self.signals[net] = Signal(width="c0", type="io_inout", has_defined=True)
             return
         raw = port.width  # ModuleDef stores the 'msb:lsb' range
         port_width = "c0" if raw is None else raw.split(":")[0].strip()
@@ -1516,7 +1526,7 @@ def update_define(
                 if sig is not None and sig.type == "usrdef":
                     signals._update_usrdef_width(sig, width)
     for name, sig in signals.signals.items():
-        if sig.type in ("io_wire", "io_reg", "usrdef", "inst_wire"):
+        if sig.type in ("io_wire", "io_reg", "io_inout", "usrdef", "inst_wire"):
             unresolved.pop(name, None)
         elif sig.type in ("freg", "creg", "wire"):
             # these are always declared now (empty width defaults to scalar in
@@ -2336,6 +2346,9 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
 
     signals = SignalTable()
     signals.known = frozenset(set(allparas) | set(_const_symbols(lines)))
+    from .inst import auto_arg_port_names
+
+    signals.port_names = frozenset(auto_arg_port_names(lines))
     link_dict: dict[str, set[str]] = {}
     io_seq = 0
     usr_seq = 0

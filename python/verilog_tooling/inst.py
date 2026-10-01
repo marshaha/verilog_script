@@ -49,6 +49,40 @@ from typing import Iterable, Mapping, Sequence, Union
 _LOG_T0: float | None = None
 
 
+_ARG_PORT_MARK = re.compile(r"/\*\s*\b(?:autoarg|AUTOARG)\b")
+_ARG_PORT_CLOSE = re.compile(r"\);\s*$")
+_ARG_PORT_NOT_LIST = re.compile(
+    r";|\b(?:input|output|inout|wire|reg|logic|assign|always|module|endmodule)\b"
+)
+
+
+def auto_arg_port_names(lines: Sequence[str]) -> set[str]:
+    """Names listed in /*autoarg*/ header port regions — the port-intent set
+    shared by autoarg (dropped-name warning) and AUTOWIRE/autodef (a name on
+    an instance inout pin is an inout PORT by intent, never a wire)."""
+    names: set[str] = set()
+    i, n = 0, len(lines)
+    while i < n:
+        if not _ARG_PORT_MARK.search(lines[i]) or _ARG_PORT_CLOSE.search(lines[i]):
+            i += 1
+            continue
+        j = i + 1
+        plausible = True
+        collected: list[str] = []
+        while j < n and not _ARG_PORT_CLOSE.search(lines[j]):
+            if _ARG_PORT_NOT_LIST.search(lines[j]):
+                plausible = False
+                break
+            collected.extend(re.findall(r"\w+", re.sub(r"//.*$", "", lines[j])))
+            j += 1
+        if plausible and j < n:
+            names.update(collected)
+            i = j + 1
+        else:
+            i += 1
+    return names
+
+
 def _log(msg: str) -> None:
     """Progress log on stderr with a per-step delta — visible in a terminal
     and streamed into vim :messages by the plugin's async job, so a large
@@ -1566,8 +1600,9 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     lines = wire.auto_reg(lines, modules_w)
     lines = autodef.auto_def_t(lines, modules_w)
     _log("aall: AUTOWIRE/AUTOREG/autodef done")
-    # 7. AR (autoarg) / 8. AF (all format) need no module table
-    lines = arg.auto_arg(lines)
+    # 7. AR (autoarg) / 8. AF (all format) need no module table (AR uses it
+    # only for the inout inference on direction-less port-list names)
+    lines = arg.auto_arg(lines, modules_w)
     lines = fmt.all_format(lines)
     _log("aall: autoarg + format done")
     return lines

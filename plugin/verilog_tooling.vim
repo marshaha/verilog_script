@@ -268,7 +268,7 @@ command! -nargs=0 APF  call s:Run('verilog_tooling.inst', 'apf', [], -1)
 command! -nargs=0 ADF  call s:Run('verilog_tooling.inst', 'adf', [], -1)
 command! -nargs=0 AF   call s:Run('verilog_tooling.inst', 'af', [], -1)
 
-command! -nargs=0 AR   call s:Run('verilog_tooling.arg', 'ar', [], -1)
+command! -nargs=0 AR   call s:Run('verilog_tooling.arg', 'ar', s:InterfaceArgs(), -1)
 command! -nargs=0 KAR  call s:Run('verilog_tooling.arg', 'kill', [], -1)
 command! -nargs=0 AD   call s:Run('verilog_tooling.autodef', 'adt', s:InterfaceArgs(), -1)
 command! -nargs=0 ADT  call s:Run('verilog_tooling.autodef', 'adt', s:InterfaceArgs(), -1)

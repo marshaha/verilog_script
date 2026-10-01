@@ -37,7 +37,7 @@ from __future__ import annotations
 import argparse
 import re
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .inst import VerilogBuffer
 
@@ -99,23 +99,11 @@ _NOT_PORT_LIST = re.compile(
 
 def _auto_arg_region_names(lines: Sequence[str]) -> set[str]:
     """Names currently listed in the /*autoarg*/ port region(s) — the
-    baseline for the dropped-name warning."""
-    names: set[str] = set()
-    i = 0
-    n = len(lines)
-    while i < n:
-        if not _MARK.search(lines[i]) or _CLOSE.search(lines[i]):
-            i += 1
-            continue
-        j = i + 1
-        while j < n and not _REGION_END.search(lines[j]):
-            if _NOT_PORT_LIST.search(lines[j]) or _AIO_MARK.search(lines[j]):
-                break
-            for tok in re.findall(r"\w+", re.sub(r"//.*$", "", lines[j])):
-                names.add(tok)
-            j += 1
-        i += 1
-    return names
+    baseline for the dropped-name warning (alias of
+    :func:`verilog_tooling.inst.auto_arg_port_names`)."""
+    from .inst import auto_arg_port_names
+
+    return auto_arg_port_names(lines)
 
 
 def kill_auto_arg(lines: Sequence[str]) -> list[str]:
@@ -279,7 +267,7 @@ def _pack_ports(ports: Sequence[str], *, trailing_comma: bool) -> list[str]:
     return out
 
 
-def auto_arg(lines: Sequence[str]) -> list[str]:
+def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = None) -> list[str]:
     """Regenerate the ``/*autoarg*/`` port list in every module header.
 
     The previous expansion is collapsed first (so re-running is idempotent);
@@ -291,11 +279,20 @@ def auto_arg(lines: Sequence[str]) -> list[str]:
 
     A name in the old list that has no ``input``/``output``/``inout``
     declaration (e.g. only ``wire`` — not a legal port: verilator reports
-    "Pin is not an in/out/inout/interface") is dropped; every drop is
-    reported on stderr so pads never vanish silently — give them a direction
-    (``/*AUTOINOUT*/`` for instance-connected inouts) to keep them.
+    "Pin is not an in/out/inout/interface") is dropped, with a warning per
+    name — EXCEPT the inout inference: with MODULES given, a direction-less
+    port-list name connected to an inout pin of an instantiated module (a
+    pad, e.g. ``.GPIO0_A00 (GPIO0_A00)``) is KEPT in the //Inouts section
+    and an ``inout`` body declaration is emitted for it, making the port
+    legal.
     """
     old_names = _auto_arg_region_names(lines)
+    inout_nets: dict[str, str] = {}
+    if modules:
+        from .wire import _inst_driven_nets
+
+        for name, net in _inst_driven_nets(lines, modules, ("inout",), simple_only=True).items():
+            inout_nets[name] = net.width
     lines = kill_auto_arg(lines)
     out: list[str] = []
     i = 0
@@ -323,7 +320,28 @@ def auto_arg(lines: Sequence[str]) -> list[str]:
             i = j
             continue
         inputs, outputs, inouts = _collect_ports(_filter_lines(body))
-        out.extend(_expand_arg_markers(body, inputs, outputs, inouts))
+        declared = set(inputs) | set(outputs) | set(inouts)
+        infer = sorted(
+            name for name in old_names if name in inout_nets and name not in declared
+        )
+        expanded = _expand_arg_markers(body, inputs, outputs, inouts + infer)
+        if infer:
+            # inferred inout declarations go after the module's last inout
+            # declaration (the port-declaration area): on the next run the
+            # collected inouts keep this exact order, so the section is
+            # byte-stable across runs.  With no prior inout decl, they go
+            # right after the header close (never past endmodule).
+            decls = _emit_inout_decls(infer, inout_nets)
+            ins = next(
+                (k for k, ln in enumerate(expanded) if re.match(r"\s*\);\s*$", ln)),
+                len(expanded) - 1,
+            ) + 1
+            for k in range(len(expanded) - 1, -1, -1):
+                if re.match(r"\s*inout\b", expanded[k]):
+                    ins = k + 1
+                    break
+            expanded[ins:ins] = decls
+        out.extend(expanded)
         i = j
     dropped = sorted(old_names - _auto_arg_region_names(out))
     if dropped:
@@ -335,6 +353,25 @@ def auto_arg(lines: Sequence[str]) -> list[str]:
             file=sys.stderr,
         )
     return out
+
+
+def _emit_inout_decls(
+    names: Sequence[str], inout_nets: Mapping[str, str]
+) -> list[str]:
+    """1995-style body declarations for inferred inout ports, in the autodef
+    house style.  ``inout wire`` marks the port fully defined (a bare
+    ``inout`` would earn a supplementary wire from autodef)."""
+    from .autodef import Signal, _emit_signal, _sig_decl_len
+
+    sigs = [
+        Signal(width=inout_nets.get(name) or "c0", type="io_inout", name=name)
+        for name in names
+    ]
+    max_len = 39
+    for sig in sigs:
+        if sig.width != "c0":
+            max_len = max(max_len, _sig_decl_len(sig))
+    return [_emit_signal(sig, max_len, "inout wire") for sig in sigs]
 
 
 def _expand_arg_markers(
@@ -411,18 +448,69 @@ def create_by_args(args_l=None):
         "-i", "--in_file", required=True, help="buffer file with /*autoarg*/ markers"
     )
     parser.add_argument("-o", "--out_file", required=True, help="output file")
-    # accepted and ignored, so the shared Vim front-end can always pass them
-    parser.add_argument("-y", "--libdir", action="append", default=[],
-                        help="(unused by these commands)")
-    parser.add_argument("--ref_file", default=None,
-                        help="(unused by these commands)")
+    parser.add_argument(
+        "-y",
+        "--libdir",
+        action="append",
+        default=[],
+        help="library dir holding <module>.v/.sv (repeatable; used by the "
+        "inout inference to read instance port directions)",
+    )
+    parser.add_argument(
+        "-I",
+        "--interface",
+        action="append",
+        default=[],
+        help="user-known SystemVerilog interface type name (repeatable)",
+    )
+    parser.add_argument(
+        "--ref_file",
+        default=None,
+        help="real source file anchoring Local-Variables relative paths (default: in_file)",
+    )
     return parser.parse_args(args_l)
 
 
 def main(argv=None) -> None:
+    from .inst import (
+        _cli_resolve,
+        _resolve_module_files,
+        buffer_module_defs,
+        _module_lines,
+        find_interfaces,
+        parse_module_ports,
+    )
+
     args = create_by_args(argv)
     lines = Path(args.in_file).read_text().splitlines()
-    out = auto_arg(lines) if args.command == "ar" else kill_auto_arg(lines)
+    if args.command == "kill":
+        out = kill_auto_arg(lines)
+    else:
+        # resolve instance modules for the inout inference (best effort —
+        # without them the inference is simply inactive)
+        modules = {}
+        names = set()
+        buf = VerilogBuffer(lines)
+        for idx in buf.markers():
+            try:
+                names.add(buf.resolve_instance(idx)[0])
+            except ValueError:
+                pass
+        if names:
+            libdirs, inst_files, vc_entries, extensions = _cli_resolve(args, lines)
+            files = _resolve_module_files(names, libdirs, inst_files, vc_entries, extensions)
+            buffer_mods = buffer_module_defs("\n".join(lines))
+            from .libdirs import parse_typedef_regexp
+
+            td_re = parse_typedef_regexp(lines)
+            interfaces = set(find_interfaces(libdirs)) | set(args.interface)
+            for name in names:
+                src = _module_lines(name, files, buffer_mods)
+                if src is not None:
+                    modules[name] = parse_module_ports(
+                        src, typedef_regexp=td_re, interfaces=interfaces
+                    )
+        out = auto_arg(lines, modules)
     Path(args.out_file).write_text("\n".join(out) + "\n")
 
 
