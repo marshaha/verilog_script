@@ -494,7 +494,29 @@ let g:verilog_tooling_eai_flags = ['--sort']        " extra EAI flags
 let g:verilog_tooling_no_mappings = 1               " no default mappings
 let g:verilog_abbrev_enable = 1                     " opt-in insert abbrevs (<=>`<= #`RD`, beg, begni)
 let g:verilog_tooling_interfaces = ['axera_apb_interface']  " user-known SV interface types
+let g:verilog_tooling_quiet = 1                     " no pipeline progress logs
 ```
+
+Progress logs (aall step timings in `:messages`) are **on by default**;
+three ways to turn them off, pick whichever fits:
+
+```vim
+" 1. vimrc — the vim-native switch
+let g:verilog_tooling_quiet = 1
+
+" 2. vimrc or live in vim — the raw environment variable (children inherit it)
+let $VERILOG_TOOLING_QUIET = 1
+```
+
+```bash
+# 3. shell — for terminal/batch runs (make permanent in ~/.bashrc or ~/.zshrc)
+export VERILOG_TOOLING_QUIET=1
+# or per command:
+VERILOG_TOOLING_QUIET=1 python3 -m verilog_tooling.inst aall -i top.v -o out.v -y .
+```
+
+With logs quieted, only the plugin's own `running ...` / completion summary
+messages remain.
 
 `g:verilog_tooling_interfaces` lists SystemVerilog interface type names the
 library scan cannot find (the file is not under any `-y` dir). Ports like

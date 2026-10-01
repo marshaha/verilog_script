@@ -468,7 +468,28 @@ let g:verilog_tooling_eai_flags = ['--sort']        " EAI 的额外参数
 let g:verilog_tooling_no_mappings = 1               " 不装默认按键映射
 let g:verilog_abbrev_enable = 1                     " 开启插入缩写（默认关闭）
 let g:verilog_tooling_interfaces = ['axera_apb_interface']  " 自定义 SV interface 类型名
+let g:verilog_tooling_quiet = 1                     " 关闭流水线进度日志
 ```
+
+进度日志（`:messages` 里的 aall 分步耗时）**默认开启**；三种关闭方式，
+任选其一：
+
+```vim
+" 1. vimrc —— vim 风格开关
+let g:verilog_tooling_quiet = 1
+
+" 2. vimrc 或 vim 内直接设环境变量（子进程会继承）
+let $VERILOG_TOOLING_QUIET = 1
+```
+
+```bash
+# 3. shell —— 终端/批处理（想永久生效写进 ~/.bashrc 或 ~/.zshrc）
+export VERILOG_TOOLING_QUIET=1
+# 或单条命令临时用：
+VERILOG_TOOLING_QUIET=1 python3 -m verilog_tooling.inst aall -i top.v -o out.v -y .
+```
+
+静音后只保留插件自己的 `running ...` 和完成摘要两行消息。
 
 `g:verilog_tooling_interfaces` 列出库扫描找不到的 SystemVerilog
 interface 类型名（文件不在任何 `-y` 目录下）。这样
