@@ -227,7 +227,10 @@ function! s:Run(mod, cmd, extra, which) abort
 
     echom printf('[verilog_tooling] %s: running ...', a:cmd)
     let l:job = job_start(l:argv, {
-          \ 'env': {'PYTHONPATH': s:py_path . (empty($PYTHONPATH) ? '' : ':' . $PYTHONPATH)},
+          \ 'env': {
+          \   'PYTHONPATH': s:py_path . (empty($PYTHONPATH) ? '' : ':' . $PYTHONPATH),
+          \   'VERILOG_TOOLING_QUIET': get(g:, 'verilog_tooling_quiet', 0) ? '1' : '',
+          \ },
           \ 'err_cb': function('s:OnLog', [a:cmd]),
           \ 'exit_cb': function('s:OnExit', [a:cmd, bufnr('%'), l:tick, l:in, l:out]),
           \ })
