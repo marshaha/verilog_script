@@ -6,8 +6,12 @@ Emacs `verilog-mode` AUTO expansions and the `automatic.vim` command set,
 rewritten as a self-contained Vim plugin backed by a small Python package.
 
 No pip dependencies (Python standard library only), no emacs required.
-The buffer never needs to be saved first — commands run on the live buffer
-and update it in place (undo history, marks and folds survive).
+The buffer never needs to be saved first — commands run **asynchronously**
+on the live buffer: key pipeline steps log into `:messages` while they run
+(so a big SoC top visibly makes progress instead of looking hung), and the
+buffer updates in place on completion (undo history, marks and folds
+survive). Edits made while a command runs abort that apply, so nothing is
+ever clobbered; `VERILOG_TOOLING_QUIET=1` silences the progress logs.
 
 ## Requirements
 
