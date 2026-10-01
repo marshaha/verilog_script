@@ -274,6 +274,10 @@ class Signal:
     dims_select_only: bool = False
     line_idx: int = -1  # buffer line holding a usrdef declaration (-1: unknown)
     width_updated: bool = False  # a stale usrdef width was grown from its driver
+    drop_line: bool = False  # a waived usrdef line re-derived identically by
+    # instance evidence: the region re-emits it, the orphan line is dropped
+    orphan: bool = False  # a kill-waived line sitting in the orphan slot
+    # (directly after the /*autodef*/ marker) — eligible for absorb
 
 
 
@@ -344,7 +348,8 @@ class SignalTable:
         return seq + 1
 
     def extend_usrdef_from_line(
-        self, line: str, seq: int, raw: str | None = None, line_idx: int = -1
+        self, line: str, seq: int, raw: str | None = None, line_idx: int = -1,
+        orphan_idxs: "frozenset | None" = None,
     ) -> int:
         """automatic.vim s:ExtendUsrdefFromLine: a user ``wire``/``reg``/...
         declaration.  LINE is the parseable statement text (comments and
@@ -352,10 +357,13 @@ class SignalTable:
         original buffer text kept verbatim in ``Signal.line`` — usrdef
         declarations are never regenerated (only a provably stale width is
         grown in place, see :meth:`_update_usrdef_width`).  LINE_IDX is the
-        buffer index of RAW so a stale-width fix can be applied in place."""
+        buffer index of RAW so a stale-width fix can be applied in place.
+        ORPHAN_IDXS marks kill-waived lines (the old region's survivors)."""
         rest = re.sub(r"^\s*(wire|reg|logic|parameter|localparam|genvar|integer)\b\s*", "", line)
         sig = Signal(width="c0", type="usrdef", line=raw if raw is not None else line)
         sig.line_idx = line_idx
+        if orphan_idxs and line_idx in orphan_idxs:
+            sig.orphan = True
         rest = re.sub(r"^signed\b\s*", "", rest)  # `wire signed [3:0]` alike
         if rest.startswith("["):
             # the FIRST bracket group is the packed range — a greedy match
@@ -453,6 +461,19 @@ class SignalTable:
                 sig.dims_select_only = side.elem_range is None
             self.signals[name] = sig
             return
+        if sig.type == "usrdef" and side.dims and not sig.drop_line and sig.orphan:
+            # a waived usrdef (kill's unregenerable waiver) re-derived
+            # identically from the for-loop evidence: absorb it into the
+            # region instead of shuttling between region and orphan slot
+            udims = _usrdef_unpacked_dims(sig.line)
+            if udims is not None and tuple(_clean_dim(d) for d in side.dims) == udims:
+                sig.type = stype
+                sig.dims = side.dims
+                sig.dims_select_only = side.elem_range is None
+                sig.drop_line = True
+                if width:
+                    sig.width = width
+                return
         if sig.type == "inst_in_wire" and stype in ("freg", "creg", "wire"):
             # a real driver (always/assign) trumps the input-port hint: take
             # both the driver type and its width evidence
@@ -581,6 +602,8 @@ class SignalTable:
 
             pdims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in pdims)
         if sig is not None:
+            if pdims and _absorb_waived_usrdef(sig, pdims, "inst_wire"):
+                return  # orphan absorbed into the region as inst_wire
             if sig.type == "inst_in_wire":
                 sig.type = "inst_wire"  # a real driver trumps the input-port hint
                 if port_width not in ("", "c0") and (
@@ -645,6 +668,8 @@ class SignalTable:
         sig = self.signals.get(net)
         if sig is None:
             self.signals[net] = Signal(width=width, type="inst_in_wire", packed_dims=pdims)
+        elif sig.type == "usrdef" and pdims:
+            _absorb_waived_usrdef(sig, pdims, "inst_in_wire")
         elif sig.type == "inst_in_wire":
             if sig.width in ("", "c0") or (width and _wider(width, sig.width)):
                 if width:
@@ -1549,7 +1574,12 @@ def div_signals(signals: SignalTable) -> Divided:
     div = Divided([], [], [], [], [], _MAX_LEN_FLOOR)
     for name, sig in signals.signals.items():
         if sig.type in ("io_wire", "io_reg"):
-            if not sig.has_defined:
+            # multi-dim io port (greedy width holds "A:0][B-1" or
+            # "A:0] [B-1"): the port declaration itself is already the
+            # complete net declaration — a supplementary body wire would be
+            # redundant, and kill's unregenerable waiver would shuttle it
+            # out of the region on the next run
+            if not sig.has_defined and not re.search(r"\]\s*\[", sig.width):
                 sig.name = name
                 div.io_wire.append(sig)
         elif sig.type == "freg":
@@ -1674,8 +1704,58 @@ def _conn_packed_dims(text: str) -> tuple[str, ...]:
     return tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
 
 
-# ---------------------------------------------------------------------------
-# KillAutoDefT
+# declarations re-extraction cannot reproduce are "unregenerable" — the
+# kill waiver keeps them verbatim (packed-dim selects and unpacked indices
+# are indistinguishable in assignments)
+_UNREGENERABLE = re.compile(
+    r"^\s*(?:wire|reg|logic)\s*(?:\[[^\]]+\]\s*){2,}\w+\s*;"
+    r"|^\s*(?:wire|reg|logic)\s*(?:\[[^\]]+\]\s*)*\w+\s*(?:\[[^\]]+\]\s*)+;"
+)
+
+
+def _usrdef_packed_dims(line: str) -> "tuple[str, ...] | None":
+    """The packed-dimension prefix of a waive-shaped usrdef declaration
+    (``wire[2:0][10:0] x;`` -> ("2:0", "10:0")), normalized like the
+    instance-evidence dims; None for non-matching lines."""
+    if not _UNREGENERABLE.match(line):
+        return None
+    m = re.match(r"^\s*(?:wire|reg|logic)\s*((?:\[[^\]]+\]\s*)+)", line)
+    if not m:
+        return None
+    dims = tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
+    return dims if len(dims) > 1 else None
+
+
+def _usrdef_unpacked_dims(line: str) -> "tuple[str, ...] | None":
+    """The after-name (unpacked) dims of a waive-shaped usrdef declaration
+    (``reg rlast_r[0:N];`` -> ("0:N",)); None for non-matching lines."""
+    if not _UNREGENERABLE.match(line):
+        return None
+    m = re.match(
+        r"^\s*(?:wire|reg|logic)\s*(?:\[[^\]]+\]\s*)*\w+\s*((?:\[[^\]]+\]\s*)+)\w*;", line
+    )
+    if not m:
+        return None
+    return tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
+
+
+def _absorb_waived_usrdef(sig: Signal, pdims: tuple, new_type: str) -> bool:
+    """A waived orphan (kill's unregenerable waiver left it right after the
+    /*autodef*/ marker) whose declaration the current evidence re-derives
+    IDENTICALLY: convert it to the derived signal type so the region
+    re-emits it and the orphan line is dropped — otherwise the line shuttles
+    between the region and the orphan slot on alternating runs.  Only orphan
+    lines are eligible: a hand-written multi-dim declaration anywhere else
+    keeps its usrdef status verbatim."""
+    if sig.type != "usrdef" or not sig.orphan or not pdims or sig.drop_line:
+        return False
+    dims = _usrdef_packed_dims(sig.line)
+    if dims is None or tuple(_clean_dim(d) for d in pdims) != dims:
+        return False
+    sig.type = new_type
+    sig.packed_dims = tuple(_clean_dim(d) for d in pdims)
+    sig.drop_line = True
+    return True
 
 
 def kill_auto_def_t(lines: Sequence[str]) -> list[str]:
@@ -1690,10 +1770,6 @@ def kill_auto_def_t(lines: Sequence[str]) -> list[str]:
     - any unpacked dimension after the name (``reg [W:0] mem [0:N][0:M];``)
       — packed-dim selects and unpacked indices are indistinguishable in
       assignments, so these declarations are not regenerable."""
-    unregenerable = re.compile(
-        r"^\s*(?:wire|reg|logic)\s*(?:\[[^\]]+\]\s*){2,}\w+\s*;"
-        r"|^\s*(?:wire|reg|logic)\s*(?:\[[^\]]+\]\s*)*\w+\s*(?:\[[^\]]+\]\s*)+;"
-    )
     out: list[str] = []
     i = 0
     while i < len(lines):
@@ -1708,7 +1784,7 @@ def kill_auto_def_t(lines: Sequence[str]) -> list[str]:
             while i < len(lines) and _norm_marker(lines[i]) != _norm_marker(
                 "// End of automatic define"
             ):
-                if unregenerable.match(lines[i]):
+                if _UNREGENERABLE.match(lines[i]):
                     out.append(lines[i])
                 i += 1
             if i < len(lines):
@@ -1718,6 +1794,22 @@ def kill_auto_def_t(lines: Sequence[str]) -> list[str]:
             out.append(line)
         i += 1
     return out
+
+
+def _waived_orphan_lines(lines: Sequence[str]) -> frozenset:
+    """Line indices of kill-waived multi-dim declarations: waive-shaped
+    lines sitting directly after an /*autodef*/ marker — the old region's
+    surviving lines, which kill leaves in place.  Only these are eligible
+    for absorb; a hand-written declaration elsewhere is never touched."""
+    out: set[int] = set()
+    for i, ln in enumerate(lines):
+        if not _AUTODEF_MARK.match(ln):
+            continue
+        j = i + 1
+        while j < len(lines) and _UNREGENERABLE.match(lines[j]):
+            out.add(j)
+            j += 1
+    return frozenset(out)
 
 
 # ---------------------------------------------------------------------------
@@ -2221,6 +2313,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
         for name in excluded:
             unresolved.pop(name, None)
     inst_headers = _instance_headers(lines, modules)
+    orphan_idxs = _waived_orphan_lines(lines)
 
     # the #(...) overrides of every instance, keyed by marker line (and by
     # header line for marker-less instances): lets port widths referencing
@@ -2328,7 +2421,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
                     usr_line = lines[k]  # the declaration ends on this line
                 else:
                     usr_line = line
-                usr_seq = signals.extend_usrdef_from_line(stmt, usr_seq, usr_line, k)
+                usr_seq = signals.extend_usrdef_from_line(stmt, usr_seq, usr_line, k, orphan_idxs)
             i = k + 1
             continue
         elif _ALWAYS_OPEN.match(line):
@@ -2454,6 +2547,9 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     for sig in signals.signals.values():
         if sig.type == "usrdef" and sig.line_idx >= 0:
             usrdef_lines[sig.line_idx] = sig
+    # waived orphan lines the instance evidence re-derived identically:
+    # they are emitted inside the region instead
+    drop_idxs = {s.line_idx for s in signals.signals.values() if s.drop_line and s.line_idx >= 0}
 
     out: list[str] = []
     for idx, line in enumerate(lines):
@@ -2461,6 +2557,8 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             out.extend(_emit_sections(line, div, unresolved, loop_decls))
         elif idx in usrdef_lines:
             out.append(usrdef_lines[idx].line)  # possibly width-updated decl
+        elif idx in drop_idxs:
+            continue
         else:
             out.append(line)
     return out
