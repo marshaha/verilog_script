@@ -211,6 +211,8 @@ def _parse_port_line(line: str) -> Port | None:
     rest = line[m.end() :]
     rest = re.sub(r"^wire\b\s*", "", rest)  # `wire [7:0]` and `wire[7:0]` alike
     rest = re.sub(r"^reg\b\s*", "", rest)
+    # explicit net types: tri/tri0/tri1/trireg/wand/wor/supply0/supply1
+    rest = re.sub(r"^(?:tri0|tri1|trireg|tri|wand|wor|supply0|supply1)\b\s*", "", rest)
     rest = re.sub(r"^signed\b\s*", "", rest)
     # collect all packed dimensions:  [3:0][7:0] name ...
     packed: list[str] = []
