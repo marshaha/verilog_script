@@ -197,6 +197,14 @@ assign 线网、实例输出驱动的线网，以及 for 循环变量
 放错位置的标记（不在模块头内）会原样保留不动。
 `KAR` 把端口表折叠回标记。
 
+**inout 推断**：端口表里的名字若只有 `wire` 或没有任何方向声明
+（在 Verilog 里不是合法端口），本应从表中丢弃并逐名告警；但如果它
+连到了某个实例的 **inout 引脚**（比如 pad 的 `.GPIO0_A00 (GPIO0_A00)`)，
+AR 会把它保留在 `//Inouts` 节，并在模块体内补一行
+`inout wire name;` 声明，使端口合法——AUTOWIRE/autodef 也不会再为
+它声明 `wire`。其余无方向的名字仍会丢弃并在 stderr/`:messages` 里
+逐名告警。
+
 ### AW / AREG —— AUTOWIRE / AUTOREG
 
 `/*AUTOWIRE*/` 为实例输出驱动的线网声明 wire；`/*AUTOREG*/` 为没有

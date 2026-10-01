@@ -210,6 +210,15 @@ declarations (`input clk,`), several declarations on one line
 (`val[3:0]`). A misplaced marker (outside the header) is left untouched.
 `KAR` collapses the list back to the marker.
 
+**Inout inference**: a port-list name with only a `wire` declaration or
+no direction at all is not a legal Verilog port and would be dropped
+(with a per-name warning) — unless it connects to an **inout pin** of an
+instantiated module (a pad, e.g. `.GPIO0_A00 (GPIO0_A00)`). Then AR
+keeps it in the `//Inouts` section and emits an `inout wire name;` body
+declaration so the port is legal — and AUTOWIRE/autodef never declare a
+`wire` for it. Other direction-less names are still dropped, each listed
+on stderr / in `:messages`.
+
 ### AW / AREG — AUTOWIRE / AUTOREG
 
 `/*AUTOWIRE*/` declares wires for nets driven by instance outputs;
