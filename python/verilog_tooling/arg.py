@@ -97,6 +97,27 @@ _NOT_PORT_LIST = re.compile(
 )
 
 
+def _auto_arg_region_names(lines: Sequence[str]) -> set[str]:
+    """Names currently listed in the /*autoarg*/ port region(s) — the
+    baseline for the dropped-name warning."""
+    names: set[str] = set()
+    i = 0
+    n = len(lines)
+    while i < n:
+        if not _MARK.search(lines[i]) or _CLOSE.search(lines[i]):
+            i += 1
+            continue
+        j = i + 1
+        while j < n and not _REGION_END.search(lines[j]):
+            if _NOT_PORT_LIST.search(lines[j]) or _AIO_MARK.search(lines[j]):
+                break
+            for tok in re.findall(r"\w+", re.sub(r"//.*$", "", lines[j])):
+                names.add(tok)
+            j += 1
+        i += 1
+    return names
+
+
 def kill_auto_arg(lines: Sequence[str]) -> list[str]:
     """Collapse every regenerated port list back to a ``... (/*autoarg*/);``
     stub: the marker line is closed with ``);`` and the generated lines up to
@@ -267,7 +288,14 @@ def auto_arg(lines: Sequence[str]) -> list[str]:
     body (the buffer may hold several modules), separated by blank lines, and
     finally by ``);``.  Lines outside the marker region are copied verbatim.
     A section with no signal is omitted entirely.
+
+    A name in the old list that has no ``input``/``output``/``inout``
+    declaration (e.g. only ``wire`` — not a legal port: verilator reports
+    "Pin is not an in/out/inout/interface") is dropped; every drop is
+    reported on stderr so pads never vanish silently — give them a direction
+    (``/*AUTOINOUT*/`` for instance-connected inouts) to keep them.
     """
+    old_names = _auto_arg_region_names(lines)
     lines = kill_auto_arg(lines)
     out: list[str] = []
     i = 0
@@ -297,6 +325,15 @@ def auto_arg(lines: Sequence[str]) -> list[str]:
         inputs, outputs, inouts = _collect_ports(_filter_lines(body))
         out.extend(_expand_arg_markers(body, inputs, outputs, inouts))
         i = j
+    dropped = sorted(old_names - _auto_arg_region_names(out))
+    if dropped:
+        import sys
+
+        print(
+            f"warning: autoarg: {len(dropped)} name(s) dropped from the port "
+            f"list (no input/output/inout declaration): {dropped}",
+            file=sys.stderr,
+        )
     return out
 
 
