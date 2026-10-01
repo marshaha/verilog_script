@@ -165,6 +165,7 @@ def _module_skeleton() -> list[str]:
     return [
         "/*autoDISABLEinput*/",
         "/*autoDISABLEoutput*/",
+        "/*autoDISABLEinout*/",
         "",
         "input                                   clk;",
         "input                                   rst_n;",
