@@ -221,12 +221,16 @@ def parse_interface(lines: Iterable[str]) -> InterfaceDef:
 
 def find_interfaces(libdirs: Sequence[str]) -> dict[str, Path]:
     """Map interface names to the library file declaring them: every ``.v`` /
-    ``.sv`` file in LIBDIRS is scanned for ``interface <name>`` headers."""
+    ``.sv`` file in LIBDIRS is scanned for ``interface <name>`` headers
+    (`` `include`` files read through — an interface may be declared in an
+    included header)."""
+    from .libdirs import expand_includes
+
     found: dict[str, Path] = {}
     for d in libdirs:
         for path in sorted(Path(d).glob("*.v")) + sorted(Path(d).glob("*.sv")):
             try:
-                text = path.read_text()
+                text = "\n".join(expand_includes(path.read_text().splitlines()))
             except OSError:
                 continue
             for m in re.finditer(r"^\s*interface\s+(\w+)", text, re.M):
@@ -435,7 +439,9 @@ def parse_module_ports(
     """
     set_typedef_regexp(typedef_regexp)  # None clears it for this parse
     interfaces = set(interfaces) if interfaces else None
-    lines = _expand_ansi_header(list(lines), interfaces)
+    from .libdirs import expand_includes
+
+    lines = _expand_ansi_header(expand_includes(list(lines)), interfaces)
     entries: list[Entry] = []
     seen_module = False
     have_port = False
