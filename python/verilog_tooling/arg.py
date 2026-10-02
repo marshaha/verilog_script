@@ -236,6 +236,118 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
 # AutoArg emission
 
 
+def _consume_ansi_header(lines: Sequence[str]) -> "tuple[list[str], list[str]]":
+    """Move ANSI io declarations of a /*autoarg*/ header into the body.
+
+    verilog-mode/autoarg house style is 1995: the header holds only the
+    regenerated name list.  When the io declarations live INSIDE the parens
+    (``module m (/*autoarg*/ input wire a, output wire [3:0] b);``) they are
+    consumed and returned as semicolon-terminated body declarations
+    (interleaved comments/blanks move with them); otherwise the marker's
+    regenerated ``);`` would leave them dangling after the header — an
+    ``output wire a,`` with no ``;`` is a syntax error.  Returns
+    (new_lines, body_decls); no ANSI declarations -> (lines, [])."""
+    mk = next((k for k, ln in enumerate(lines) if _MARK_LINE.search(ln)), None)
+    if mk is None:
+        return list(lines), []
+    m = _MARK.search(lines[mk])
+    # header close: the line holding the ')' that closes the port list the
+    # marker sits in (comment-masked paren scan)
+    from .comments import mask_comments
+
+    text = "\n".join(lines)
+    masked = mask_comments(text)
+    mstart = sum(len(ln) + 1 for ln in lines[:mk]) + m.start()
+    depth = 0
+    for ch in masked[:mstart]:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+    if depth < 1:
+        return list(lines), []  # misplaced marker (not inside a port list)
+    target = depth - 1
+    hc = None
+    i = mstart
+    while i < len(masked):
+        ch = masked[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == target:
+                hc = text.count("\n", 0, i)
+                break
+        i += 1
+    if hc is None:
+        return list(lines), []
+    cend = lines[mk].find("*/", m.end())
+    cend = len(lines[mk]) if cend < 0 else cend + 2
+    pieces: list[tuple[int, str]] = []
+    if lines[mk][cend:].strip():
+        pieces.append((mk, lines[mk][cend:]))
+    pieces.extend((k, lines[k]) for k in range(mk + 1, hc + 1))
+    if not any(re.match(r"\s*(?:input|output|inout)\b", t) for _, t in pieces):
+        return list(lines), []
+
+    decls: list[str] = []
+    keep: dict[int, str] = {}
+    cur: list[str] = []
+    cur_indent = ""
+
+    def flush() -> None:
+        stmt = " ".join(cur)
+        cur.clear()
+        stmt, _, comment = stmt.partition("//")
+        stmt = re.sub(r"[,\s]+$", "", stmt)
+        stmt = re.sub(r"\)\s*;\s*$|\)+\s*$", "", stmt)
+        stmt = re.sub(r"[,\s]+$", "", stmt)
+        segs = _dir_segments(stmt)
+        for _, seg in segs or [("", stmt)]:
+            seg = seg.strip(" ,\t")
+            if seg:
+                decls.append(
+                    cur_indent + seg + ";" + ("  // " + comment.strip() if comment else "")
+                )
+
+    def complete(stmt: str) -> bool:
+        """The statement carries a name (not just a direction/width prefix)."""
+        last = _dir_segments(stmt)
+        if not last:
+            return False
+        tail = last[-1][1].rstrip().rstrip(",").rstrip(")").rstrip()
+        return bool(_PORT_PREFIX.sub("", tail).strip())
+
+    for k, piece in pieces:
+        if cur:
+            cur.append(piece.strip())
+            if complete(" ".join(cur)):
+                flush()
+            continue
+        if re.match(r"\s*(?:input|output|inout)\b", piece):
+            cur_indent = re.match(r"\s*", piece).group(0)
+            cur.append(piece.strip())
+            if complete(piece):
+                flush()
+        elif re.match(r"^\s*\)\s*;?\s*$", piece):
+            pass  # the header's own close: _expand_arg_markers re-adds it
+        elif not piece.strip() or piece.strip().startswith("//"):
+            decls.append(piece.rstrip())  # comments/blanks move with the decls
+        else:
+            keep[k] = piece  # foreign header content (e.g. a bare name): stay
+    if cur:
+        flush()
+    out: list[str] = []
+    for k, ln in enumerate(lines):
+        if k == mk:
+            out.append(ln[:cend])
+        elif mk < k <= hc and k not in keep:
+            continue  # consumed into the body declarations
+        else:
+            out.append(ln)
+    return out, decls
+
+
 def _pack_ports(ports: Sequence[str], *, trailing_comma: bool) -> list[str]:
     """Greedily pack PORTS onto ``    a, b, c`` lines, like the Vim loop.
 
@@ -324,7 +436,16 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
         infer = sorted(
             name for name in old_names if name in inout_nets and name not in declared
         )
+        # ANSI io declarations in the header move to the body (1995 style):
+        # the regenerated name list would otherwise leave them dangling
+        body, ansi_decls = _consume_ansi_header(body)
         expanded = _expand_arg_markers(body, inputs, outputs, inouts + infer)
+        if ansi_decls:
+            ins = next(
+                (k for k, ln in enumerate(expanded) if re.match(r"\s*\);\s*$", ln)),
+                0,
+            ) + 1
+            expanded[ins:ins] = ansi_decls
         if infer:
             # inferred inout declarations go after the module's last inout
             # declaration (the port-declaration area): on the next run the
