@@ -335,12 +335,15 @@ class SignalTable:
     def extend_io_from_line(self, line: str, seq: int, *, complete: bool = False) -> int:
         """automatic.vim s:ExtendIoFromLine: one ``input/output/inout`` line.
         Returns the next io sequence number.  COMPLETE marks declarations
-        inside an AUTO region: they are complete by construction (no
-        supplementary body wire/reg may be emitted for them)."""
+        inside an AUTO region: input/output declarations there are complete
+        by construction (no supplementary body wire/reg may be emitted for
+        them).  A bare ``inout`` stays INCOMPLETE even in an AUTO region:
+        the autodef io-wire section emits its companion ``wire name;`` (the
+        automatic.vim dual-declaration house style — emacs never does this)."""
         io_dir = re.match(r"\s*(\w+)", line).group(1)
         rest = re.sub(r"^\s*(input|output|inout)\s*", "", line)
         sig = Signal(width="c0", type="io_wire", io_dir=io_dir)
-        if complete:
+        if complete and io_dir != "inout":
             sig.has_defined = True
         if rest.startswith("wire") and (len(rest) == 4 or not rest[4].isalnum()):
             sig.has_defined = True
@@ -2379,12 +2382,15 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     in_auto_region = False
     while i < n:
         # track AUTO-generated regions (AUTOWIRE/AUTOREG/AUTOINPUT/
-        # AUTOOUTPUT): an io port declared there is complete by construction
-        # (no supplementary body wire/reg may be emitted for it — a bare
-        # AUTOINPUT v2k `input foo,` would otherwise get a duplicate
-        # `wire foo;`), while the region's wire/reg declarations are read
-        # like any other usrdef declaration (AUTOWIRE runs before ADT in the
-        # pipeline; missing them would duplicate the wires)
+        # AUTOOUTPUT): an input/output port declared there is complete by
+        # construction (no supplementary body wire/reg may be emitted for it
+        # — a bare AUTOINPUT v2k `input foo,` would otherwise get a duplicate
+        # `wire foo;`), while a bare AUTOINOUT `inout foo;` deliberately
+        # stays incomplete so the io-wire section emits its companion
+        # `wire foo;` (dual-declaration house style); the region's wire/reg
+        # declarations are read like any other usrdef declaration (AUTOWIRE
+        # runs before ADT in the pipeline; missing them would duplicate the
+        # wires)
         if re.match(r"^\s*// Beginning of automatic\b", lines[i]):
             in_auto_region = True
             i += 1

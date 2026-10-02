@@ -493,7 +493,7 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[s
     if not _wire_comment_enabled(lines):
         comments = {}
     return _regen(
-        lines, "AUTOINOUT", _INOUT_HEADER, "inout wire", sigs, comments, _IGNORE_RE["inout"]
+        lines, "AUTOINOUT", _INOUT_HEADER, "inout", sigs, comments, _IGNORE_RE["inout"]
     )
 
 
