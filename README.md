@@ -130,6 +130,18 @@ directory listings and read on a thread pool (NFS-friendly — no
 stat-per-module-dir storm). Measured on a 199-file project: 3.4× faster
 than the eight separate commands, byte-identical output.
 
+### `include handling
+
+Every analysis that reads Verilog (parameter/`define collection, module
+port/interface parsing, AUTOINST/AUTOINSTPARAM, AUTOWIRE, autodef) sees
+through `` `include "x"`` — including the inline ``#(`include "m_params.svh")``
+parameter-list form, and constant-expression values (`A+B`, `$clog2(X)`,
+`(X==1) ? 1 : $clog2(X)`) fold to integers. Missing files keep the
+directive untouched (one warning). The output text always keeps the
+original `` `include`` line.  This is deliberately stronger than Emacs:
+verilog-mode's `verilog-auto-read-includes` defaults to nil, reads only
+`` `define`` macros, and only from line-start directives.
+
 ## Command reference
 
 ### AALL — everything, in the right order

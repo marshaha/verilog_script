@@ -126,6 +126,16 @@ endmodule
 "每个模块×每个目录一次 stat"的风暴）。在 199 个文件的工程上实测：
 比分开跑八个命令快 3.4 倍，输出逐字节一致。
 
+### `include 处理
+
+所有读取 Verilog 的分析（parameter/`define 收集、模块端口/interface 解析、
+AUTOINST/AUTOINSTPARAM、AUTOWIRE、autodef）都会透视 `` `include "x"``——
+包括 `#(`include "m_params.svh")` 这种行内参数表形式；常量表达式
+（`A+B`、`$clog2(X)`、`(X==1) ? 1 : $clog2(X)`）会折叠成整数。文件找不到时
+保留原指令并告警一次；输出文本始终保留原 `` `include`` 行。
+这是有意强于 Emacs 的：verilog-mode 的 `verilog-auto-read-includes`
+默认为 nil，且只读行首指令里的 `` `define`` 宏。
+
 ## 命令详解
 
 ### AALL —— 按正确顺序跑全部
