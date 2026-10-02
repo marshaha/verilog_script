@@ -259,12 +259,25 @@ def _mask_line_comments(text: str) -> str:
 
 
 def find_auto_templates(text: str) -> list[AutoTemplate]:
-    """Find every ``/* ... AUTO_TEMPLATE ... */`` block in a buffer."""
+    """Find every ``/* ... AUTO_TEMPLATE ... */`` block in a buffer.
+
+    A malformed block (e.g. a truncated connection line leaving the parens
+    unbalanced) is skipped with a warning rather than aborting the whole
+    command — the file's other templates and AUTO commands still run."""
+    import sys
+
     masked = _mask_line_comments(text)
     templates = []
     for m in _TEMPLATE_BLOCK.finditer(masked):
         line_no = text.count("\n", 0, m.start())
-        templates.append(_parse_template_body(m.group(1), line_no))
+        try:
+            templates.append(_parse_template_body(m.group(1), line_no))
+        except ValueError as exc:
+            print(
+                f"[verilog_tooling] warning: skipping malformed AUTO_TEMPLATE "
+                f"block at line {line_no + 1}: {exc}",
+                file=sys.stderr,
+            )
     return templates
 
 

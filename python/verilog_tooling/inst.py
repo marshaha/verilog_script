@@ -1317,7 +1317,11 @@ def _cli_libdirs(args, lines: list[str]) -> list[str]:
     file_dir = os.path.dirname(
         os.path.abspath(getattr(args, "ref_file", None) or args.in_file)
     )
-    return resolve_libdirs(lines, file_dir, extra_dirs=args.libdir) or ["."]
+    libdirs = resolve_libdirs(lines, file_dir, extra_dirs=args.libdir) or ["."]
+    from .libdirs import set_include_dirs
+
+    set_include_dirs(libdirs)
+    return libdirs
 
 
 def _cli_resolve(args, lines: list[str]) -> tuple[list[str], dict[str, str], list[str], list[str]]:
@@ -1344,6 +1348,9 @@ def _cli_resolve(args, lines: list[str]) -> tuple[list[str], dict[str, str], lis
             extensions.extend(e for e in parsed["extensions"] if e not in extensions)
     if not libdirs:
         libdirs = ["."]
+    from .libdirs import set_include_dirs
+
+    set_include_dirs(libdirs)
     return libdirs, lv["inst_files"], vc_entries, extensions
 
 

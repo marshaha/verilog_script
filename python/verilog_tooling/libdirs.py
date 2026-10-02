@@ -206,3 +206,99 @@ def resolve_libdirs(
         if nd not in out:
             out.append(nd)
     return out
+
+
+# ---------------------------------------------------------------------------
+# `include expansion (analysis only)
+#
+# Real projects put the module's parameter list in an included header
+# (``module m #(`include "m_params.svh") (...)``) or share `define/localparam
+# blocks via `include.  Parameter collection (parse_module_params,
+# get_all_paras, _const_symbols) must see through the directive or every
+# param-value / width-known check downstream silently degrades.
+
+_INCLUDE_DIRS: tuple[str, ...] = ()
+_INCLUDE_WARNED: set[str] = set()
+_INCLUDE_RE = re.compile(r'`include\s+"([^"]+)"')
+
+
+def set_include_dirs(dirs: Sequence[str]) -> None:
+    """Search path for `` `include "x"`` resolution (the module libdirs:
+    ``-y`` + Local-Variables dirs + the buffer file's own directory)."""
+    global _INCLUDE_DIRS
+    _INCLUDE_DIRS = tuple(dict.fromkeys(d for d in dirs if d))
+
+
+def include_dirs() -> tuple[str, ...]:
+    return _INCLUDE_DIRS
+
+
+def expand_includes(lines: Iterable[str], _seen: frozenset = frozenset()) -> list[str]:
+    """Return LINES with every `` `include "x"`` spliced out into the file's
+    recursively-expanded contents.  The directive may sit mid-line
+    (``module m #(`include "m_params.svh") (``): the surrounding text is
+    kept on its own lines — ANALYSIS ONLY (parameter/define collection),
+    the transformed output text always keeps the original line.  Missing
+    files keep the line untouched (one warning per name per process);
+    include cycles are cut by re-emitting the directive."""
+    import sys
+
+    out: list[str] = []
+    for line in lines:
+        m = _INCLUDE_RE.search(line)
+        if not m or "//" in line[: m.start()]:
+            out.append(line)
+            continue
+        name = m.group(1)
+        path = None
+        for d in _INCLUDE_DIRS:
+            cand = os.path.join(d, name)
+            if os.path.isfile(cand):
+                path = os.path.realpath(cand)
+                break
+        if path is None:
+            if name not in _INCLUDE_WARNED:
+                _INCLUDE_WARNED.add(name)
+                print(
+                    f"[verilog_tooling] warning: include file not found: "
+                    f"{name} (searched {list(_INCLUDE_DIRS)})",
+                    file=sys.stderr,
+                )
+            out.append(line)
+            continue
+        if path in _seen:
+            out.append(line)  # include cycle: keep the directive, stop here
+            continue
+        sub = _read_include(path)
+        if sub is None:
+            out.append(line)
+            continue
+        prefix, suffix = line[: m.start()], line[m.end() :]
+        if prefix.strip():
+            out.append(prefix)
+        out.extend(expand_includes(sub, _seen | {path}))
+        if suffix.strip():
+            out.append(suffix)
+    return out
+
+
+_INCLUDE_CACHE: dict[str, tuple[float, list[str]]] = {}
+
+
+def _read_include(path: str) -> "list[str] | None":
+    """Include file contents, cached by (path, mtime) — parameter collection
+    calls expand_includes many times per command on large trees."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    hit = _INCLUDE_CACHE.get(path)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            sub = fh.read().splitlines()
+    except OSError:
+        return None
+    _INCLUDE_CACHE[path] = (mtime, sub)
+    return sub

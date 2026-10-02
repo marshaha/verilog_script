@@ -325,8 +325,50 @@ def _apply_param_values(expr: str, param_values: Mapping[str, str]) -> str:
 def _fold_numeric_expr(expr: str) -> str:
     """Evaluate ``$clog2`` calls and constant arithmetic in a width
     expression; anything with identifiers stays verbatim.  Handles the
-    ``msb:lsb`` range form by folding each side independently."""
+    ``msb:lsb`` range form by folding each side independently, and a
+    constant ``(cond) ? a : b`` ternary by folding the condition."""
     import math
+
+    # constant ternary: (cond) ? a : b — a top-level '?' means the ':' is
+    # the ternary's, not a range separator; check before the range split
+    qpos, depth = -1, 0
+    for k, ch in enumerate(expr):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "?" and depth == 0:
+            qpos = k
+            break
+    if qpos > 0:
+        cond = expr[:qpos].strip()
+        rest = expr[qpos + 1 :]
+        cpos, depth = -1, 0
+        for k, ch in enumerate(rest):
+            if ch in "([":
+                depth += 1
+            elif ch in ")]":
+                depth -= 1
+            elif ch == ":" and depth == 0:
+                cpos = k
+                break
+        if cpos > 0:
+            a, b = rest[:cpos], rest[cpos + 1 :]
+            c_fold = _fold_numeric_expr(cond)
+            if not re.fullmatch(r"-?\d+", c_fold):
+                m = re.match(r"^\((.*)\)$", cond, re.S)
+                if m:
+                    c_fold = _fold_numeric_expr(m.group(1).strip())
+            if not re.fullmatch(r"-?\d+", c_fold) and re.fullmatch(
+                r"[\d\s+\-*/%()<>=!&|]+", c_fold
+            ):
+                try:  # numeric comparison: (4)==1 -> 0
+                    c_fold = str(int(eval(c_fold, {"__builtins__": {}}, {})))
+                except Exception:
+                    pass
+            if re.fullmatch(r"-?\d+", c_fold):
+                pick = a if int(c_fold) != 0 else b
+                return _fold_numeric_expr(pick.strip())
 
     if ":" in expr:
         hi, lo = expr.split(":", 1)
@@ -396,7 +438,7 @@ def _param_from_entry(entry: str) -> Param | None:
     # strip `ifdef/`endif lines wrapping the entry (e.g. params guarded by a
     # `define inside the #(...) header)
     entry = re.sub(r"^\s*`(ifdef|ifndef|else|endif)\b[^\n]*", "", entry).strip()
-    entry = re.sub(r"^parameter\b", "", entry).strip()
+    entry = re.sub(r"^(?:parameter|localparam)\b", "", entry).strip()
     while True:
         m = re.match(r"(\w+)\s+", entry)
         if m and m.group(1) in _TYPE_WORDS:
@@ -420,9 +462,13 @@ def parse_module_params(lines: Sequence[str]) -> tuple[Param, ...]:
     """Parse ``parameter`` declarations from a module definition.
 
     Covers the ANSI ``#( parameter ... )`` header list and body
-    ``parameter ...;`` declarations (header entries first).
-    """
-    text = _strip_comments("\n".join(lines))
+    ``parameter ...;`` declarations (header entries first).  `` `include``
+    directives are expanded first (analysis only) — a project-local
+    ``#(`include "m_params.svh")`` parameter list would otherwise be
+    invisible."""
+    from .libdirs import expand_includes
+
+    text = _strip_comments("\n".join(expand_includes(lines)))
     params: list[Param] = []
     header_span = None
     m = re.search(r"\bmodule\s+\w+\s*#\s*\(", text)

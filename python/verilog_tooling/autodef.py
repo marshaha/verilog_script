@@ -817,7 +817,11 @@ def _wider(new_msb: str, old_msb: str) -> bool:
 
 
 def get_all_defs(lines: Sequence[str]) -> set[str]:
-    """Names from `` `define `` / `` `ifdef `` / `` `ifndef `` lines."""
+    """Names from `` `define `` / `` `ifdef `` / `` `ifndef `` lines
+    (`` `include`` files read through, analysis only)."""
+    from .libdirs import expand_includes
+
+    lines = expand_includes(lines)
     defs: set[str] = set()
     i = 0
     while i < len(lines):
@@ -851,7 +855,11 @@ def _autopara_names(line: str) -> list[str]:
 
 def get_all_paras(lines: Sequence[str]) -> set[str]:
     """``parameter``/``localparam`` names, plus names inside /*autopara*/
-    regions; generated autopara sections are skipped."""
+    regions; generated autopara sections are skipped.  `` `include`` files
+    are read through (analysis only)."""
+    from .libdirs import expand_includes
+
+    lines = expand_includes(lines)
     paras: set[str] = set()
     i = 0
     while i < len(lines):
@@ -931,15 +939,70 @@ class Side:
 
 def _const_symbols(lines: Sequence[str]) -> dict[str, int]:
     """Constant integer symbols: `` `define NAME <int>`` and
-    ``parameter/localparam NAME = <int>`` (module header and body)."""
+    parameter/localparam ``NAME = <int>`` (module header and body, comments
+    included — a commented-out localparam still tells the value).
+    `` `include`` files are read through (analysis only), and values written
+    as constant expressions of other symbols (``A+B+3``, ``$clog2(X)``,
+    ``(X==1) ? 1 : $clog2(X)``) are folded to integers fixpoint-style."""
+    from .libdirs import expand_includes
+
+    text = "\n".join(expand_includes(lines))
     consts: dict[str, int] = {}
-    text = "\n".join(lines)
     for m in re.finditer(r"^\s*`define\s+(\w+)\s+(-?\d+)\b", text, re.M):
         consts[m.group(1)] = int(m.group(2))
+    exprs: dict[str, str] = {}
     for m in re.finditer(
-        r"\b(?:parameter|localparam)\s+(?:integer\s+|int\s+)?(\w+)\s*=\s*(-?\d+)\b", text
+        r"\b(?:parameter|localparam)\s+(?:integer\s+|int\s+)?(\w+)\s*=\s*", text
     ):
-        consts[m.group(1)] = int(m.group(2))
+        name = m.group(1)
+        # the value ends at the next top-level , ; or ) — a greedy regex
+        # would eat the rest of a single-line header (``= 8) (input clk``)
+        depth = 0
+        j = m.end()
+        while j < len(text):
+            ch = text[j]
+            if ch in "([":
+                depth += 1
+            elif ch in ")]":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif ch in ",;\n" and depth == 0:
+                break
+            j += 1
+        value = text[m.end() : j].strip()
+        if re.fullmatch(r"-?\d+", value):
+            consts[name] = int(value)
+        elif value:
+            exprs[name] = value
+    if exprs:
+        from .emacs import _fold_numeric_expr
+
+        known = {k: str(v) for k, v in consts.items()}
+        for _ in range(8):
+            progress = False
+            # one combined pass per expression (hundreds of params make a
+            # per-name substitution loop quadratic)
+            pat = (
+                re.compile(
+                    r"\b("
+                    + "|".join(sorted(map(re.escape, known), key=len, reverse=True))
+                    + r")\b"
+                )
+                if known
+                else None
+            )
+            for name, expr in list(exprs.items()):
+                if pat:
+                    expr = pat.sub(lambda m: f"({known[m.group(1)]})", expr)
+                folded = _fold_numeric_expr(expr).strip()
+                if re.fullmatch(r"-?\d+", folded):
+                    consts[name] = int(folded)
+                    known[name] = folded
+                    del exprs[name]
+                    progress = True
+            if not progress:
+                break
     return consts
 
 
