@@ -176,15 +176,6 @@ class InstNet:
     direction: str = ""  # port direction ('output' | 'inout' | 'input')
 
 
-# a declarable connection: a bare identifier with optional bit/part selects
-# and an optional EAI multidim note — not a concat, expression or literal.
-# The last pin of an instance ends with `));` (or `))`), a middle one `),`.
-_SIMPLE_CONN = re.compile(
-    r"^\s*\w+\s*(?:\[[^\]\n]*\]\s*)*(?:/\*[^*\n]*\*/\s*)?"
-    r"\)\s*,?\s*\)?\s*;?\s*(?://.*)?$"
-)
-
-
 # ---------------------------------------------------------------------------
 # concat/expression extraction (verilog-auto-ignore-concat = nil path,
 # mirrors verilog-read-sub-decls-expr)
@@ -250,28 +241,6 @@ def _expr_nets(expr: str) -> "list[tuple[str, str]]":
     return out
 
 
-def _conn_expr_nets(rest: str) -> "list[tuple[str, str]]":
-    """Extract nets from the text after ``.port(`` when the connection is a
-    {...}/(...) expression; empty unless the whole expression is on this
-    line (balanced before the pin's own close paren)."""
-    text = rest.lstrip()
-    if not text.startswith(("(", "{")):
-        return []
-    open_ch = text[0]
-    close_ch = ")" if open_ch == "(" else "}"
-    depth = 0
-    for k, ch in enumerate(text):
-        if ch in "{(":
-            depth += 1
-        elif ch in "})":
-            depth -= 1
-            if depth == 0:
-                if ch != close_ch:
-                    return []  # unbalanced mix — leave it alone
-                return _expr_nets(text[: k + 1])
-    return []  # unbalanced (multi-line expression): give up, declare nothing
-
-
 def _inst_driven_nets(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef],
@@ -291,6 +260,11 @@ def _inst_driven_nets(
     on (``verilog-auto-ignore-concat`` file-local, default on); when off,
     its identifiers are extracted (verilog-read-sub-decls-expr).
 
+    The pin list is parsed with the same full-text machinery as EAI
+    (:func:`emacs.inst_pin_connections` on the paren-stack instance
+    resolution): pins before the marker, multi-pin lines, multi-line
+    expressions and ``.pin`` shorthand all count.
+
     The port width is passed through the instance's ``#(...)`` parameter
     overrides (e.g. R_USER_WIDTH -> AR_INFO_WIDTH) so the declared wire
     names LOCAL symbols wherever the mapping provides them."""
@@ -299,20 +273,14 @@ def _inst_driven_nets(
     text = "\n".join(lines)
     markers = emacs.find_auto_markers(lines, "autoinst")
     stacks = emacs._scan_parens_at(text, [m.offset for m in markers])
-    param_by_line: dict[int, dict[str, str]] = {}
-    for mk in markers:
-        st = stacks[mk.offset]
-        if st:
-            param_by_line[text.count("\n", 0, mk.offset)] = emacs.read_inst_param_values(
-                text, st[-1]
-            )
-
-    buf = VerilogBuffer(lines)
     nets: dict[str, InstNet] = {}
-    n = len(lines)
-    for idx in buf.markers("autoinst"):
+    for marker in markers:
+        st = stacks[marker.offset]
+        if not st:
+            continue
+        open_idx = st[-1]
         try:
-            module, inst = buf.resolve_instance(idx)
+            module, inst = emacs._resolve_instance_at(text, open_idx)
         except ValueError:
             continue
         moddef = modules.get(module)
@@ -326,59 +294,56 @@ def _inst_driven_nets(
             }
         else:
             inst_io = {p.name: p for p in moddef.ports if p.direction in directions}
-        param_values = param_by_line.get(idx) or {}
-        i = idx + 1
-        while i < n:
-            j = _skip_comment_line(lines, i)
-            if j == -1:
-                return nets
-            i = j
-            line = lines[i]
-            m = re.match(r"^\s*\.(\w+)\s*\((.*)", line)
-            if m:
-                port_name, rest = m.group(1), m.group(2)
-                if port_name not in inst_io or rest.lstrip().startswith(("'", "`")):
-                    # only a `define/literal NET carries no declaration; a
-                    # backtick inside a bit-select (net[`MACRO-1:0]) is fine
-                    pass
-                elif rest.lstrip().startswith(("(", "{")):
-                    # verilog-auto-ignore-concat: skip (default) or extract
-                    if not _IGNORE_CONCAT:
-                        for net, ewidth in _conn_expr_nets(rest):
-                            if param_values:
-                                ewidth = emacs._apply_param_values(ewidth, param_values)
-                            nets.setdefault(net, InstNet(net, ewidth, inst, module))
-                elif not (simple_only and not _SIMPLE_CONN.match(rest)):
-                    net = conn_net_name(rest)
-                    if net is not None:
-                        port = inst_io[port_name]
-                        raw = port.width  # 'msb:lsb', None for scalar
-                        width = "c0" if raw is None else raw.split(":")[0].strip()
+        param_values = emacs.read_inst_param_values(text, open_idx)
+        for pin, expr in emacs.inst_pin_connections(text, open_idx):
+            if pin not in inst_io:
+                continue
+            stripped = emacs._strip_comments(expr).strip()
+            # only a `define/literal NET carries no declaration; a backtick
+            # inside a bit-select (net[`MACRO-1:0]) is fine
+            if (
+                not stripped
+                or stripped.startswith(("'", "`"))
+                or stripped[0].isdigit()
+            ):
+                continue
+            if stripped.startswith(("(", "{")):
+                # verilog-auto-ignore-concat: skip (default) or extract
+                if not _IGNORE_CONCAT:
+                    for net, ewidth in _expr_nets(stripped):
                         if param_values:
-                            width = emacs._apply_param_values(width, param_values)
-                        # multi-dim packed port: prefer the dims in the EAI
-                        # connection note (already param-value substituted),
-                        # else the port's own packed ranges
-                        pdims = _conn_packed_dims(rest) or (
-                            tuple(_clean_dim(d) for d in port.packed)
-                            if len(port.packed) > 1 else ()
-                        )
-                        if pdims and param_values:
-                            pdims = tuple(
-                                _clean_dim(emacs._apply_param_values(d, param_values))
-                                for d in pdims
-                            )
-                        nets.setdefault(
-                            net,
-                            InstNet(
-                                net, width, inst, module, pdims, port.unpacked,
-                                port.direction,
-                            ),
-                        )
-            if re.search(r"\);\s*$", line) or ");" in line:
-                i += 1
-                break
-            i += 1
+                            ewidth = emacs._apply_param_values(ewidth, param_values)
+                        nets.setdefault(net, InstNet(net, ewidth, inst, module))
+                continue
+            if simple_only and not _ELEM_NET.match(stripped):
+                continue
+            net = conn_net_name(stripped)
+            if net is None:
+                continue
+            port = inst_io[pin]
+            raw = port.width  # 'msb:lsb', None for scalar
+            width = "c0" if raw is None else raw.split(":")[0].strip()
+            if param_values:
+                width = emacs._apply_param_values(width, param_values)
+            # multi-dim packed port: prefer the dims in the EAI connection
+            # note (already param-value substituted), else the port's own
+            # packed ranges
+            pdims = _conn_packed_dims(expr) or (
+                tuple(_clean_dim(d) for d in port.packed)
+                if len(port.packed) > 1 else ()
+            )
+            if pdims and param_values:
+                pdims = tuple(
+                    _clean_dim(emacs._apply_param_values(d, param_values))
+                    for d in pdims
+                )
+            nets.setdefault(
+                net,
+                InstNet(
+                    net, width, inst, module, pdims, port.unpacked,
+                    port.direction,
+                ),
+            )
     return nets
 
 

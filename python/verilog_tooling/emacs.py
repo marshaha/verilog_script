@@ -502,6 +502,52 @@ def _resolve_instance_at(text: str, open_idx: int) -> tuple[str, str]:
     return module, inst
 
 
+def inst_pin_connections(text: str, open_idx: int) -> "list[tuple[str, str]]":
+    """(pin, expression) for every named connection in the pin list opened
+    at OPEN_IDX — the whole list, on either side of any AUTO marker:
+    multi-pin lines, multi-line expressions and SystemVerilog ``.pin``
+    shorthand (expression = pin name) included.  Expressions are returned
+    verbatim, comments intact (the /*[D1][D2]*/ packed-dims note rides in
+    one); callers strip as needed."""
+    close_idx = _matching_paren(text, open_idx)
+    span = text[open_idx + 1 : close_idx]
+    masked = mask_comments(span)
+    out: list[tuple[str, str]] = []
+    pin_re = re.compile(r"\.\s*(\w+)")
+    i = 0
+    n = len(masked)
+    while i < n:
+        m = pin_re.search(masked, i)
+        if not m:
+            break
+        pin = m.group(1)
+        k = m.end()
+        while k < n and masked[k] in " \t\n":
+            k += 1
+        if k >= n or masked[k] != "(":
+            out.append((pin, pin))  # .pin shorthand (followed by , or close)
+            i = k
+            continue
+        depth = 1
+        j = k + 1
+        while j < n and depth:
+            ch = masked[j]
+            if ch == '"':
+                j += 1
+                while j < n and masked[j] != '"':
+                    j += 2 if masked[j] == "\\" else 1
+                j += 1  # past the closing quote
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            j += 1
+        out.append((pin, span[k + 1 : j - 1]))
+        i = j
+    return out
+
+
 def _resolve_param_instance(text: str, open_idx: int, close_idx: int) -> tuple[str, str]:
     """(module, instance) for a #( ... ) parameter block: the module name
     precedes the '#', the instance name follows the block."""
