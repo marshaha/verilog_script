@@ -448,8 +448,11 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[s
     :func:`verilog_tooling.wire.auto_wire`.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
+    from .autodef import set_param_value
+    from .wire import parse_param_value
 
     set_ignore_concat(parse_ignore_concat(lines))
+    set_param_value(parse_param_value(lines))
     lines = kill_auto_input(lines)
     sigs, comments = _input_sigs(lines, modules)
     if not _wire_comment_enabled(lines):
@@ -467,8 +470,11 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[
     feed an instance input/inout.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
+    from .autodef import set_param_value
+    from .wire import parse_param_value
 
     set_ignore_concat(parse_ignore_concat(lines))
+    set_param_value(parse_param_value(lines))
     lines = kill_auto_output(lines)
     sigs, comments = _output_sigs(lines, modules)
     if not _wire_comment_enabled(lines):
@@ -486,8 +492,11 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[s
     on an instance input/output port.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
+    from .autodef import set_param_value
+    from .wire import parse_param_value
 
     set_ignore_concat(parse_ignore_concat(lines))
+    set_param_value(parse_param_value(lines))
     lines = kill_auto_inout(lines)
     sigs, comments = _inout_sigs(lines, modules)
     if not _wire_comment_enabled(lines):

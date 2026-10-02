@@ -136,6 +136,21 @@ _KEYWORDS = frozenset(
 
 _DEFINE_LINE = re.compile(r"^\s*`(define|ifdef|ifndef)\s*(\w+)")
 _PARA_LINE = re.compile(r"^\s*(parameter|localparam)\s*(\w+)")
+
+# verilog-auto-inst-param-value gate for declaration widths: when on, a
+# generated width that still references a constant parameter of THIS module
+# (e.g. one pulled in through an included param header) folds to its integer
+# value — deliberately stronger than emacs, which leaves it symbolic.
+_PARAM_VALUE = False
+
+
+def set_param_value(enabled: bool) -> None:
+    global _PARAM_VALUE
+    _PARAM_VALUE = enabled
+
+
+def _param_value_on() -> bool:
+    return _PARAM_VALUE
 _DIRECTIVE_LINE = re.compile(r"^\s*`(define|ifdef|ifndef|else|elseif|elsif|endif)\b")
 _SIGNAL_TOKEN = re.compile(r"[`'.]?\w+")
 # non-signal text pre-stripped before tokenising: string literals (their
@@ -316,6 +331,9 @@ class SignalTable:
     # names in /*autoarg*/ port lists: such a name on an instance inout pin
     # is an inout PORT by intent (autoarg declares it) — never an inst_wire
     port_names: frozenset = frozenset()
+    # constant parameter values of this module (param-value on): instance
+    # port widths naming them fold to integers
+    consts: dict = field(default_factory=dict)
 
     def __contains__(self, name: str) -> bool:
         return name in self.signals
@@ -607,6 +625,15 @@ class SignalTable:
             from .emacs import _apply_param_values
 
             port_width = _apply_param_values(port_width, param_values)
+        if self.consts:
+            # param-value on: a width still naming a constant parameter of
+            # THIS module (e.g. from an included param header) folds to the
+            # integer (FAB_PERIPH_INT_NUM-1 -> 7)
+            from .emacs import _apply_param_values
+
+            port_width = _apply_param_values(
+                port_width, {k: str(v) for k, v in self.consts.items()}
+            )
         if port.direction == "input":
             # a submodule INPUT port consumes the net — it is no driver, but
             # its range is a valid width fallback when nothing else declares
@@ -2383,8 +2410,10 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     modules = modules or {}
     from .inst import set_typedef_regexp
     from .libdirs import parse_typedef_regexp
+    from .wire import parse_param_value
 
     set_typedef_regexp(parse_typedef_regexp(lines))
+    set_param_value(parse_param_value(lines))
     lines = kill_auto_def_t(lines)
     from .inst import _expand_ansi_header
 
@@ -2433,6 +2462,8 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
 
     signals = SignalTable()
     signals.known = frozenset(set(allparas) | set(_const_symbols(lines)))
+    if _param_value_on():
+        signals.consts = _const_symbols(lines)
     from .inst import auto_arg_port_names
 
     signals.port_names = frozenset(auto_arg_port_names(lines))

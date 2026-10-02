@@ -116,6 +116,11 @@ def parse_ignore_concat(lines: Sequence[str]) -> bool:
     return _local_bool(lines, "verilog-auto-ignore-concat", _IGNORE_CONCAT_DEFAULT)
 
 
+def parse_param_value(lines: Sequence[str]) -> bool:
+    """verilog-auto-inst-param-value file-local (default nil)."""
+    return _local_bool(lines, "verilog-auto-inst-param-value", False)
+
+
 def _wire_comment_enabled(lines: Sequence[str]) -> bool:
     """verilog-auto-wire-comment file-local (default t): nil suppresses the
     // To/From comments on generated declarations."""
@@ -267,9 +272,17 @@ def _inst_driven_nets(
 
     The port width is passed through the instance's ``#(...)`` parameter
     overrides (e.g. R_USER_WIDTH -> AR_INFO_WIDTH) so the declared wire
-    names LOCAL symbols wherever the mapping provides them."""
+    names LOCAL symbols wherever the mapping provides them.  With
+    ``verilog-auto-inst-param-value`` on, a width still naming a constant
+    parameter of THIS module folds to its integer value."""
     from . import emacs
+    from .autodef import _param_value_on
 
+    const_map: dict[str, str] = {}
+    if _param_value_on():
+        from .autodef import _const_symbols
+
+        const_map = {k: str(v) for k, v in _const_symbols(lines).items()}
     text = "\n".join(lines)
     markers = emacs.find_auto_markers(lines, "autoinst")
     stacks = emacs._scan_parens_at(text, [m.offset for m in markers])
@@ -313,6 +326,8 @@ def _inst_driven_nets(
                     for net, ewidth in _expr_nets(stripped):
                         if param_values:
                             ewidth = emacs._apply_param_values(ewidth, param_values)
+                        if const_map:
+                            ewidth = emacs._apply_param_values(ewidth, const_map)
                         nets.setdefault(net, InstNet(net, ewidth, inst, module))
                 continue
             if simple_only and not _ELEM_NET.match(stripped):
@@ -325,6 +340,8 @@ def _inst_driven_nets(
             width = "c0" if raw is None else raw.split(":")[0].strip()
             if param_values:
                 width = emacs._apply_param_values(width, param_values)
+            if const_map:
+                width = emacs._apply_param_values(width, const_map)
             # multi-dim packed port: prefer the dims in the EAI connection
             # note (already param-value substituted), else the port's own
             # packed ranges
@@ -335,6 +352,11 @@ def _inst_driven_nets(
             if pdims and param_values:
                 pdims = tuple(
                     _clean_dim(emacs._apply_param_values(d, param_values))
+                    for d in pdims
+                )
+            if pdims and const_map:
+                pdims = tuple(
+                    _clean_dim(emacs._apply_param_values(d, const_map))
                     for d in pdims
                 )
             nets.setdefault(
@@ -457,6 +479,9 @@ def auto_wire(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[st
     typedef_re = parse_typedef_regexp(lines)
     set_typedef_regexp(typedef_re)
     set_ignore_concat(parse_ignore_concat(lines))
+    from .autodef import set_param_value
+
+    set_param_value(parse_param_value(lines))
     driven = _inst_driven_nets(lines, modules)
     if not driven:
         return list(lines)
@@ -523,6 +548,9 @@ def auto_reg(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = Non
     """
     lines = kill_auto_reg(lines)
     set_ignore_concat(parse_ignore_concat(lines))
+    from .autodef import set_param_value
+
+    set_param_value(parse_param_value(lines))
     ports, usrdef, assigns = _module_tables(lines)
     driven = set(_inst_driven_nets(lines, modules or {}))
     excluded = set(usrdef.signals) | assigns | driven
