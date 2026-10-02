@@ -63,6 +63,7 @@ from .autodef import (
     _PORT_LINE,
     _conn_packed_dims,
     _emit_signal,
+    conn_net_name,
     _clean_dim,
     _sig_decl_len,
     _skip_comment_line,
@@ -348,9 +349,8 @@ def _inst_driven_nets(
                                 ewidth = emacs._apply_param_values(ewidth, param_values)
                             nets.setdefault(net, InstNet(net, ewidth, inst, module))
                 elif not (simple_only and not _SIMPLE_CONN.match(rest)):
-                    nm = re.search(r"\w+", rest)
-                    if nm:
-                        net = nm.group(0)
+                    net = conn_net_name(rest)
+                    if net is not None:
                         port = inst_io[port_name]
                         raw = port.width  # 'msb:lsb', None for scalar
                         width = "c0" if raw is None else raw.split(":")[0].strip()

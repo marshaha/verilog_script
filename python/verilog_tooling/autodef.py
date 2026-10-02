@@ -280,6 +280,29 @@ class Signal:
     # (directly after the /*autodef*/ marker) — eligible for absorb
 
 
+def conn_net_name(rest: str) -> str | None:
+    """First identifier in the connection text REST (everything after
+    ``.port(``), scanning only up to the pin's own close paren or a ``//``
+    comment — an empty ``.port()`` or a literal tie yields None (the word
+    would otherwise be scraped out of a trailing ``// Templated`` note)."""
+    out: list[str] = []
+    depth = 1  # already inside .port(
+    for k, ch in enumerate(rest):
+        if ch == "/" and rest[k : k + 2] == "//":
+            break
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        out.append(ch)
+    inner = re.sub(r"/\*.*?\*/", " ", "".join(out))
+    if inner.lstrip()[:1].isdigit():
+        return None  # sized literal tie (1'b0 …): no declarable net
+    m = re.search(r"[a-zA-Z_]\w*", inner)
+    return m.group(0) if m else None
+
 
 @dataclass
 class SignalTable:
@@ -558,10 +581,9 @@ class SignalTable:
         # inside a bit-select (net[`MACRO-1:0]) is fine
         if rest.lstrip().startswith(("'", "`")):
             return
-        m = re.search(r"\w+", rest)
-        if not m or port_name not in inst_io:
+        net = conn_net_name(rest)
+        if net is None or port_name not in inst_io:
             return
-        net = m.group(0)
         port = inst_io[port_name]
         if port.direction == "interface":
             # an interface connection instantiates an interface — it is
