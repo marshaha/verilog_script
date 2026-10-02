@@ -689,9 +689,22 @@ class VerilogBuffer:
         j = len(head)
         while j > 0 and head[j - 1] in " \t\n":
             j -= 1
-        if j == 0 or head[j - 1] != "(":
+        if j == 0:
             raise ValueError(f"() pair not-match in autoinst, line: {marker_idx + 1}")
-        inst, k = emacs._prev_word(head, j - 1)
+        if head[j - 1] == "(":
+            open_paren = j - 1
+        else:
+            # the marker sits INSIDE the port list (manual connections
+            # precede it): the innermost unclosed '(' at the marker is the
+            # instance's open paren (connections in between are balanced)
+            stacks = emacs._scan_parens_at(head + "\n", [len(head)])
+            st = stacks[len(head)]
+            if not st:
+                raise ValueError(
+                    f"() pair not-match in autoinst, line: {marker_idx + 1}"
+                )
+            open_paren = st[-1]
+        inst, k = emacs._prev_word(head, open_paren)
         if not inst:
             raise ValueError(f"cannot resolve instance name, line: {marker_idx + 1}")
         try:
