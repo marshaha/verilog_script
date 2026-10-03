@@ -315,6 +315,8 @@ def conn_net_name(rest: str) -> str | None:
     inner = re.sub(r"/\*.*?\*/", " ", "".join(out))
     if inner.lstrip()[:1].isdigit():
         return None  # sized literal tie (1'b0 …): no declarable net
+    if re.match(r"\s*\w+\s*\.", inner):
+        return None  # hierarchical/member reference (hi.ear.ial): not declarable here
     m = re.search(r"[a-zA-Z_]\w*", inner)
     return m.group(0) if m else None
 
@@ -406,6 +408,14 @@ class SignalTable:
         buffer index of RAW so a stale-width fix can be applied in place.
         ORPHAN_IDXS marks kill-waived lines (the old region's survivors)."""
         rest = re.sub(r"^\s*(wire|reg|logic|parameter|localparam|genvar|integer)\b\s*", "", line)
+        rest = rest.lstrip()  # keyword-less (typedef) lines keep no indent
+        from .inst import _TYPEDEF_REGEXP
+
+        tm = re.match(r"^(\w+)\s+", rest)
+        if tm and _TYPEDEF_REGEXP is not None and _TYPEDEF_REGEXP.search(tm.group(1)):
+            # a typedef'd declaration (``reqcmd_t BReq;``): the first word is
+            # the TYPE, the signal name follows
+            rest = rest[tm.end() :]
         sig = Signal(width="c0", type="usrdef", line=raw if raw is not None else line)
         sig.line_idx = line_idx
         if orphan_idxs and line_idx in orphan_idxs:

@@ -310,15 +310,29 @@ def _apply_param_values(expr: str, param_values: Mapping[str, str]) -> str:
     fold what becomes purely numeric — ``$clog2(8)`` → ``3`` and
     ``(8)-1`` → ``7`` (verilog-mode evaluates constant expressions).
     Values may reference other parameters (``IDX_W=$clog2(VEC_W)``), so
-    substitution iterates to a fixpoint."""
+    substitution iterates to a fixpoint.  Doubled parens are collapsed each
+    round and the original-text guard cuts substitution CYCLES (a name swap
+    A->B, B->A) so they cannot pile up nested parens."""
+    original = expr
     for _ in range(8):
         prev = expr
         for name, value in param_values.items():
             if value == name:
                 continue  # identity self-map: no-op (avoids paren explosion)
             expr = re.sub(r"\b" + re.escape(name) + r"\b", f"({value})", expr)
+        while "((" in expr:  # collapse substitution-added nesting, one level at a time
+            collapsed = re.sub(r"\(\((\w+)\)\)", r"(\1)", expr)
+            if collapsed == expr:
+                break  # unbalanced/unnested remainder — nothing more to do
+            expr = collapsed
         if expr == prev:
             break
+        if expr.replace("(", "").replace(")", "") == original.replace("(", "").replace(
+            ")", ""
+        ):
+            # a pure substitution cycle (a name swap A->B, B->A): the value
+            # list is contradictory — keep the original expression
+            return _fold_numeric_expr(original)
     return _fold_numeric_expr(expr)
 
 
