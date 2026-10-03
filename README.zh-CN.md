@@ -156,10 +156,11 @@ AUTOINST/AUTOINSTPARAM、AUTOWIRE、autodef）都会透视 `` `include "x"``—�
 
 **性能说明**：库目录扫描（interface 查找、模块解析、include 展开）都带
 缓存/线程池。interface 声明直接在 `.v` / `.sv` / `.svh` / `.vh` 文件上
-做快速正则扫描，藏在 `.svh` 头文件里的 interface 默认就能找到，无需
-展开 include；文件底部加 ``// verilog-auto-read-includes:t`` 会额外沿
-`` `include`` 边按文件名索引追踪（覆盖怪异扩展名的 include 文件），
-两种模式都很快。实测 594 个 `-y` 目录、2200+ 文件的工程上 `-a` 约 4 秒。
+做快速正则扫描，藏在 `.svh` 头文件里的 interface 无需展开 include
+即可找到；怪异扩展名的 include 文件也会沿 `` `include`` 边按文件名
+索引追踪——该穿透**默认开启**，如需关闭在文件底部加
+``// verilog-auto-read-includes:nil``。实测 594 个 `-y` 目录、2200+
+文件的工程上 `-a` 约 4 秒。
 
 ## 命令详解
 

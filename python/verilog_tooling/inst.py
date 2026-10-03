@@ -225,19 +225,18 @@ def parse_interface(lines: Iterable[str]) -> InterfaceDef:
     return InterfaceDef(name=m.group(1), modports=tuple(re.findall(r"\bmodport\s+(\w+)", text)))
 
 
-def find_interfaces(libdirs: Sequence[str], read_includes: bool = False) -> dict[str, Path]:
+def find_interfaces(libdirs: Sequence[str], read_includes: bool = True) -> dict[str, Path]:
     """Map interface names to the library file declaring them.  Every
     ``.v`` / ``.sv`` / ``.svh`` / ``.vh`` file in LIBDIRS is raw-regex
     scanned for ``interface <name>`` headers (thread-pooled) — header files
     are scanned directly, so an interface declared in an ``.svh`` is found
     WITHOUT expanding any includes.
 
-    With READ_INCLUDES (the buffer's ``verilog-auto-read-includes:t``) the
-    scan additionally follows `` `include`` edges through a basename index
-    (built from the same pass, no directory re-statting) to catch
-    interfaces hidden behind include files with unusual names.  Off by
-    default (verilog-mode semantics); rarely needed now that header files
-    are scanned directly."""
+    With READ_INCLUDES (default on; the buffer may opt out with
+    ``verilog-auto-read-includes:nil``) the scan additionally follows
+    `` `include`` edges through a basename index (built from the same pass,
+    no directory re-statting) to catch interfaces hidden behind include
+    files with unusual names."""
     from concurrent.futures import ThreadPoolExecutor
 
     from .libdirs import _find_include
@@ -325,14 +324,15 @@ def interfaces_for(
     )
 
 
-_READ_INCLUDES_RE = re.compile(
-    r"^\s*//\s*verilog-auto-read-includes\s*:\s*t\b", re.M | re.IGNORECASE
+_READ_INCLUDES_OFF_RE = re.compile(
+    r"^\s*//\s*verilog-auto-read-includes\s*:\s*nil\b", re.M | re.IGNORECASE
 )
 
 
 def _read_includes_on(lines: Sequence[str]) -> bool:
-    """The buffer's ``verilog-auto-read-includes:t`` file-local."""
-    return bool(_READ_INCLUDES_RE.search("\n".join(lines)))
+    """Include read-through is on by default; the buffer's
+    ``verilog-auto-read-includes:nil`` file-local opts out."""
+    return not _READ_INCLUDES_OFF_RE.search("\n".join(lines))
 
 
 def _port_continues(line: str) -> bool:
