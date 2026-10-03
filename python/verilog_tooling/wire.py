@@ -194,6 +194,7 @@ class InstNet:
     net_type: str = ""
     data_type: str = ""
     unpacked_idx: tuple = ()  # element indexes connected (AUTOWIRE merges)
+    multi: bool = False  # driven/used by several instances (", ..." comment)
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +260,19 @@ def _expr_nets(expr: str) -> "list[tuple[str, str]]":
         width = ranges[0][1:-1].split(":")[0].strip()
     out.append((m.group(1), width))
     return out
+
+
+def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
+    """Add REC to NETS, first driver winning; a second driver from a
+    DIFFERENT instance marks the net multi (its comment gets ", ...",
+    like verilog-mode's sig comment for a repeated signal)."""
+    prev = nets.get(rec.name)
+    if prev is None:
+        nets[rec.name] = rec
+    elif (prev.inst, prev.module) != (rec.inst, rec.module) and not prev.multi:
+        from dataclasses import replace
+
+        nets[rec.name] = replace(prev, multi=True)
 
 
 def _inst_driven_nets(
@@ -343,7 +357,7 @@ def _inst_driven_nets(
                             ewidth = emacs._apply_param_values(ewidth, param_values)
                         if const_map:
                             ewidth = emacs._apply_param_values(ewidth, const_map)
-                        nets.setdefault(net, InstNet(net, ewidth, inst, module))
+                        _note_net(nets, InstNet(net, ewidth, inst, module))
                 continue
             if simple_only and not _ELEM_NET.match(stripped):
                 continue
@@ -374,8 +388,8 @@ def _inst_driven_nets(
                     _clean_dim(emacs._apply_param_values(d, const_map))
                     for d in pdims
                 )
-            nets.setdefault(
-                net,
+            _note_net(
+                nets,
                 InstNet(
                     net, width, inst, module, pdims, port.unpacked,
                     port.direction, port.signed, port.net_type, port.data_type,
@@ -458,12 +472,12 @@ def _name_col_max(sigs: Sequence[Signal]) -> int:
     max_len = _MAX_LEN_FLOOR
     for sig in sigs:
         if sig.width != "c0" or sig.packed_dims:
-            max_len = max(max_len, _sig_decl_len(sig))
+            max_len = max(max_len, _sig_decl_len(sig, emacs_dims=True))
     return max_len
 
 
 def _emit_decl(sig: Signal, max_len: int, keyword: str, indent: int, comment: str = "") -> str:
-    line = " " * indent + _emit_signal(sig, max_len, keyword)
+    line = " " * indent + _emit_signal(sig, max_len, keyword, emacs_dims=True)
     if comment:
         col = max(_COMMENT_COL, indent + 40)
         line += " " * max(col - len(line), 1) + comment
@@ -600,7 +614,10 @@ def _auto_wire_single(
         # an inout-driven net is commented To/From (verilog-mode), an
         # output-driven one From
         direction = "To/From" if net.direction == "inout" else "From"
-        comments[name] = f"// {direction} {net.inst} of {net.module}.v"
+        comments[name] = (
+            f"// {direction} {net.inst} of {net.module}.v"
+            + (", ..." if net.multi else "")
+        )
     if not _wire_comment_enabled(full):
         comments = {}
     return _regen(lines, _AUTOWIRE_MARK_FULL, _WIRE_HEADER, "wire ", sigs, comments)

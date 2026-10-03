@@ -472,10 +472,18 @@ def auto_ascii_enum(lines: Sequence[str]) -> list[str]:
 def _aascii_single(span: Sequence[str], full: Sequence[str]) -> list[str]:
     out: list[str] = []
     # enum states may ride in an `include'd header (verilog-auto-read-includes);
-    # includes are always expanded for analysis here (project policy)
+    # includes are always expanded for analysis here (project policy).
+    # verilog-mode order: buffer-local states first (in declaration order),
+    # then include-sourced states REVERSED (its include scan prepends) —
+    # duplicate names decode once, first occurrence winning (peltan).
     from .libdirs import expand_includes
 
-    decls = _scan_decls(expand_includes(span))
+    buf_decls = _scan_decls(span)
+    exp_decls = _scan_decls(expand_includes(span))
+    buf_sigs = {(d.name, d.bits, d.enum) for d in buf_decls if d.is_param}
+    inc_params = [d for d in exp_decls if d.is_param and (d.name, d.bits, d.enum) not in buf_sigs]
+    inc_params.reverse()
+    decls = buf_decls + inc_params
     for line in span:
         out.append(line)
         if not _ASCIIENUM_MARK.search(line):
@@ -622,17 +630,25 @@ def _wire_like_single(
         if typedef_re and re.search(typedef_re, name):
             continue
         net = driven[name]
-        if net.packed_dims:
-            if any(not _width_syms_known(d, local_syms) for d in net.packed_dims):
-                continue
-        elif net.width not in ("", "c0") and not _width_syms_known(net.width, local_syms):
-            continue
+        # unpacked dims: merged element indexes (multi-instance), else the
+        # port's own unpacked decl — emitted symbolically like verilog-mode
+        # (no visibility gate: AUTOLOGIC is AUTO-WIRE with logic type, and
+        # verilog-auto-wire declares whatever the submodule port says)
+        from .autodef import _merge_unpacked_indexes
+
+        dims: tuple = ()
+        if net.unpacked_idx:
+            merged = _merge_unpacked_indexes(net.unpacked_idx, local_syms)
+            dims = (merged,) if merged is not None else tuple(net.unpacked_dims)
+        elif net.unpacked_dims:
+            dims = tuple(net.unpacked_dims)
         sigs.append(
             Signal(
                 width=net.width,
                 type="inst_wire",
                 name=name,
                 packed_dims=net.packed_dims,
+                dims=dims,
                 signed=net.signed,
                 # verilog-insert-definition: explicit port type wins,
                 # else verilog-auto-wire-type
@@ -641,7 +657,10 @@ def _wire_like_single(
             )
         )
         direction = "To/From" if net.direction == "inout" else "From"
-        comments[name] = f"// {direction} {net.inst} of {net.module}.v"
+        comments[name] = (
+            f"// {direction} {net.inst} of {net.module}.v"
+            + (", ..." if net.multi else "")
+        )
     if not _wire._wire_comment_enabled(full):
         comments = {}
     return _wire._regen(lines, mark_re, header, "wire ", sigs, comments)

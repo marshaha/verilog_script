@@ -288,9 +288,13 @@ def _xfer_signal(
 def _type_text(keyword: str, sig: Signal) -> str:
     """The ``type`` text verilog-insert-one-definition inserts: the direction
     keyword plus data type, signed and packed ranges, e.g. ``"output"``,
-    ``"output logic [7:0]"``, ``"input [3:0] [7:0]"``, ``"my_svi.master"``."""
+    ``"output logic [7:0]"``, ``"input [3:0] [7:0]"``, ``"my_svi.master"``.
+    For ``reg`` a sig type REPLACES the keyword (verilog-insert-definition
+    only prepends the direction for io directions)."""
     text = keyword
-    if sig.data_type:
+    if keyword == "reg" and (sig.data_type or sig.net_type):
+        text = sig.data_type or sig.net_type
+    elif sig.data_type:
         text += " " + sig.data_type
     elif sig.net_type:
         text += " " + sig.net_type
@@ -1136,16 +1140,132 @@ def _trailing_comments(span: Sequence[str]) -> dict[str, str]:
     return out
 
 
+_OE_DECL_RE = re.compile(
+    r"^\s*(wire|reg|logic|integer|parameter|localparam)\b"
+    r"(\s+signed\b)?([^;]*);",
+    re.IGNORECASE,
+)
+_OE_REGION_RE = re.compile(r"^\s*//\s*Beginning of automatic")
+_OE_REGION_END_RE = re.compile(r"^\s*//\s*End of automatics")
+
+
+def _auto_region_lines(span: Sequence[str]) -> set[int]:
+    """Line indexes inside any ``// Beginning of automatic`` .. ``// End of
+    automatics`` region.  In the pipeline these regions were all regenerated
+    by earlier AUTO steps this run, so a decl here carries the type that
+    step computed — verilog-mode's modi-cache keeps those types, while a
+    re-parsed hand-written decl loses wire/reg/logic (normalized to nil)."""
+    inside: set[int] = set()
+    depth = False
+    for i, line in enumerate(span):
+        if _OE_REGION_RE.match(line):
+            depth = True
+            continue
+        if _OE_REGION_END_RE.match(line):
+            depth = False
+            continue
+        if depth:
+            inside.add(i)
+    return inside
+
+
+def _outputevery_scan(
+    span: Sequence[str], typedef_re: "str | None"
+) -> "list[tuple[Signal, bool]]":
+    """Signal/parameter declarations of a module span for AUTOOUTPUTEVERY:
+    (Signal, in-auto-region) pairs, io ports excluded by the caller.
+    Multi-name declarations yield one Signal per name."""
+    from .comments import strip_line_comments as _strip_lc
+
+    tdx = re.compile(typedef_re) if typedef_re else None
+    region_lines = _auto_region_lines(span)
+    out: list[tuple[Signal, bool]] = []
+    i = 0
+    n = len(span)
+    while i < n:
+        raw = span[i]
+        line = _strip_lc(raw).strip()
+        if not line:
+            i += 1  # comment/blank lines never start a declaration
+            continue
+        # join a declaration split over lines (up to the ';')
+        j = i
+        while ";" not in line and j + 1 < n and not _OE_REGION_RE.match(span[j + 1]):
+            j += 1
+            line += " " + _strip_lc(span[j]).strip()
+        m = _OE_DECL_RE.match(line)
+        if m:
+            kind, signed_kw, rest = m.group(1).lower(), bool(m.group(2)), m.group(3)
+            rest = re.split(r"=", rest, maxsplit=1)[0]  # drop initializers
+            packed: list[str] = []
+            rest_l = rest.lstrip()
+            while rest_l.startswith("["):
+                bm = re.match(r"\[([^\]]+)\]\s*", rest_l)
+                if not bm:
+                    break
+                packed.append(bm.group(1).strip())
+                rest_l = rest_l[bm.end() :]
+            data_type = ""
+            net_type = "" if kind in ("parameter", "localparam", "integer") else kind
+            tm = re.match(r"(\w+)\s+", rest_l)
+            if tm and tdx and tdx.search(tm.group(1)):
+                data_type = tm.group(1)
+                rest_l = rest_l[tm.end() :]
+            for part in re.split(r"\s*,\s*", rest_l):
+                nm = re.match(r"(\w+)", part.strip())
+                if not nm:
+                    continue
+                sig = Signal(width="c0", type="usrdef", name=nm.group(1))
+                sig.signed = signed_kw
+                sig.packed_dims = tuple(packed)
+                sig.data_type = data_type
+                sig.net_type = "" if data_type else net_type
+                # unpacked dims trail the name
+                um = re.match(r"\w+\s*((?:\[[^\]]+\])+)", part.strip())
+                if um:
+                    sig.dims = tuple(
+                        d.strip() for d in re.findall(r"\[([^\]]+)\]", um.group(1))
+                    )
+                out.append((sig, i in region_lines))
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+
+def _outputevery_type(sig: Signal, in_region: bool, auto_wire_type: "str | None") -> Signal:
+    """verilog-insert-definition's type selection for AUTOOUTPUTEVERY:
+    sig-type is the typedef data type, or ``logic`` kept from an
+    AUTO-region decl (the modi-cache rule); with auto-wire-type ``logic``
+    (an AUTOLOGIC marker ran this run) every type-less sig gets ``logic``,
+    with ``wire`` logic sigs go bare."""
+    sig_type = sig.data_type
+    if not sig_type and sig.net_type == "logic" and in_region:
+        sig_type = "logic"
+    if auto_wire_type == "wire" and sig_type in ("", "logic"):
+        net = ""
+    elif sig_type or auto_wire_type:
+        net = sig_type or (auto_wire_type or "")
+    else:
+        net = ""
+    return replace(sig, net_type=net, data_type="")
+
+
 def _outputevery_decls(
     marker: _Marker,
-    usrdef_sigs: list[Signal],
+    scanned: "list[tuple[Signal, bool]]",
     port_names: set[str],
     comments: dict[str, str],
     ignore_re: "str | None",
     emitted: set[str],
     comment_on: bool,
+    auto_wire_type: "str | None",
 ) -> list[tuple[str, str, Signal]]:
-    sigs = [s for s in usrdef_sigs if s.name not in port_names and s.name not in emitted]
+    sigs = [
+        _outputevery_type(s, in_region, auto_wire_type)
+        for s, in_region in scanned
+        if s.name not in port_names and s.name not in emitted
+    ]
     sigs = _filter_name(sigs, marker.args[0] if marker.args else "")
     sigs = _filter_not(sigs, ignore_re)
     sigs.sort(key=lambda s: s.name)
@@ -1160,11 +1280,18 @@ def _outputevery_decls(
 def auto_outputevery(lines: Sequence[str]) -> list[str]:
     """Regenerate /*AUTOOUTPUTEVERY[("re")]*/ — every non-port signal of the
     module becomes an ``output`` (sorted by name), honouring the
-    ``verilog-auto-output-ignore-regexp`` file-local."""
+    ``verilog-auto-output-ignore-regexp`` file-local.  Parameters/localparams
+    are included; io ports (incl. ANSI header decls) are excluded.  Types
+    follow verilog-insert-definition: typedef types survive, ``logic`` from
+    an AUTO-region decl survives, and a buffer with an AUTOLOGIC marker (or
+    ``verilog-auto-wire-type:"logic"``) types every emission ``logic``."""
     lines = kill_auto_outputevery(lines)
     full = list(lines)
     from .inst import map_module_spans
+    from .libdirs import parse_typedef_regexp
+    from .misc import _LOGIC_MARK, parse_wire_type
 
+    typedef_re = parse_typedef_regexp(full)
     m = re.search(
         r'^\s*//\s*verilog-auto-output-ignore-regexp\s*:\s*"([^"]+)"',
         "\n".join(full),
@@ -1172,12 +1299,31 @@ def auto_outputevery(lines: Sequence[str]) -> list[str]:
     )
     ignore_re = m.group(1) if m else None
     comment_on = _wire_comment_enabled(full)
+    # verilog-auto-logic-setup: an AUTOLOGIC marker flips the buffer's
+    # auto-wire-type to "logic" for the whole verilog-auto run
+    auto_wire_type = parse_wire_type(full)
+    if auto_wire_type is None and any(_LOGIC_MARK.search(l) for l in full):
+        auto_wire_type = "logic"
 
     def _single(span: Sequence[str]) -> list[str]:
-        ports, usrdef, _ = _module_tables(span)
+        ports, _, _ = _module_tables(span)
         port_names = set(ports.signals)
-        # NB: SignalTable keys are the names (Signal.name is often unset)
-        usrdef_sigs = [replace(s, name=n) for n, s in usrdef.signals.items()]
+        scanned = [
+            (s, in_region)
+            for s, in_region in _outputevery_scan(span, typedef_re)
+            if s.name not in port_names
+        ]
+        # parameters of the ANSI #(...) header are candidates too (COLS) —
+        # body parameter/localparam decls are already in the scan
+        from .inst import parse_module_ports
+
+        have = {s.name for s, _ in scanned}
+        try:
+            for pm in parse_module_ports(span, with_params=True).params:
+                if pm.name not in port_names and pm.name not in have:
+                    scanned.append((Signal(width="c0", type="usrdef", name=pm.name), False))
+        except Exception:  # noqa: BLE001 — header parse is best-effort here
+            pass
         comments = _trailing_comments(span)
         text = "\n".join(span)
         markers = _find_markers(text, "AUTOOUTPUTEVERY")
@@ -1186,7 +1332,8 @@ def auto_outputevery(lines: Sequence[str]) -> list[str]:
             (
                 mk,
                 _outputevery_decls(
-                    mk, usrdef_sigs, port_names, comments, ignore_re, emitted, comment_on
+                    mk, scanned, port_names, comments, ignore_re, emitted,
+                    comment_on, auto_wire_type,
                 ),
             )
             for mk in markers
@@ -1246,6 +1393,14 @@ def auto_reginput(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> lis
         set_typedef_regexp(typedef_re)
         sigs: list[Signal] = []
         comments: dict[str, str] = {}
+        # verilog-insert-definition with direction "reg": the submodule
+        # port's explicit type (logic, typedef) replaces the reg keyword;
+        # an AUTOLOGIC marker flips auto-wire-type to "logic" this run
+        from .misc import _LOGIC_MARK, parse_wire_type
+
+        auto_wire_type = parse_wire_type(full)
+        if auto_wire_type is None and any(_LOGIC_MARK.search(l) for l in full):
+            auto_wire_type = "logic"
         for name in sorted(driven):
             if name in excluded:
                 continue
@@ -1254,15 +1409,22 @@ def auto_reginput(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> lis
             net = driven[name]
             if net.unpacked_dims:
                 continue  # memories: "declare those yourself"
+            nt = net.data_type or net.net_type
+            if nt in ("wire", "reg"):
+                nt = ""  # verilog-signals-edit-wire-reg
             sigs.append(
                 Signal(
                     width=net.width, type="xfer_regin", name=name,
                     packed_dims=net.packed_dims, signed=net.signed,
+                    net_type=nt or (auto_wire_type or ""),
                 )
             )
             if comment_on:
                 direction = "To/From" if net.direction == "inout" else "To"
-                comments[name] = f"// {direction} {net.inst} of {net.module}.v"
+                comments[name] = (
+                    f"// {direction} {net.inst} of {net.module}.v"
+                    + (", ..." if net.multi else "")
+                )
         decls = [("reg", "reg", sigs[i], comments.get(sigs[i].name, "")) for i in range(len(sigs))]
         text = "\n".join(span)
         # AUTOREGINPUT takes no arguments and is always Verilog-1995 style

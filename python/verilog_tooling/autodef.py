@@ -1825,7 +1825,7 @@ def _rewrite_usrdef_range(line: str, new_msb: str) -> str | None:
     return f"{indent}{kw} [{new_msb}:0] {name}{tail}"
 
 
-def _emit_signal(sig: Signal, max_len: int, keyword: str) -> str:
+def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = False) -> str:
     # head: the leading keyword — a typedef or an explicit net type from the
     # submodule port REPLACES a bare ``wire`` (``foo_t x;``, ``logic signed
     # [15:0] x;``) but follows a direction keyword (``input foo_t a``,
@@ -1845,18 +1845,25 @@ def _emit_signal(sig: Signal, max_len: int, keyword: str) -> str:
         if sig.signed:
             line += "signed "
         if sig.packed_dims:
-            # multi-dim packed port: keep the original dimensions verbatim —
-            # readable, and exactly what the submodule port declares
-            line += "".join(f"[{d}]" for d in sig.packed_dims)
+            if emacs_dims:
+                # verilog-insert-one-definition: dims verbatim, one space
+                # before the LAST range ([A-1:0][B-1:0] [C-1:0])
+                line += "".join(f"[{d}]" for d in sig.packed_dims[:-1])
+                line += (" " if len(sig.packed_dims) > 1 else "") + f"[{sig.packed_dims[-1]}]"
+            else:
+                # multi-dim packed port: keep the original dimensions
+                # verbatim — exactly what the submodule port declares
+                line += "".join(f"[{d}]" for d in sig.packed_dims)
         elif sig.width != "c0":
             line += f"[{sig.width}:0]"
-    line += _cal_margin(max_len, len(line)) + sig.name
+    line += _cal_margin(max_len, len(line)) or " "
+    line += sig.name
     if sig.dims:
-        line += " " + " ".join(f"[{d}]" for d in sig.dims)
+        line += " " + ("" if emacs_dims else " ").join(f"[{d}]" for d in sig.dims)
     return line + ";"
 
 
-def _sig_decl_len(sig: Signal) -> int:
+def _sig_decl_len(sig: Signal, *, emacs_dims: bool = False) -> int:
     """Column contribution of one declaration: ``5 + len(width) + 4`` for a
     vector ('reg  '/'wire ' is 5 chars; '[width:0]' adds 4), 5 for scalar;
     multi-dim packed dims add their bracketed text; net type / signed /
@@ -1865,7 +1872,9 @@ def _sig_decl_len(sig: Signal) -> int:
         return max(5, len(sig.data_type))
     extra = (len(sig.net_type) + 1 if sig.net_type else 0) + (7 if sig.signed else 0)
     if sig.packed_dims:
-        return 5 + extra + sum(len(d) + 2 for d in sig.packed_dims)
+        return 5 + extra + sum(len(d) + 2 for d in sig.packed_dims) + (
+            1 if emacs_dims and len(sig.packed_dims) > 1 else 0
+        )
     return 5 + extra if sig.width == "c0" else 5 + extra + len(sig.width) + 4
 
 

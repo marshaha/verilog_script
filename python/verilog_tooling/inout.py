@@ -226,7 +226,9 @@ def _input_sigs(
                 dims=_sig_dims(net, local_syms),
             )
         )
-        comments[name] = f"// To {net.inst} of {net.module}.v"
+        comments[name] = (
+            f"// To {net.inst} of {net.module}.v" + (", ..." if net.multi else "")
+        )
     return sigs, comments
 
 
@@ -268,7 +270,9 @@ def _output_sigs(
                 dims=_sig_dims(net, local_syms),
             )
         )
-        comments[name] = f"// From {net.inst} of {net.module}.v"
+        comments[name] = (
+            f"// From {net.inst} of {net.module}.v" + (", ..." if net.multi else "")
+        )
     return sigs, comments
 
 
@@ -309,7 +313,10 @@ def _inout_sigs(
                 dims=_sig_dims(net, local_syms),
             )
         )
-        comments[name] = f"// To/From {net.inst} of {net.module}.v"
+        comments[name] = (
+            f"// To/From {net.inst} of {net.module}.v"
+            + (", ..." if net.multi else "")
+        )
     return sigs, comments
 
 
@@ -318,7 +325,7 @@ def _inout_sigs(
 
 
 def _emit_io_line(sig: Signal, max_len: int, keyword: str, indent: int, v2k: bool, comment: str) -> str:
-    body = _emit_signal(sig, max_len, keyword)[:-1] + ("," if v2k else ";")
+    body = _emit_signal(sig, max_len, keyword, emacs_dims=True)[:-1] + ("," if v2k else ";")
     line = " " * indent + body
     if comment:
         col = max(_COMMENT_COL, indent + 40)
