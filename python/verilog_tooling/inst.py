@@ -258,12 +258,20 @@ def set_typedef_regexp(regexp: str | None) -> None:
 
 
 def _parse_port_line(line: str) -> Port | None:
+    ports = _parse_port_line_multi(line)
+    return ports[0] if ports else None
+
+
+def _parse_port_line_multi(line: str) -> list[Port]:
+    """Parse one declaration line into every port it declares: a
+    comma-separated declaration (``output ia, ib, ic;``) contributes one
+    Port per name, all sharing direction/type/packed range."""
     # /* ... */ is comment text, not declaration text (incomplete pairs and
     # line comments are handled by the caller before this point)
     line = re.sub(r"/\*.*?\*/", " ", line)
     m = _PORT_KEYWORD.match(line)
     if not m:
-        return None
+        return []
     rest = line[m.end() :]
     rest = re.sub(r"^wire\b\s*", "", rest)  # `wire [7:0]` and `wire[7:0]` alike
     rest = re.sub(r"^reg\b\s*", "", rest)
@@ -279,39 +287,62 @@ def _parse_port_line(line: str) -> Port | None:
         # normalise the range: whitespace is insignificant inside [...]
         packed.append(re.sub(r"\s+", "", wm.group(1)))
         rest = rest[wm.end() :]
-    nm = re.match(r"\w+", rest)
-    if not nm:
-        return None
-    name = nm.group(0)
-    after = rest[nm.end() :]
-    if _TYPEDEF_REGEXP is not None and _TYPEDEF_REGEXP.search(name):
-        # a user type (reqcmd_t): the port name is the next word
-        nm2 = re.match(r"\s*(\w+)", after)
-        if not nm2:
-            return None
-        name = nm2.group(1)
-        after = after[nm2.end() :]
-    # unpacked dimensions follow the name:  name [0:3][0:2] ;
-    unpacked: list[str] = []
-    while True:
-        um = re.match(r"^\s*\[([^\]]+)\]", after)
-        if not um:
-            break
-        unpacked.append(re.sub(r"\s+", "", um.group(1)))
-        after = after[um.end() :]
-    width = packed[-1] if len(packed) == 1 and not unpacked else (
-        packed[-1] if len(packed) == 1 else None
-    )
-    # simple single-packed no-unpacked keeps width for name[width] form
-    if len(packed) == 1 and not unpacked:
-        width = packed[0]
-    return Port(
-        name=name,
-        direction=m.group(1),
-        width=width,
-        packed=tuple(packed),
-        unpacked=tuple(unpacked),
-    )
+    rest = rest.rstrip().rstrip(";").rstrip(")").rstrip()
+    parts: list[str] = []
+    depth = 0
+    cur = ""
+    for ch in rest:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    out: list[Port] = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        nm = re.match(r"\w+", part)
+        if not nm:
+            continue
+        name = nm.group(0)
+        after = part[nm.end() :]
+        if _TYPEDEF_REGEXP is not None and _TYPEDEF_REGEXP.search(name):
+            # a user type (reqcmd_t): the port name is the next word
+            nm2 = re.match(r"\s*(\w+)", after)
+            if not nm2:
+                continue
+            name = nm2.group(1)
+            after = after[nm2.end() :]
+        # unpacked dimensions follow the name:  name [0:3][0:2] ;
+        unpacked: list[str] = []
+        while True:
+            um = re.match(r"^\s*\[([^\]]+)\]", after)
+            if not um:
+                break
+            unpacked.append(re.sub(r"\s+", "", um.group(1)))
+            after = after[um.end() :]
+        width = packed[-1] if len(packed) == 1 and not unpacked else (
+            packed[-1] if len(packed) == 1 else None
+        )
+        # simple single-packed no-unpacked keeps width for name[width] form
+        if len(packed) == 1 and not unpacked:
+            width = packed[0]
+        out.append(
+            Port(
+                name=name,
+                direction=m.group(1),
+                width=width,
+                packed=tuple(packed),
+                unpacked=tuple(unpacked),
+            )
+        )
+    return out
 
 
 def _expand_ansi_header(lines: list[str], interfaces: Iterable[str] | None = None) -> list[str]:
@@ -470,6 +501,15 @@ def parse_module_ports(
                 m = re.search(r"\bmodule\s+(\w+)", line)
                 if m:
                     mod_name = m.group(1)
+            # an ANSI port may start on the module line itself even in a
+            # multi-line header (``module m (input a,\n output b);``): parse
+            # the text after the port-list '(' as the first declaration
+            # (the port list is the LAST '(' on the line — a #(...) block
+            # closes before it)
+            if "(" in line:
+                tail = line[line.rindex("(") + 1 :]
+                if _PORT_KEYWORD.match(tail):
+                    line = tail
         if not seen_module:
             continue
         if ");" in line and entries and not have_port:
@@ -501,9 +541,9 @@ def parse_module_ports(
                 if _port_continues(nxt) and _parse_port_line(nxt) is None:
                     break  # another decl will finish there: leave it to them
                 joined += " " + nxt
-            port = _parse_port_line(joined)
-            if port:
-                entries.append(port)
+            ports_here = _parse_port_line_multi(joined)
+            if ports_here:
+                entries.extend(ports_here)
                 have_port = True
             continue
         if interfaces:

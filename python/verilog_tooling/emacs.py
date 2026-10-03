@@ -925,7 +925,14 @@ def auto_inst(
         )
         at_value = template_at_value(tpl, inst) if tpl else ""
         param_values = read_inst_param_values(text, open_idx) if param_value else {}
-        pins = set(re.findall(r"\.\s*(\w+)\s*\(", text[open_idx + 1 : marker.offset]))
+        # commented-out pins before the marker are NOT connected: mask
+        # comments (positions preserved) before collecting names
+        pins = set(
+            re.findall(
+                r"\.\s*(\w+)\s*\(",
+                mask_comments(text[open_idx + 1 : marker.offset], block=True),
+            )
+        )
         sections = []
         for header, direction in (
             ("// Interfaces", "interface"),
@@ -1035,7 +1042,14 @@ def auto_param(
         )
         at_value = template_at_value(tpl, inst) if tpl else ""
         lisp_env = read_auto_lisp(text, marker.offset)
-        pins = set(re.findall(r"\.\s*(\w+)\s*\(", text[open_idx + 1 : marker.offset]))
+        # commented-out pins before the marker are NOT connected: mask
+        # comments (positions preserved) before collecting names
+        pins = set(
+            re.findall(
+                r"\.\s*(\w+)\s*\(",
+                mask_comments(text[open_idx + 1 : marker.offset], block=True),
+            )
+        )
         kept = [p for p in params if p.name not in pins]
         kept = _filter_regexp(kept, marker.regexp)
         if sort:
