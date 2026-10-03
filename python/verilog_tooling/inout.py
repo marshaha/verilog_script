@@ -124,17 +124,17 @@ _IGNORE_RE = {
 
 def kill_auto_input(lines: Sequence[str]) -> list[str]:
     """Delete the /*AUTOINPUT*/ region, keeping the marker."""
-    return _kill_region(lines, _INPUT_HEADER_RE)
+    return _kill_region(lines, _INPUT_HEADER_RE, _AUTOINPUT_MARK)
 
 
 def kill_auto_output(lines: Sequence[str]) -> list[str]:
     """Delete the /*AUTOOUTPUT*/ region, keeping the marker."""
-    return _kill_region(lines, _OUTPUT_HEADER_RE)
+    return _kill_region(lines, _OUTPUT_HEADER_RE, _AUTOOUTPUT_MARK)
 
 
 def kill_auto_inout(lines: Sequence[str]) -> list[str]:
     """Delete the /*AUTOINOUT*/ region, keeping the marker."""
-    return _kill_region(lines, _INOUT_HEADER_RE)
+    return _kill_region(lines, _INOUT_HEADER_RE, _AUTOINOUT_MARK)
 
 
 # ---------------------------------------------------------------------------
@@ -149,14 +149,29 @@ def _local_syms(lines: Sequence[str]) -> set[str]:
 
 def _widths_ok(net, local_syms: set[str]) -> bool:
     """A declaration compiles only when every width/dim names local symbols
-    (same rule as AUTOWIRE)."""
-    from .autodef import _width_syms_known
+    (same rule as AUTOWIRE).  Unpacked dims are declarable when their
+    symbols are local (whole-array port) or the connected element indexes
+    merge into a range."""
+    from .autodef import _merge_unpacked_indexes, _width_syms_known
 
+    if net.unpacked_idx:
+        return _merge_unpacked_indexes(net.unpacked_idx, local_syms) is not None
     if net.unpacked_dims:
-        return False
+        return all(_width_syms_known(d, local_syms) for d in net.unpacked_dims)
     if net.packed_dims:
         return all(_width_syms_known(d, local_syms) for d in net.packed_dims)
     return net.width in ("", "c0") or _width_syms_known(net.width, local_syms)
+
+
+def _sig_dims(net, local_syms: set[str]) -> tuple:
+    """Unpacked dims for the emitted declaration: merged element indexes,
+    else the port's own unpacked decl."""
+    from .autodef import _merge_unpacked_indexes
+
+    if net.unpacked_idx:
+        merged = _merge_unpacked_indexes(net.unpacked_idx, local_syms)
+        return (merged,) if merged is not None else ()
+    return tuple(net.unpacked_dims)
 
 
 def _declared_port_names(lines: Sequence[str]) -> set[str]:
@@ -208,6 +223,7 @@ def _input_sigs(
                 width=net.width, type="io_input", name=name,
                 packed_dims=net.packed_dims, signed=net.signed,
                 net_type=net.net_type, data_type=net.data_type,
+                dims=_sig_dims(net, local_syms),
             )
         )
         comments[name] = f"// To {net.inst} of {net.module}.v"
@@ -249,6 +265,7 @@ def _output_sigs(
                 width=net.width, type="io_output", name=name,
                 packed_dims=net.packed_dims, signed=net.signed,
                 net_type=net.net_type, data_type=net.data_type,
+                dims=_sig_dims(net, local_syms),
             )
         )
         comments[name] = f"// From {net.inst} of {net.module}.v"
@@ -289,6 +306,7 @@ def _inout_sigs(
                 width=net.width, type="io_inout", name=name,
                 packed_dims=net.packed_dims, signed=net.signed,
                 net_type=net.net_type, data_type=net.data_type,
+                dims=_sig_dims(net, local_syms),
             )
         )
         comments[name] = f"// To/From {net.inst} of {net.module}.v"

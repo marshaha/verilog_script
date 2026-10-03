@@ -501,6 +501,15 @@ def expand_connection(
 
         expr = re.sub(r'@"((?:[^"\\]|\\.)*)"', _eval, expr)
     expr = expr.replace("@", at_value)
+    # unpacked-array element connection (``abc[].[@]``): the connection is
+    # the element ``abc[@]`` and the port's packed range rides in the
+    # verilog-mode dimensions note — ``abc[2]/*[6:0].[2]*/`` (scalar port:
+    # ``sbit[2]/*.[2]*/``)
+    m = re.search(r"\[\]\.(\[[^\]]*\])", expr)
+    if m:
+        idx = m.group(1)
+        note = (f"[{port_width}]" if port_width else packed_note) + "." + idx
+        return expr[: m.start()] + idx + f"/*{note}*/" + expr[m.end() :]
     # a multidim port has no single range: []/[][] expand to the
     # verilog-mode dimensions note /*[D1][D2]*/ instead (packed_note)
     rng = f"[{port_width}]" if port_width else packed_note

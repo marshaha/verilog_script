@@ -131,14 +131,25 @@ def _wire_comment_enabled(lines: Sequence[str]) -> bool:
 # kill (verilog-delete-auto-buffer for these two regions)
 
 
-def _kill_region(lines: Sequence[str], header_re: "re.Pattern[str]") -> list[str]:
+def _kill_region(
+    lines: Sequence[str], header_re: "re.Pattern[str]", marker_re: "re.Pattern[str]"
+) -> list[str]:
     """Delete the generated region from the HEADER_RE line through the first
     ``// End of automatics``, keeping everything else (the marker line stays
-    because it precedes the header)."""
+    because it precedes the header).  A region whose preceding non-blank
+    line is NOT the MARKER_RE marker belongs to a different AUTO command
+    (e.g. /*AUTOLOGIC*/ — not implemented) and is left untouched."""
     out: list[str] = []
     i = 0
     while i < len(lines):
         if header_re.match(lines[i]):
+            k = len(out) - 1
+            while k >= 0 and not out[k].strip():
+                k -= 1
+            if k < 0 or not marker_re.search(out[k]):
+                out.append(lines[i])  # someone else's region: keep it whole
+                i += 1
+                continue
             i += 1
             while i < len(lines) and _END_OF_AUTOMATICS not in lines[i]:
                 i += 1
@@ -153,13 +164,13 @@ def _kill_region(lines: Sequence[str], header_re: "re.Pattern[str]") -> list[str
 def kill_auto_wire(lines: Sequence[str]) -> list[str]:
     """Delete the /*AUTOWIRE*/ region (``// Beginning of automatic wires``
     through ``// End of automatics``), keeping the /*AUTOWIRE*/ marker."""
-    return _kill_region(lines, _WIRE_HEADER_RE)
+    return _kill_region(lines, _WIRE_HEADER_RE, _AUTOWIRE_MARK_FULL)
 
 
 def kill_auto_reg(lines: Sequence[str]) -> list[str]:
     """Delete the /*AUTOREG*/ region (``// Beginning of automatic regs``
     through ``// End of automatics``), keeping the /*AUTOREG*/ marker."""
-    return _kill_region(lines, _REG_HEADER_RE)
+    return _kill_region(lines, _REG_HEADER_RE, _AUTOREG_MARK_FULL)
 
 
 # ---------------------------------------------------------------------------
@@ -177,11 +188,12 @@ class InstNet:
     inst: str
     module: str
     packed_dims: tuple = ()
-    unpacked_dims: tuple = ()  # unpacked port dims — not declarable here
+    unpacked_dims: tuple = ()  # unpacked port dims (the array's own decl)
     direction: str = ""  # port direction ('output' | 'inout' | 'input')
     signed: bool = False
     net_type: str = ""
     data_type: str = ""
+    unpacked_idx: tuple = ()  # element indexes connected (AUTOWIRE merges)
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +381,29 @@ def _inst_driven_nets(
                     port.direction, port.signed, port.net_type, port.data_type,
                 ),
             )
+            # unpacked-array element index: the note's ``.[idx]`` part, or
+            # the connection's own select when the port is unpacked
+            uidx = ""
+            um = re.search(r"\.\s*\[([^\]:]+)\]\s*\*/", expr)
+            if um:
+                uidx = um.group(1).strip()
+            elif port.unpacked:
+                em = _ELEM_NET.match(stripped)
+                if em:
+                    ranges = re.findall(r"\[([^\]]+)\]", em.group(2))
+                    # a select equal to the PACKED range is a packed
+                    # bit-select of the whole array, not an element index
+                    packed_txt = re.sub(r"\s+", "", port.packed[-1] if port.packed else "")
+                    if ranges and re.sub(r"\s+", "", ranges[-1]) != packed_txt:
+                        uidx = ranges[-1].strip()
+            if uidx:
+                rec = nets[net]
+                if uidx not in rec.unpacked_idx:
+                    from dataclasses import replace
+
+                    nets[net] = replace(
+                        rec, unpacked_idx=tuple(rec.unpacked_idx) + (uidx,)
+                    )
     return nets
 
 
@@ -521,6 +556,8 @@ def _auto_wire_single(
     from .autodef import _const_symbols, _width_syms_known
 
     local_syms = set(get_all_paras(lines)) | set(_const_symbols(lines))
+    from .autodef import _merge_unpacked_indexes
+
     sigs: list[Signal] = []
     comments: dict[str, str] = {}
     for name in sorted(driven):
@@ -538,11 +575,26 @@ def _auto_wire_single(
                 continue
         elif net.width not in ("", "c0") and not _width_syms_known(net.width, local_syms):
             continue
+        # unpacked array: merge the element indexes from all instances into
+        # one range (abc[0]+abc[2] -> [0:2]); a whole-array connection of an
+        # unpacked port keeps the port's own dims
+        dims: tuple = ()
+        if net.unpacked_idx:
+            merged = _merge_unpacked_indexes(net.unpacked_idx, local_syms)
+            if merged is None:
+                continue
+            dims = (merged,)
+        elif net.unpacked_dims:
+            if any(
+                not _width_syms_known(d, local_syms) for d in net.unpacked_dims
+            ):
+                continue
+            dims = tuple(net.unpacked_dims)
         sigs.append(
             Signal(
                 width=net.width, type="inst_wire", name=name,
                 packed_dims=net.packed_dims, signed=net.signed,
-                net_type=net.net_type, data_type=net.data_type,
+                net_type=net.net_type, data_type=net.data_type, dims=dims,
             )
         )
         # an inout-driven net is commented To/From (verilog-mode), an

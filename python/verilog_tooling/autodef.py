@@ -1687,6 +1687,31 @@ def _width_unknown_syms(width: str, known: set[str]) -> list[str]:
     return out
 
 
+def _merge_unpacked_indexes(idxs: Sequence[str], known: set[str]) -> str | None:
+    """Merge element indexes from several instances into one unpacked range:
+    ``{0, 2}`` → ``0:2``, ``{1, 1}`` → ``1:1``, ``{IDX}`` → ``IDX``.  Bare
+    identifiers are trusted even when not locally defined (a template wrote
+    them deliberately — verilog-mode keeps them symbolic); a
+    symbolic/numeric mix or several distinct symbols is unmergeable (None)."""
+    nums: list[int] = []
+    syms: set[str] = set()
+    for x in idxs:
+        x = x.strip()
+        if re.fullmatch(r"\d+", x):
+            nums.append(int(x))
+        elif re.fullmatch(r"[a-zA-Z_]\w*", x):
+            syms.add(x)
+        else:
+            return None
+    if syms:
+        if len(syms) == 1 and not nums:
+            return syms.pop()
+        return None
+    if not nums:
+        return None
+    return f"{min(nums)}:{max(nums)}"
+
+
 def _width_syms_known(width: str, known: set[str]) -> bool:
     """Every identifier in a width expression must resolve locally: a
     parameter/localparam of THIS module, a `` `define`` (macros are global —
