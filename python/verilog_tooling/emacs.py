@@ -980,15 +980,11 @@ def auto_param(
     """Expand /*AUTOINSTPARAM*/ markers verilog-mode style.
 
     Emits a ``// Parameters`` section of connections inside the instance's
-    ``#( ... )`` block: the AUTO_TEMPLATE entry when one matches, otherwise
-    the parameter's DEFAULT VALUE from the module definition (an identity
-    ``.PAR (PAR)`` only makes sense when the parent happens to define PAR,
-    which usually it does not — a default value always elaborates).  A
-    default referencing identifiers not visible in this module is omitted
-    entirely, which also leaves the module's default in effect."""
-    from .autodef import _const_symbols, _width_syms_known, get_all_paras
-
-    local_syms = set(get_all_paras(lines)) | set(_const_symbols(lines))
+    ``#( ... )`` block, resetting whatever was there before: the
+    AUTO_TEMPLATE entry when one matches, otherwise the parameter connected
+    by identity (``.PAR (PAR)`` — verilog-mode emits identity even when the
+    parent does not define the name; the user fills it in or templates it).
+    """
     text = "\n".join(lines)
     markers = _select_markers(lines, "AUTOINSTPARAM", which)
     stacks = _scan_parens_at(text, [m.offset for m in markers])
@@ -1049,16 +1045,11 @@ def auto_param(
             conn = template_connection(tpl, param.name, at_value, None, lisp_env) if tpl else None
             templated = conn is not None
             if not templated:
-                if param.name in local_syms:
-                    # the parent defines the same-named parameter: pass it
-                    # down identically (its value may override the default)
-                    conn = param.name
-                elif param.value is None:
-                    conn = param.name  # no default: identity (must override)
-                elif _width_syms_known(param.value, local_syms):
-                    conn = re.sub(r"\s+", "", param.value)
-                else:
-                    continue  # default not locally visible: omit, default applies
+                # verilog-mode: every parameter connects by identity (even a
+                # name the parent does not define — the user fills it in or
+                # templates it); entries manually written before the marker
+                # are reset, not preserved
+                conn = param.name
             entries.append((param.name, conn,
                             "// Templated" if templated else None))
         if not entries:
