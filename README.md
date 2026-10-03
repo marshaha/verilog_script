@@ -159,11 +159,12 @@ verilog-mode's `verilog-auto-read-includes` defaults to nil, reads only
 `` `define`` macros, and only from line-start directives.
 
 **Performance**: library scans (interface lookup, module resolution,
-include expansion) are cached and thread-pooled.  The one exception, like
-verilog-mode, is interfaces declared inside included files — they are not
-scanned through includes by default; add
-``// verilog-auto-read-includes:t`` at the bottom of the file to opt in
-(noticeably slower on large `-y` trees).  On a real project with 594 `-y`
+include expansion) are cached and thread-pooled.  Interface declarations
+are raw-regex scanned across `.v` / `.sv` / `.svh` / `.vh` files, so an
+interface living in an `.svh` header is found without any include
+expansion; ``// verilog-auto-read-includes:t`` at the bottom of the file
+additionally follows `` `include`` edges (for oddly-named include files)
+via a basename index — cheap either way.  On a real project with 594 `-y`
 dirs and 2200+ files, `-a` takes about 4 seconds.
 
 ## Command reference

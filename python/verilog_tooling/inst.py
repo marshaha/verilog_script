@@ -226,38 +226,79 @@ def parse_interface(lines: Iterable[str]) -> InterfaceDef:
 
 
 def find_interfaces(libdirs: Sequence[str], read_includes: bool = False) -> dict[str, Path]:
-    """Map interface names to the library file declaring them: every ``.v`` /
-    ``.sv`` file in LIBDIRS is scanned for ``interface <name>`` headers.
-    With READ_INCLUDES (the buffer's ``verilog-auto-read-includes:t``) a
-    file that has `` `include`` but no raw match is also scanned through its
-    includes — an interface may be declared in an included header; off by
-    default (verilog-mode semantics) since include expansion dominates the
-    scan cost on large -y trees.  Per-file reads run in a thread pool."""
+    """Map interface names to the library file declaring them.  Every
+    ``.v`` / ``.sv`` / ``.svh`` / ``.vh`` file in LIBDIRS is raw-regex
+    scanned for ``interface <name>`` headers (thread-pooled) — header files
+    are scanned directly, so an interface declared in an ``.svh`` is found
+    WITHOUT expanding any includes.
+
+    With READ_INCLUDES (the buffer's ``verilog-auto-read-includes:t``) the
+    scan additionally follows `` `include`` edges through a basename index
+    (built from the same pass, no directory re-statting) to catch
+    interfaces hidden behind include files with unusual names.  Off by
+    default (verilog-mode semantics); rarely needed now that header files
+    are scanned directly."""
     from concurrent.futures import ThreadPoolExecutor
 
+    from .libdirs import _find_include
+
     header_re = re.compile(r"^\s*interface\s+(\w+)", re.M)
+    include_re = re.compile(r'`include\s+"([^"]+)"')
     paths: list[Path] = []
     for d in libdirs:
-        paths.extend(sorted(Path(d).glob("*.v")) + sorted(Path(d).glob("*.sv")))
+        for pat in ("*.v", "*.sv", "*.svh", "*.vh"):
+            paths.extend(sorted(Path(d).glob(pat)))
 
-    def scan(path: Path) -> tuple[str, ...]:
+    def scan(path: Path) -> "tuple[tuple[str, ...], tuple[str, ...]]":
         try:
             raw = path.read_text(errors="replace")
         except OSError:
-            return ()
-        names = header_re.findall(raw)
-        if not names and read_includes and "`include" in raw:
-            from .libdirs import expand_includes
-
-            names = header_re.findall("\n".join(expand_includes(raw.splitlines())))
-        return tuple(names)
+            return (), ()
+        return tuple(header_re.findall(raw)), tuple(include_re.findall(raw))
 
     found: dict[str, Path] = {}
-    if paths:
-        with ThreadPoolExecutor(max_workers=min(8, len(paths))) as pool:
-            for path, names in zip(paths, pool.map(scan, paths)):
-                for n in names:
-                    found.setdefault(n, path)
+    by_name: dict[str, Path] = {}
+
+    def absorb(batch: list[Path], results: "list[tuple[tuple[str, ...], tuple[str, ...]]]") -> None:
+        for p, (names, _incs) in zip(batch, results):
+            for n in names:
+                found.setdefault(n, p)
+            by_name.setdefault(p.name, p)
+
+    if not paths:
+        return found
+    with ThreadPoolExecutor(max_workers=min(8, len(paths))) as pool:
+        results = list(pool.map(scan, paths))
+        absorb(paths, results)
+        if read_includes:
+            # follow include edges to oddly-named include files; files
+            # already scanned above need no rescan (their interface
+            # declarations were already collected)
+            scanned = {p.name for p in paths}
+            queue = [n for (_n, incs) in results for n in incs]
+            seen = set(queue)
+            for _ in range(4):  # include-depth cap
+                batch: list[Path] = []
+                for name in queue:
+                    p = by_name.get(name)
+                    if p is None:
+                        hit = _find_include(name)
+                        p = Path(hit) if hit else None
+                    if p is not None and p.name not in scanned:
+                        scanned.add(p.name)
+                        by_name.setdefault(p.name, p)
+                        batch.append(p)
+                if not batch:
+                    break
+                results = list(pool.map(scan, batch))
+                absorb(batch, results)
+                queue = [
+                    n
+                    for _p, (_names, incs) in zip(batch, results)
+                    for n in incs
+                    if n not in seen
+                ]
+                seen.update(queue)
     return found
 
 
