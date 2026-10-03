@@ -140,6 +140,12 @@ class Port:
     width: str | None = None
     packed: tuple[str, ...] = ()
     unpacked: tuple[str, ...] = ()
+    # declaration type info, preserved for AIO/AW/AREG emission:
+    # ``output signed [1:0] x`` -> reg signed; ``input logic signed [15:0]``
+    # -> input logic signed; ``input foo_t a`` -> input foo_t
+    signed: bool = False
+    net_type: str = ""  # wire | reg | logic | tri | wand | ...
+    data_type: str = ""  # typedef name (foo_t), when the decl used one
     # SystemVerilog interface port (``cpu_bus.master bus``): ``iface`` is the
     # interface type, ``modport`` the optional modport.  The default
     # instantiation connection is ``name.modport`` (or just ``name``), the
@@ -273,11 +279,17 @@ def _parse_port_line_multi(line: str) -> list[Port]:
     if not m:
         return []
     rest = line[m.end() :]
-    rest = re.sub(r"^wire\b\s*", "", rest)  # `wire [7:0]` and `wire[7:0]` alike
-    rest = re.sub(r"^reg\b\s*", "", rest)
-    # explicit net types: tri/tri0/tri1/trireg/wand/wor/supply0/supply1
-    rest = re.sub(r"^(?:tri0|tri1|trireg|tri|wand|wor|supply0|supply1)\b\s*", "", rest)
-    rest = re.sub(r"^signed\b\s*", "", rest)
+    net_type = ""
+    mnet = re.match(
+        r"^(wire|reg|logic|tri0|tri1|trireg|tri|wand|wor|supply0|supply1)\b\s*", rest
+    )
+    if mnet:
+        net_type = mnet.group(1) if mnet.group(1) != "wire" else ""  # wire is the default
+        rest = rest[mnet.end() :]
+    signed = False
+    if re.match(r"^signed\b\s*", rest):
+        signed = True
+        rest = re.sub(r"^signed\b\s*", "", rest)
     # collect all packed dimensions:  [3:0][7:0] name ...
     packed: list[str] = []
     while True:
@@ -312,12 +324,14 @@ def _parse_port_line_multi(line: str) -> list[Port]:
             continue
         name = nm.group(0)
         after = part[nm.end() :]
+        data_type = ""
         if _TYPEDEF_REGEXP is not None and _TYPEDEF_REGEXP.search(name):
-            # a user type (reqcmd_t): the port name is the next word
+            # a user type (reqcmd_t): the port name is the next word, the
+            # first word is its data type
             nm2 = re.match(r"\s*(\w+)", after)
             if not nm2:
                 continue
-            name = nm2.group(1)
+            data_type, name = name, nm2.group(1)
             after = after[nm2.end() :]
         # unpacked dimensions follow the name:  name [0:3][0:2] ;
         unpacked: list[str] = []
@@ -340,6 +354,9 @@ def _parse_port_line_multi(line: str) -> list[Port]:
                 width=width,
                 packed=tuple(packed),
                 unpacked=tuple(unpacked),
+                signed=signed,
+                net_type=net_type,
+                data_type=data_type,
             )
         )
     return out
@@ -491,9 +508,6 @@ def parse_module_ports(
             continue
         if not _LINE_COMMENT.match(line):
             line = _strip_lc(line)
-        line = re.sub(r"input\s*logic", "input ", line)
-        line = re.sub(r"output\s*logic", "output ", line)
-        line = re.sub(r"inout\s*logic", "inout ", line)
         line = re.sub(r"^\s*,", "", line)
         if re.match(r"^\s*module\b", line):
             seen_module = True

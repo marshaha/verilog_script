@@ -179,6 +179,9 @@ class InstNet:
     packed_dims: tuple = ()
     unpacked_dims: tuple = ()  # unpacked port dims — not declarable here
     direction: str = ""  # port direction ('output' | 'inout' | 'input')
+    signed: bool = False
+    net_type: str = ""
+    data_type: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +366,7 @@ def _inst_driven_nets(
                 net,
                 InstNet(
                     net, width, inst, module, pdims, port.unpacked,
-                    port.direction,
+                    port.direction, port.signed, port.net_type, port.data_type,
                 ),
             )
     return nets
@@ -536,7 +539,11 @@ def _auto_wire_single(
         elif net.width not in ("", "c0") and not _width_syms_known(net.width, local_syms):
             continue
         sigs.append(
-            Signal(width=net.width, type="inst_wire", name=name, packed_dims=net.packed_dims)
+            Signal(
+                width=net.width, type="inst_wire", name=name,
+                packed_dims=net.packed_dims, signed=net.signed,
+                net_type=net.net_type, data_type=net.data_type,
+            )
         )
         # an inout-driven net is commented To/From (verilog-mode), an
         # output-driven one From
@@ -581,7 +588,10 @@ def _auto_reg_single(
     excluded = set(usrdef.signals) | assigns | driven
     excluded |= get_all_defs(full) | get_all_paras(lines)
     sigs = [
-        Signal(width=sig.width, type="io_reg", name=name)
+        Signal(
+            width=sig.width, type="io_reg", name=name, signed=sig.signed,
+            net_type=sig.net_type, data_type=sig.data_type,
+        )
         for name, sig in ports.signals.items()
         if sig.io_dir == "output" and not sig.has_defined and name not in excluded
     ]

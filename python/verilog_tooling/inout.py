@@ -204,7 +204,11 @@ def _input_sigs(
         if not _widths_ok(net, local_syms):
             continue
         sigs.append(
-            Signal(width=net.width, type="io_input", name=name, packed_dims=net.packed_dims)
+            Signal(
+                width=net.width, type="io_input", name=name,
+                packed_dims=net.packed_dims, signed=net.signed,
+                net_type=net.net_type, data_type=net.data_type,
+            )
         )
         comments[name] = f"// To {net.inst} of {net.module}.v"
     return sigs, comments
@@ -241,7 +245,11 @@ def _output_sigs(
         if not _widths_ok(net, local_syms):
             continue
         sigs.append(
-            Signal(width=net.width, type="io_output", name=name, packed_dims=net.packed_dims)
+            Signal(
+                width=net.width, type="io_output", name=name,
+                packed_dims=net.packed_dims, signed=net.signed,
+                net_type=net.net_type, data_type=net.data_type,
+            )
         )
         comments[name] = f"// From {net.inst} of {net.module}.v"
     return sigs, comments
@@ -277,7 +285,11 @@ def _inout_sigs(
         if not _widths_ok(net, local_syms):
             continue
         sigs.append(
-            Signal(width=net.width, type="io_inout", name=name, packed_dims=net.packed_dims)
+            Signal(
+                width=net.width, type="io_inout", name=name,
+                packed_dims=net.packed_dims, signed=net.signed,
+                net_type=net.net_type, data_type=net.data_type,
+            )
         )
         comments[name] = f"// To/From {net.inst} of {net.module}.v"
     return sigs, comments

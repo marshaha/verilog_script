@@ -277,6 +277,9 @@ class Signal:
     has_defined: bool = False
     driven: bool = False  # io port driven by assign/always/subinstance
     packed_dims: tuple[str, ...] = ()  # multi-dim packed port: ("W-1:0", "3:0")
+    signed: bool = False  # signed declaration (reg signed / input signed)
+    net_type: str = ""  # logic | wire | ... from the submodule port
+    data_type: str = ""  # typedef name (foo_t) from the submodule port
     seq: str = ""
     line: str = ""
     name: str = ""
@@ -366,15 +369,20 @@ class SignalTable:
             sig.has_defined = True
         if rest.startswith("wire") and (len(rest) == 4 or not rest[4].isalnum()):
             sig.has_defined = True
+            sig.net_type = "wire"
             rest = re.sub(r"^wire\s*", "", rest)
         if rest.startswith("logic") and (len(rest) == 5 or not rest[5].isalnum()):
             sig.has_defined = True
+            sig.net_type = "logic"
             rest = re.sub(r"^logic\s*", "", rest)
         if rest.startswith("reg") and (len(rest) == 3 or not rest[3].isalnum()):
             sig.has_defined = True
+            sig.net_type = "reg"
             sig.type = "io_reg"
             rest = re.sub(r"^reg\s*", "", rest)
-        rest = re.sub(r"^signed\b\s*", "", rest)
+        if re.match(r"^signed\b\s*", rest):
+            sig.signed = True
+            rest = re.sub(r"^signed\b\s*", "", rest)
         if rest.startswith("["):
             m = re.match(r"^\[(.*):", rest)  # msb of [msb:lsb]
             sig.width = m.group(1).strip()
@@ -1786,13 +1794,30 @@ def _rewrite_usrdef_range(line: str, new_msb: str) -> str | None:
 
 
 def _emit_signal(sig: Signal, max_len: int, keyword: str) -> str:
-    line = keyword + _cal_margin(_TYPE_FIELD, len(keyword))
-    if sig.packed_dims:
-        # multi-dim packed port: keep the original dimensions verbatim —
-        # readable, and exactly what the submodule port declares
-        line += "".join(f"[{d}]" for d in sig.packed_dims)
-    elif sig.width != "c0":
-        line += f"[{sig.width}:0]"
+    # head: the leading keyword — a typedef or an explicit net type from the
+    # submodule port REPLACES a bare ``wire`` (``foo_t x;``, ``logic signed
+    # [15:0] x;``) but follows a direction keyword (``input foo_t a``,
+    # ``input logic signed [15:0] x``)
+    head = keyword
+    if sig.data_type and keyword.strip() == "wire":
+        head = sig.data_type
+    elif sig.net_type and keyword.strip() == "wire":
+        head = sig.net_type
+    line = head + _cal_margin(_TYPE_FIELD, len(head))
+    if sig.data_type:
+        if keyword.strip() != "wire":
+            line += sig.data_type
+    else:
+        if sig.net_type and keyword.strip() != "wire":
+            line += sig.net_type + " "
+        if sig.signed:
+            line += "signed "
+        if sig.packed_dims:
+            # multi-dim packed port: keep the original dimensions verbatim —
+            # readable, and exactly what the submodule port declares
+            line += "".join(f"[{d}]" for d in sig.packed_dims)
+        elif sig.width != "c0":
+            line += f"[{sig.width}:0]"
     line += _cal_margin(max_len, len(line)) + sig.name
     if sig.dims:
         line += " " + " ".join(f"[{d}]" for d in sig.dims)
@@ -1802,10 +1827,14 @@ def _emit_signal(sig: Signal, max_len: int, keyword: str) -> str:
 def _sig_decl_len(sig: Signal) -> int:
     """Column contribution of one declaration: ``5 + len(width) + 4`` for a
     vector ('reg  '/'wire ' is 5 chars; '[width:0]' adds 4), 5 for scalar;
-    multi-dim packed dims add their bracketed text."""
+    multi-dim packed dims add their bracketed text; net type / signed /
+    typedef type add their text (a replacement head swaps the 5-char wire)."""
+    if sig.data_type:
+        return max(5, len(sig.data_type))
+    extra = (len(sig.net_type) + 1 if sig.net_type else 0) + (7 if sig.signed else 0)
     if sig.packed_dims:
-        return 5 + sum(len(d) + 2 for d in sig.packed_dims)
-    return 5 if sig.width == "c0" else 5 + len(sig.width) + 4
+        return 5 + extra + sum(len(d) + 2 for d in sig.packed_dims)
+    return 5 + extra if sig.width == "c0" else 5 + extra + len(sig.width) + 4
 
 
 _CONN_DIM_COMMENT = re.compile(r"/\*\s*((?:\[[^\]]+\])+)\s*\*/")
