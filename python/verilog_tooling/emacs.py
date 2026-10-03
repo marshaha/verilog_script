@@ -915,60 +915,80 @@ def auto_inst(
             moddef = modules[module]
         except KeyError:
             raise KeyError(f"module {module!r} not found for AUTOINST instance {inst!r}") from None
-        lisp_env = read_auto_lisp(text, marker.offset)
-        tpl = (
-            template_for_module(
-                list(templates), module, before_line=text.count("\n", 0, marker.offset)
+        try:
+            text = _auto_inst_one(
+                text, marker, open_idx, close_idx, moddef, module, inst,
+                templates, sort, dot_name, column, param_value, is_star, star_save,
             )
-            if templates
-            else None
-        )
-        at_value = template_at_value(tpl, inst) if tpl else ""
-        param_values = read_inst_param_values(text, open_idx) if param_value else {}
-        # commented-out pins before the marker are NOT connected: mask
-        # comments (positions preserved) before collecting names
-        pins = set(
-            re.findall(
-                r"\.\s*(\w+)\s*\(",
-                mask_comments(text[open_idx + 1 : marker.offset], block=True),
+        except ValueError as exc:
+            # AUTO_LISP / @"..." template evaluation outside the Python
+            # subset: warn and leave the instance untouched — one bad
+            # template must not abort the whole file
+            print(
+                f"warning: AUTOINST {inst} ({module}) skipped: {exc}",
+                file=sys.stderr,
             )
-        )
-        sections = []
-        for header, direction in (
-            ("// Interfaces", "interface"),
-            ("// Outputs", "output"),
-            ("// Inouts", "inout"),
-            ("// Inputs", "input"),
-        ):
-            ports = [p for p in moddef.ports if p.direction == direction and p.name not in pins]
-            ports = _filter_regexp(ports, marker.regexp)
-            if sort:
-                ports = sorted(ports, key=lambda p: p.name)
-            entries = []
-            for port in ports:
-                conn, templated = _connect(
-                    tpl, at_value, port, param_values, lisp_env, inst_name=inst
-                )
-                if dot_name and conn == port.name:
-                    conn = None
-                # star expansions tag non-templated pins so they can be
-                # deleted again on save (verilog-delete-auto-star-implicit)
-                if templated:
-                    comment = "// Templated"
-                elif is_star and star_save:
-                    comment = "// Implicit .*"
-                else:
-                    comment = None
-                entries.append((port.name, conn, comment))
-            if entries:
-                sections.append((header, entries))
-        if not sections:
             continue
-        indent_pt = _indent_pt(text, open_idx)
-        col_eff = max(column, 16 + 8 * ((indent_pt + 7) // 8))
-        gen = _build_gen(sections, indent_pt, col_eff, ");")
-        text = _replace_region(text, marker, open_idx, close_idx, gen, consume_semi=True)
     return text.split("\n")
+
+
+def _auto_inst_one(
+    text, marker, open_idx, close_idx, moddef, module, inst,
+    templates, sort, dot_name, column, param_value, is_star, star_save,
+):
+    lisp_env = read_auto_lisp(text, marker.offset)
+    tpl = (
+        template_for_module(
+            list(templates), module, before_line=text.count("\n", 0, marker.offset)
+        )
+        if templates
+        else None
+    )
+    at_value = template_at_value(tpl, inst) if tpl else ""
+    param_values = read_inst_param_values(text, open_idx) if param_value else {}
+    # commented-out pins before the marker are NOT connected: mask
+    # comments (positions preserved) before collecting names
+    pins = set(
+        re.findall(
+            r"\.\s*(\w+)\s*\(",
+            mask_comments(text[open_idx + 1 : marker.offset], block=True),
+        )
+    )
+    sections = []
+    for header, direction in (
+        ("// Interfaces", "interface"),
+        ("// Outputs", "output"),
+        ("// Inouts", "inout"),
+        ("// Inputs", "input"),
+    ):
+        ports = [p for p in moddef.ports if p.direction == direction and p.name not in pins]
+        ports = _filter_regexp(ports, marker.regexp)
+        if sort:
+            ports = sorted(ports, key=lambda p: p.name)
+        entries = []
+        for port in ports:
+            conn, templated = _connect(
+                tpl, at_value, port, param_values, lisp_env, inst_name=inst
+            )
+            if dot_name and conn == port.name:
+                conn = None
+            # star expansions tag non-templated pins so they can be
+            # deleted again on save (verilog-delete-auto-star-implicit)
+            if templated:
+                comment = "// Templated"
+            elif is_star and star_save:
+                comment = "// Implicit .*"
+            else:
+                comment = None
+            entries.append((port.name, conn, comment))
+        if entries:
+            sections.append((header, entries))
+    if not sections:
+        return text
+    indent_pt = _indent_pt(text, open_idx)
+    col_eff = max(column, 16 + 8 * ((indent_pt + 7) // 8))
+    gen = _build_gen(sections, indent_pt, col_eff, ");")
+    return _replace_region(text, marker, open_idx, close_idx, gen, consume_semi=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1033,46 +1053,65 @@ def auto_param(
             params = module_params[module]
         except KeyError:
             raise KeyError(f"module {module!r} not found for AUTOINSTPARAM instance {inst!r}") from None
-        tpl = (
-            template_for_module(
-                list(templates), module, before_line=text.count("\n", 0, marker.offset)
+        try:
+            text = _auto_param_one(
+                text, marker, open_idx, close_idx, params, module, inst,
+                templates, sort, column,
             )
-            if templates
-            else None
-        )
-        at_value = template_at_value(tpl, inst) if tpl else ""
-        lisp_env = read_auto_lisp(text, marker.offset)
-        # commented-out pins before the marker are NOT connected: mask
-        # comments (positions preserved) before collecting names
-        pins = set(
-            re.findall(
-                r"\.\s*(\w+)\s*\(",
-                mask_comments(text[open_idx + 1 : marker.offset], block=True),
+        except ValueError as exc:
+            # AUTO_LISP / @"..." template evaluation outside the Python
+            # subset: warn and leave the instance untouched
+            print(
+                f"warning: AUTOINSTPARAM {inst} ({module}) skipped: {exc}",
+                file=sys.stderr,
             )
-        )
-        kept = [p for p in params if p.name not in pins]
-        kept = _filter_regexp(kept, marker.regexp)
-        if sort:
-            kept = sorted(kept, key=lambda p: p.name)
-        entries = []
-        for param in kept:
-            conn = template_connection(tpl, param.name, at_value, None, lisp_env) if tpl else None
-            templated = conn is not None
-            if not templated:
-                # verilog-mode: every parameter connects by identity (even a
-                # name the parent does not define — the user fills it in or
-                # templates it); entries manually written before the marker
-                # are reset, not preserved
-                conn = param.name
-            entries.append((param.name, conn,
-                            "// Templated" if templated else None))
-        if not entries:
             continue
-        indent_pt = _indent_pt(text, open_idx)
-        col_eff = max(column, 16 + 8 * ((indent_pt + 7) // 8))
-        gen = _build_gen([("// Parameters", entries)], indent_pt, col_eff, ")")
-        text = _replace_region(text, marker, open_idx, close_idx, gen, consume_semi=False)
     return text.split("\n")
+
+
+def _auto_param_one(
+    text, marker, open_idx, close_idx, params, module, inst,
+    templates, sort, column,
+):
+    tpl = (
+        template_for_module(
+            list(templates), module, before_line=text.count("\n", 0, marker.offset)
+        )
+        if templates
+        else None
+    )
+    at_value = template_at_value(tpl, inst) if tpl else ""
+    lisp_env = read_auto_lisp(text, marker.offset)
+    # commented-out pins before the marker are NOT connected: mask
+    # comments (positions preserved) before collecting names
+    pins = set(
+        re.findall(
+            r"\.\s*(\w+)\s*\(",
+            mask_comments(text[open_idx + 1 : marker.offset], block=True),
+        )
+    )
+    kept = [p for p in params if p.name not in pins]
+    kept = _filter_regexp(kept, marker.regexp)
+    if sort:
+        kept = sorted(kept, key=lambda p: p.name)
+    entries = []
+    for param in kept:
+        conn = template_connection(tpl, param.name, at_value, None, lisp_env) if tpl else None
+        templated = conn is not None
+        if not templated:
+            # verilog-mode: every parameter connects by identity (even a
+            # name the parent does not define — the user fills it in or
+            # templates it); entries manually written before the marker
+            # are reset, not preserved
+            conn = param.name
+        entries.append((param.name, conn,
+                        "// Templated" if templated else None))
+    if not entries:
+        return text
+    indent_pt = _indent_pt(text, open_idx)
+    col_eff = max(column, 16 + 8 * ((indent_pt + 7) // 8))
+    gen = _build_gen([("// Parameters", entries)], indent_pt, col_eff, ")")
+    return _replace_region(text, marker, open_idx, close_idx, gen, consume_semi=False)
 
 
 # ---------------------------------------------------------------------------
