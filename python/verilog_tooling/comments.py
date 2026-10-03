@@ -19,7 +19,10 @@ attributes are not comments (``(*`` never matches ``/*``).
 
 from __future__ import annotations
 
+from functools import lru_cache
 
+
+@lru_cache(maxsize=512)
 def mask_comments(
     text: str, *, line: bool = True, block: bool = True, cut_line: bool = False
 ) -> str:

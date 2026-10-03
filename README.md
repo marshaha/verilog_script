@@ -158,6 +158,14 @@ original `` `include`` line.  This is deliberately stronger than Emacs:
 verilog-mode's `verilog-auto-read-includes` defaults to nil, reads only
 `` `define`` macros, and only from line-start directives.
 
+**Performance**: library scans (interface lookup, module resolution,
+include expansion) are cached and thread-pooled.  The one exception, like
+verilog-mode, is interfaces declared inside included files — they are not
+scanned through includes by default; add
+``// verilog-auto-read-includes:t`` at the bottom of the file to opt in
+(noticeably slower on large `-y` trees).  On a real project with 594 `-y`
+dirs and 2200+ files, `-a` takes about 4 seconds.
+
 ## Command reference
 
 ### AALL — everything, in the right order

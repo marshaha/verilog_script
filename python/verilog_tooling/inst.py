@@ -225,36 +225,73 @@ def parse_interface(lines: Iterable[str]) -> InterfaceDef:
     return InterfaceDef(name=m.group(1), modports=tuple(re.findall(r"\bmodport\s+(\w+)", text)))
 
 
-def find_interfaces(libdirs: Sequence[str]) -> dict[str, Path]:
+def find_interfaces(libdirs: Sequence[str], read_includes: bool = False) -> dict[str, Path]:
     """Map interface names to the library file declaring them: every ``.v`` /
-    ``.sv`` file in LIBDIRS is scanned for ``interface <name>`` headers
-    (`` `include`` files read through — an interface may be declared in an
-    included header)."""
-    from .libdirs import expand_includes
+    ``.sv`` file in LIBDIRS is scanned for ``interface <name>`` headers.
+    With READ_INCLUDES (the buffer's ``verilog-auto-read-includes:t``) a
+    file that has `` `include`` but no raw match is also scanned through its
+    includes — an interface may be declared in an included header; off by
+    default (verilog-mode semantics) since include expansion dominates the
+    scan cost on large -y trees.  Per-file reads run in a thread pool."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    header_re = re.compile(r"^\s*interface\s+(\w+)", re.M)
+    paths: list[Path] = []
+    for d in libdirs:
+        paths.extend(sorted(Path(d).glob("*.v")) + sorted(Path(d).glob("*.sv")))
+
+    def scan(path: Path) -> tuple[str, ...]:
+        try:
+            raw = path.read_text(errors="replace")
+        except OSError:
+            return ()
+        names = header_re.findall(raw)
+        if not names and read_includes and "`include" in raw:
+            from .libdirs import expand_includes
+
+            names = header_re.findall("\n".join(expand_includes(raw.splitlines())))
+        return tuple(names)
 
     found: dict[str, Path] = {}
-    for d in libdirs:
-        for path in sorted(Path(d).glob("*.v")) + sorted(Path(d).glob("*.sv")):
-            try:
-                text = "\n".join(expand_includes(path.read_text().splitlines()))
-            except OSError:
-                continue
-            for m in re.finditer(r"^\s*interface\s+(\w+)", text, re.M):
-                found.setdefault(m.group(1), path)
+    if paths:
+        with ThreadPoolExecutor(max_workers=min(8, len(paths))) as pool:
+            for path, names in zip(paths, pool.map(scan, paths)):
+                for n in names:
+                    found.setdefault(n, path)
     return found
 
 
-def interfaces_for(lines: Sequence[str], libdirs: Sequence[str], extra: Iterable[str] = ()) -> "set[str]":
+def interfaces_for(
+    lines: Sequence[str],
+    libdirs: Sequence[str],
+    extra: Iterable[str] = (),
+    found: "Mapping[str, Path] | None" = None,
+) -> "set[str]":
     """Interface names for port parsing: library interfaces + user names +
     the buffer's ``verilog-align-typedef-words`` (verilog-mode feeds those
-    words into its typedef/interface handling, e.g. ``svi.master m``)."""
+    words into its typedef/interface handling, e.g. ``svi.master m``).
+    FOUND reuses an earlier find_interfaces scan when given."""
     from .libdirs import parse_align_typedef_words
 
+    if found is None:
+        found = find_interfaces(
+            libdirs, read_includes=_read_includes_on(lines)
+        )
     return (
-        set(find_interfaces(libdirs))
+        set(found)
         | set(extra)
         | set(parse_align_typedef_words(lines))
     )
+
+
+_READ_INCLUDES_RE = re.compile(
+    r"^\s*//\s*verilog-auto-read-includes\s*:\s*t\b", re.M | re.IGNORECASE
+)
+
+
+def _read_includes_on(lines: Sequence[str]) -> bool:
+    """The buffer's ``verilog-auto-read-includes:t`` file-local."""
+    return bool(_READ_INCLUDES_RE.search("\n".join(lines)))
 
 
 def _port_continues(line: str) -> bool:
@@ -1699,14 +1736,19 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
             file=sys.stderr,
         )
     td_re = parse_typedef_regexp(lines)
-    interfaces = interfaces_for(lines, libdirs, args.interface)
+    _t0 = time.monotonic()
+    iface_files = find_interfaces(  # one library scan, shared below
+        libdirs, read_includes=_read_includes_on(lines)
+    )
+    interfaces = interfaces_for(lines, libdirs, args.interface, found=iface_files)
     templates = find_auto_templates(text)
+    _log(f"aall: interface scan done ({len(iface_files)} interface(s), {time.monotonic() - _t0:.1f}s)")
 
     # Interface table for AUTOINOUTMODPORT / AUTOASSIGNMODPORT — buffer
     # definitions shadow same-named library interfaces (verilog-mode reads
     # the current buffer first)
     ifaces: dict = {}
-    for iname, ipath in find_interfaces(libdirs).items():
+    for iname, ipath in iface_files.items():
         try:
             ifaces[iname] = xfer.parse_interface_info(ipath.read_text().splitlines(), td_re)
         except (OSError, ValueError):

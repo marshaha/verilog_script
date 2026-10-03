@@ -236,18 +236,36 @@ def resolve_libdirs(
 
 _INCLUDE_DIRS: tuple[str, ...] = ()
 _INCLUDE_WARNED: set[str] = set()
+_INCLUDE_MISS: set[str] = set()  # negative cache: names not under _INCLUDE_DIRS
 _INCLUDE_RE = re.compile(r'`include\s+"([^"]+)"')
 
 
 def set_include_dirs(dirs: Sequence[str]) -> None:
     """Search path for `` `include "x"`` resolution (the module libdirs:
     ``-y`` + Local-Variables dirs + the buffer file's own directory)."""
-    global _INCLUDE_DIRS
-    _INCLUDE_DIRS = tuple(dict.fromkeys(d for d in dirs if d))
+    global _INCLUDE_DIRS, _INCLUDE_MISS
+    new = tuple(dict.fromkeys(d for d in dirs if d))
+    if new != _INCLUDE_DIRS:
+        _INCLUDE_MISS = set()  # the negative cache is path-dependent
+    _INCLUDE_DIRS = new
 
 
 def include_dirs() -> tuple[str, ...]:
     return _INCLUDE_DIRS
+
+
+def _find_include(name: str) -> "str | None":
+    """First readable ``name`` under the include dirs, or None — negative
+    results are cached (a missing include would otherwise cost one stat per
+    search dir on EVERY expand call)."""
+    if name in _INCLUDE_MISS:
+        return None
+    for d in _INCLUDE_DIRS:
+        cand = os.path.join(d, name)
+        if os.path.isfile(cand):
+            return os.path.realpath(cand)
+    _INCLUDE_MISS.add(name)
+    return None
 
 
 def expand_includes(lines: Iterable[str], _seen: frozenset = frozenset()) -> list[str]:
@@ -267,18 +285,18 @@ def expand_includes(lines: Iterable[str], _seen: frozenset = frozenset()) -> lis
             out.append(line)
             continue
         name = m.group(1)
-        path = None
-        for d in _INCLUDE_DIRS:
-            cand = os.path.join(d, name)
-            if os.path.isfile(cand):
-                path = os.path.realpath(cand)
-                break
+        path = _find_include(name)
         if path is None:
             if name not in _INCLUDE_WARNED:
                 _INCLUDE_WARNED.add(name)
+                searched = (
+                    f"[{len(_INCLUDE_DIRS)} dirs]"
+                    if len(_INCLUDE_DIRS) > 8
+                    else str(list(_INCLUDE_DIRS))
+                )
                 print(
                     f"[verilog_tooling] warning: include file not found: "
-                    f"{name} (searched {list(_INCLUDE_DIRS)})",
+                    f"{name} (searched {searched})",
                     file=sys.stderr,
                 )
             out.append(line)
