@@ -1,0 +1,137 @@
+(defun verilog-inject-auto ()
+  "Examine legacy non-AUTO code and insert AUTOs in appropriate places.
+
+Any always @ blocks with sensitivity lists that match computed lists will
+be replaced with /*AS*/ comments.
+
+Any cells will get /*AUTOINST*/ added to the end of the pin list.
+Pins with have identical names will be deleted.
+
+Argument lists will not be deleted, /*AUTOARG*/ will only be inserted to
+support adding new ports.  You may wish to delete older ports yourself.
+
+For example:
+
+        module ExampInject (i, o);
+          input i;
+          input j;
+          output o;
+          always @ (i or j)
+             o = i | j;
+          InstModule instName
+            (.foobar(baz),
+             .j(j));
+        endmodule
+
+Typing \\[verilog-inject-auto] (with an appropriate submodule not
+shown) will make this into:
+
+        module ExampInject (i, o/*AUTOARG*/
+          // Inputs
+          j);
+          input i;
+          output o;
+          always @ (/*AS*/i or j)
+             o = i | j;
+          InstModule instName
+            (.foobar(baz),
+             /*AUTOINST*/
+             // Outputs
+             j(j));
+        endmodule"
+  (interactive)
+  (verilog-auto t))
+
+(defun verilog-inject-arg ()
+  "Inject AUTOARG into new code.  See `verilog-inject-auto'."
+  ;; Presume one module per file.
+  (save-excursion
+    (goto-char (point-min))
+    (while (verilog-re-search-forward-quick "\\<\\(connect\\)?module\\>" nil t)
+      (let ((endmodp (save-excursion
+                      (verilog-re-search-forward-quick "\\<end\\(connect\\)?module\\>" nil t)
+		       (point))))
+	;; See if there's already a comment .. inside a comment so not verilog-re-search
+	(when (not (re-search-forward "/\\*AUTOARG\\*/" endmodp t))
+	  (verilog-re-search-forward-quick ";" nil t)
+	  (backward-char 1)
+	  (verilog-backward-syntactic-ws-quick)
+	  (backward-char 1) ; Moves to paren that closes argdecl's
+	  (when (looking-at ")")
+	    (verilog-insert "/*AUTOARG*/")))))))
+
+(defun verilog-inject-sense ()
+  "Inject AUTOSENSE into new code.  See `verilog-inject-auto'."
+  (save-excursion
+    (goto-char (point-min))
+    (while (verilog-re-search-forward-quick "\\<always\\s *@\\s *(" nil t)
+      (let* ((start-pt (point))
+	     (modi (verilog-modi-current))
+	     (moddecls (verilog-modi-get-decls modi))
+	     pre-sigs
+	     got-sigs)
+	(backward-char 1)
+	(verilog-forward-sexp-ign-cmt 1)
+        (backward-char 1)  ; End )
+	(when (not (verilog-re-search-backward-quick "/\\*\\(AUTOSENSE\\|AS\\)\\*/" start-pt t))
+	  (setq pre-sigs (verilog-signals-from-signame
+			  (verilog-read-signals start-pt (point)))
+		got-sigs (verilog-auto-sense-sigs moddecls nil))
+	  (when (not (or (verilog-signals-not-in pre-sigs got-sigs)  ; Both are equal?
+			 (verilog-signals-not-in got-sigs pre-sigs)))
+	    (delete-region start-pt (point))
+	    (verilog-insert "/*AS*/")))))))
+
+(defun verilog-inject-inst ()
+  "Inject AUTOINST into new code.  See `verilog-inject-auto'."
+  (save-excursion
+    (goto-char (point-min))
+    ;; It's hard to distinguish modules; we'll instead search for pins.
+    (while (verilog-re-search-forward-quick "\\.\\s *[a-zA-Z0-9`_$]+\\s *(\\s *[a-zA-Z0-9`_$]+\\s *)" nil t)
+      (verilog-backward-open-paren)  ; Inst start
+      (cond
+       ((= (preceding-char) ?\#)  ; #(...) parameter section, not pin.  Skip.
+	(forward-char 1)
+        (verilog-forward-close-paren))  ; Parameters done
+       (t
+	(forward-char 1)
+	(let ((indent-pt (+ (current-column)))
+	      (end-pt (save-excursion (verilog-forward-close-paren) (point))))
+	  (cond ((verilog-re-search-forward-quick "\\(/\\*AUTOINST\\((.*?)\\)?\\*/\\|\\.\\*\\)" end-pt t)
+                 (goto-char end-pt))  ; Already there, continue search with next instance
+		(t
+		 ;; Delete identical interconnect
+                 (let ((case-fold-search nil))  ; So we don't convert upper-to-lower, etc
+		   (while (verilog-re-search-forward-quick "\\.\\s *\\([a-zA-Z0-9`_$]+\\)\\s *(\\s *\\1\\s *)\\s *" end-pt t)
+		     (delete-region (match-beginning 0) (match-end 0))
+                     (setq end-pt (- end-pt (- (match-end 0) (match-beginning 0))))  ; Keep it correct
+		     (while (or (looking-at "[ \t\n\f,]+")
+				(looking-at "//[^\n]*"))
+		       (delete-region (match-beginning 0) (match-end 0))
+		       (setq end-pt (- end-pt (- (match-end 0) (match-beginning 0)))))))
+		 (verilog-forward-close-paren)
+		 (backward-char 1)
+		 ;; Not verilog-re-search, as we don't want to strip comments
+		 (while (re-search-backward "[ \t\n\f]+" (- (point) 1) t)
+		   (delete-region (match-beginning 0) (match-end 0)))
+		 (verilog-insert "\n")
+		 (verilog-insert-indent "/*AUTOINST*/")))))))))
+
+;;
+;; Auto diff:
+;;
+
+(defun verilog-diff-buffers-p (b1 b2 &optional whitespace regexp)
+  "Return nil if buffers B1 and B2 have same contents.
+Else, return point in B1 that first mismatches.
+If optional WHITESPACE true, ignore whitespace.
+If optional REGEXP, ignore differences matching it."
+  (save-excursion
+    (let* ((case-fold-search nil)  ; compare-buffer-substrings cares
+	   (p1 (with-current-buffer b1 (goto-char (point-min))))
+	   (p2 (with-current-buffer b2 (goto-char (point-min))))
+	   (maxp1 (with-current-buffer b1 (point-max)))
+	   (maxp2 (with-current-buffer b2 (point-max)))
+	   (op1 -1) (op2 -1)
+	   progress size)
+      (while (not (and (eq p1 op1) (eq p2 op2)))

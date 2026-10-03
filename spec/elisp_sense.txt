@@ -1,0 +1,114 @@
+(defun verilog-auto-sense-sigs (moddecls presense-sigs)
+  "Return list of signals for current AUTOSENSE block."
+  (let* ((sigss (save-excursion
+		  (search-forward ")")
+		  (verilog-read-always-signals)))
+	 (sig-list (verilog-signals-not-params
+		    (verilog-signals-not-in (verilog-alw-get-inputs sigss)
+					    (append (and (not verilog-auto-sense-include-inputs)
+							 (verilog-alw-get-outputs-delayed sigss))
+						    (and (not verilog-auto-sense-include-inputs)
+							 (verilog-alw-get-outputs-immediate sigss))
+						    (verilog-alw-get-temps sigss)
+						    (verilog-decls-get-consts moddecls)
+						    (verilog-decls-get-gparams moddecls)
+						    presense-sigs)))))
+    sig-list))
+
+(defun verilog-auto-sense ()
+  "Expand AUTOSENSE statements, as part of \\[verilog-auto].
+Replace the always (/*AUTOSENSE*/) sensitivity list (/*AS*/ for short)
+with one automatically derived from all inputs declared in the always
+statement.  Signals that are generated within the same always block are NOT
+placed into the sensitivity list (see `verilog-auto-sense-include-inputs').
+Long lines are split based on the `fill-column', see \\[set-fill-column].
+
+Limitations:
+  Verilog does not allow memories (multidimensional arrays) in sensitivity
+  lists.  AUTOSENSE will thus exclude them, and add a /*memory or*/ comment.
+
+Constant signals:
+  AUTOSENSE cannot always determine if a \\=`define is a constant or a signal
+  (it could be in an include file for example).  If a \\=`define or other signal
+  is put into the AUTOSENSE list and is not desired, use the AUTO_CONSTANT
+  declaration anywhere in the module (parenthesis are required):
+
+        /* AUTO_CONSTANT( \\=`this_is_really_constant_dont_autosense_it ) */
+
+  Better yet, use a parameter, which will be understood to be constant
+  automatically.
+
+OOps!
+  If AUTOSENSE makes a mistake, please report it.  (First try putting
+  a begin/end after your always!) As a workaround, if a signal that
+  shouldn't be in the sensitivity list was, use the AUTO_CONSTANT above.
+  If a signal should be in the sensitivity list wasn't, placing it before
+  the /*AUTOSENSE*/ comment will prevent it from being deleted when the
+  autos are updated (or added if it occurs there already).
+
+An example:
+
+           always @ (/*AS*/) begin
+              /*AUTO_CONSTANT(\\=`constant) */
+              outin = ina | inb | \\=`constant;
+              out = outin;
+           end
+
+Typing \\[verilog-auto] will make this into:
+
+           always @ (/*AS*/ina or inb) begin
+              /*AUTO_CONSTANT(\\=`constant) */
+              outin = ina | inb | \\=`constant;
+              out = outin;
+           end
+
+Note in Verilog 2001, you can often get the same result from the new @*
+operator.  (This was added to the language in part due to AUTOSENSE!)
+
+           always @* begin
+              outin = ina | inb | \\=`constant;
+              out = outin;
+           end"
+  (save-excursion
+    ;; Find beginning
+    (let* ((start-pt (save-excursion
+		       (verilog-re-search-backward-quick "(" nil t)
+		       (point)))
+	   (indent-pt (save-excursion
+			(or (and (goto-char start-pt) (1+ (current-column)))
+			    (current-indentation))))
+	   (modi (verilog-modi-current))
+	   (moddecls (verilog-modi-get-decls modi))
+	   (sig-memories (verilog-signals-memory
+			  (verilog-decls-get-vars moddecls)))
+	   sig-list not-first presense-sigs)
+      ;; Read signals in always, eliminate outputs from sense list
+      (setq presense-sigs (verilog-signals-from-signame
+			   (save-excursion
+			     (verilog-read-signals start-pt (point)))))
+      (setq sig-list (verilog-auto-sense-sigs moddecls presense-sigs))
+      (when sig-memories
+	(let ((tlen (length sig-list)))
+	  (setq sig-list (verilog-signals-not-in sig-list sig-memories))
+	  (if (not (eq tlen (length sig-list))) (verilog-insert " /*memory or*/ "))))
+      (if (and presense-sigs  ; Add a "or" if not "(.... or /*AUTOSENSE*/"
+	       (save-excursion (goto-char (point))
+			       (verilog-re-search-backward-quick "[a-zA-Z0-9$_.%`]+" start-pt t)
+			       (verilog-re-search-backward-quick "\\s-" start-pt t)
+			       (while (looking-at "\\s-`endif")
+				 (verilog-re-search-backward-quick "[a-zA-Z0-9$_.%`]+" start-pt t)
+				 (verilog-re-search-backward-quick "\\s-" start-pt t))
+			       (not (looking-at "\\s-or\\b"))))
+	  (setq not-first t))
+      (setq sig-list (sort sig-list #'verilog-signals-sort-compare))
+      (while sig-list
+	(cond ((> (+ 4 (current-column) (length (verilog-sig-name (car sig-list)))) fill-column) ;+4 for width of or
+	       (insert "\n")
+	       (indent-to indent-pt)
+	       (if not-first (insert "or ")))
+	      (not-first (insert " or ")))
+	(insert (verilog-sig-name (car sig-list)))
+	(setq sig-list (cdr sig-list)
+	      not-first t)))))
+
+(defun verilog-auto-reset ()

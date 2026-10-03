@@ -385,8 +385,15 @@ class SignalTable:
             rest = re.sub(r"^signed\b\s*", "", rest)
         if rest.startswith("["):
             m = re.match(r"^\[(.*):", rest)  # msb of [msb:lsb]
-            sig.width = m.group(1).strip()
-            rest = re.sub(r"^\[.*:.*\]\s*", "", rest)
+            if m:
+                sig.width = m.group(1).strip()
+                rest = re.sub(r"^\[.*:.*\]\s*", "", rest)
+            else:
+                # [`DEFINE_RANGE] — the whole range rides in a macro
+                m = re.match(r"^\[([^\]]+)\]\s*", rest)
+                if m:
+                    sig.width = m.group(1).strip()
+                    rest = rest[m.end() :]
         m = re.match(r"\w+", rest)
         if not m:
             return seq  # incomplete decl (nameless header line): skip

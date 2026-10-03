@@ -1,0 +1,157 @@
+(defun verilog-auto-tieoff ()
+  "Expand AUTOTIEOFF statements, as part of \\[verilog-auto].
+Replace the /*AUTOTIEOFF*/ comment with code to wire-tie all unused output
+signals to deasserted.
+
+/*AUTOTIEOFF*/ is used to make stub modules; modules that have
+the same input/output list as another module, but no internals.
+Specifically, it finds all outputs in the module, and if that
+input is not otherwise declared as a register or wire, nor comes
+from a AUTOINST submodule's output, creates a tieoff.  AUTOTIEOFF
+does not examine assignments to determine what is already driven.
+
+AUTORESET ties signals to deasserted, which is presumed to be zero.
+Signals that match `verilog-active-low-regexp' will be deasserted by tying
+them to a one.
+
+You can add signals you do not want included in AUTOTIEOFF with
+`verilog-auto-tieoff-ignore-regexp'.
+
+`verilog-auto-wire-type' may be used to change the datatype of
+the declarations.
+
+`verilog-auto-reset-widths' may be used to change how the tieoff
+value's width is generated.
+
+An example of making a stub for another module:
+
+        module ExampMain
+          #(parameter P)
+          (input i, output o, inout io);
+        endmodule
+
+        module ExampStub (/*AUTOARG*/);
+            /*AUTOINOUTPARAM(\"ExampMain\")*/
+            /*AUTOINOUTMODULE(\"ExampMain\")*/
+
+            /*AUTOTIEOFF*/
+
+            // verilator lint_off UNUSED
+            wire _unused_ok = &{1\\='b0,
+                                /*AUTOUNUSED*/
+                                1\\='b0};
+            // verilator lint_on  UNUSED
+        endmodule
+
+Typing \\[verilog-auto] will make this into:
+
+        ...
+        /*AUTOTIEOFF*/
+        // Beginning of automatic tieoffs
+        wire [2:0] o = 3\\='b0;
+        // End of automatics
+        ..."
+  (interactive)
+  (save-excursion
+    ;; Find beginning
+    (let* ((indent-pt (current-indentation))
+	   (modi (verilog-modi-current))
+	   (moddecls (verilog-modi-get-decls modi))
+	   (modsubdecls (verilog-modi-get-sub-decls modi))
+	   (sig-list (verilog-signals-not-in
+		      (verilog-decls-get-outputs moddecls)
+		      (append (verilog-decls-get-vars moddecls)
+			      (verilog-decls-get-assigns moddecls)
+			      (verilog-decls-get-consts moddecls)
+			      (verilog-decls-get-gparams moddecls)
+			      (verilog-subdecls-get-interfaced modsubdecls)
+			      (verilog-subdecls-get-outputs modsubdecls)
+			      (verilog-subdecls-get-inouts modsubdecls)))))
+      (setq sig-list (verilog-signals-not-matching-regexp
+		      sig-list verilog-auto-tieoff-ignore-regexp))
+      (when sig-list
+	(verilog-forward-or-insert-line)
+	(verilog-insert-indent "// Beginning of automatic tieoffs (for this module's unterminated outputs)\n")
+	(setq sig-list (sort (copy-alist sig-list) #'verilog-signals-sort-compare))
+	(verilog-modi-cache-add-vars modi sig-list)  ; Before we trash list
+	(while sig-list
+	  (let ((sig (car sig-list)))
+	    (cond ((equal verilog-auto-tieoff-declaration "assign")
+		   (indent-to indent-pt)
+		   (insert "assign " (verilog-sig-name sig)))
+		  (t
+		   (verilog-insert-one-definition sig verilog-auto-tieoff-declaration indent-pt)))
+	    (indent-to (max 48 (+ indent-pt 40)))
+	    (insert "= " (verilog-sig-tieoff sig)
+		    ";\n")
+	    (setq sig-list (cdr sig-list))))
+	(verilog-insert-indent "// End of automatics\n")))))
+
+(defun verilog-auto-undef ()
+  "Expand AUTOUNDEF statements, as part of \\[verilog-auto].
+Take any \\=`defines since the last AUTOUNDEF in the current file
+and create \\=`undefs for them.  This is used to insure that
+file-local defines do not pollute the global \\=`define name space.
+
+Limitations:
+  AUTOUNDEF presumes any identifier following \\=`define is the
+  name of a define.  Any \\=`ifdefs are ignored.
+
+  AUTOUNDEF suppresses creating an \\=`undef for any define that was
+  \\=`undefed before the AUTOUNDEF.  This may be used to work around
+  the ignoring of \\=`ifdefs as shown below.
+
+An example:
+
+        \\=`define XX_FOO
+        \\=`define M_BAR(x)
+        \\=`define M_BAZ
+        ...
+        \\=`ifdef NEVER
+          \\=`undef M_BAZ       // Emacs will see this and not \\=`undef M_BAZ
+        \\=`endif
+        ...
+        /*AUTOUNDEF*/
+
+Typing \\[verilog-auto] will make this into:
+
+        ...
+        /*AUTOUNDEF*/
+        // Beginning of automatic undefs
+        \\=`undef M_BAR
+        \\=`undef XX_FOO
+        // End of automatics
+
+You may also provide an optional regular expression, in which case only
+defines the regular expression will be undefed."
+  (save-excursion
+    (let* ((params (verilog-read-auto-params 0 1))
+	   (regexp (nth 0 params))
+	   (indent-pt (current-indentation))
+	   (end-pt (point))
+	   defs def)
+      (save-excursion
+	;; Scan from start of file, or last AUTOUNDEF
+	(or (verilog-re-search-backward-quick "/\\*AUTOUNDEF\\>" end-pt t)
+	    (goto-char (point-min)))
+	(while (verilog-re-search-forward-quick
+		"`\\(define\\|undef\\)\\s-*\\([a-zA-Z_][a-zA-Z_0-9]*\\)" end-pt t)
+	  (cond ((equal (match-string-no-properties 1) "define")
+		 (setq def (match-string-no-properties 2))
+		 (when (and (or (not regexp)
+				(string-match regexp def))
+                            (not (member def defs)))  ; delete-dups not in 21.1
+		   (setq defs (cons def defs))))
+		(t
+		 (setq defs (delete (match-string-no-properties 2) defs))))))
+      ;; Insert
+      (setq defs (sort defs #'string<))
+      (when defs
+	(verilog-forward-or-insert-line)
+	(verilog-insert-indent "// Beginning of automatic undefs\n")
+	(while defs
+	  (verilog-insert-indent "`undef " (car defs) "\n")
+	  (setq defs (cdr defs)))
+	(verilog-insert-indent "// End of automatics\n")))))
+
+(defun verilog-auto-unused ()

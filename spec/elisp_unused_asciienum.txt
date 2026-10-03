@@ -1,0 +1,159 @@
+(defun verilog-auto-unused ()
+  "Expand AUTOUNUSED statements, as part of \\[verilog-auto].
+Replace the /*AUTOUNUSED*/ comment with a comma separated list of all unused
+input and inout signals.
+
+/*AUTOUNUSED*/ is used to make stub modules; modules that have the same
+input/output list as another module, but no internals.  Specifically, it
+finds all inputs and inouts in the module, and if that input is not otherwise
+used, adds it to a comma separated list.
+
+The comma separated list is intended to be used to create a _unused_ok
+signal.  Using the exact name \"_unused_ok\" for name of the temporary
+signal is recommended as it will insure maximum forward compatibility, it
+also makes lint warnings easy to understand; ignore any unused warnings
+with \"unused\" in the signal name.
+
+To reduce simulation time, the _unused_ok signal should be forced to a
+constant to prevent wiggling.  The easiest thing to do is use a
+reduction-and with 1\\='b0 as shown.
+
+This way all unused signals are in one place, making it convenient to add
+your tool's specific pragmas around the assignment to disable any unused
+warnings.
+
+You can add signals you do not want included in AUTOUNUSED with
+`verilog-auto-unused-ignore-regexp'.
+
+An example of making a stub for another module:
+
+        module ExampMain
+          (input unused_input_a, input unused_input_b);
+        endmodule
+
+        module ExampStub2 (/*AUTOARG*/);
+            /*AUTOINOUTPARAM(\"ExampMain\")*/
+            /*AUTOINOUTMODULE(\"ExampMain\")*/
+
+            /*AUTOTIEOFF*/
+
+            // verilator lint_off UNUSED
+            wire _unused_ok = &{1\\='b0,
+                                /*AUTOUNUSED*/
+                                1\\='b0};
+            // verilator lint_on  UNUSED
+        endmodule
+
+Typing \\[verilog-auto] will make this into:
+
+            ...
+            // verilator lint_off UNUSED
+            wire _unused_ok = &{1\\='b0,
+                                /*AUTOUNUSED*/
+                                // Beginning of automatics
+                                unused_input_a,
+                                unused_input_b
+                                // End of automatics
+                                1\\='b0};
+            // verilator lint_on  UNUSED
+        endmodule"
+  (interactive)
+  (save-excursion
+    ;; Find beginning
+    (let* ((indent-pt (progn (search-backward "/*") (current-column)))
+	   (modi (verilog-modi-current))
+	   (moddecls (verilog-modi-get-decls modi))
+	   (modsubdecls (verilog-modi-get-sub-decls modi))
+	   (sig-list (verilog-signals-not-in
+		      (append (verilog-decls-get-inputs moddecls)
+			      (verilog-decls-get-inouts moddecls))
+		      (append (verilog-subdecls-get-inputs modsubdecls)
+			      (verilog-subdecls-get-inouts modsubdecls)))))
+      (setq sig-list (verilog-signals-not-matching-regexp
+		      sig-list verilog-auto-unused-ignore-regexp))
+      (when sig-list
+	(verilog-forward-or-insert-line)
+	(verilog-insert-indent "// Beginning of automatic unused inputs\n")
+	(setq sig-list (sort (copy-alist sig-list) #'verilog-signals-sort-compare))
+	(while sig-list
+	  (let ((sig (car sig-list)))
+	    (indent-to indent-pt)
+	    (insert (verilog-sig-name sig) ",\n")
+	    (setq sig-list (cdr sig-list))))
+	(verilog-insert-indent "// End of automatics\n")))))
+
+(defun verilog-enum-ascii (signm elim-regexp)
+  "Convert an enum name SIGNM to an ascii string for insertion.
+Remove user provided prefix ELIM-REGEXP."
+  (or elim-regexp (setq elim-regexp "_ DONT MATCH IT_"))
+  (let ((case-fold-search t))
+    ;; All upper becomes all lower for readability
+    (downcase (verilog-string-replace-matches elim-regexp "" nil nil signm))))
+
+(defun verilog-auto-ascii-enum ()
+  "Expand AUTOASCIIENUM statements, as part of \\[verilog-auto].
+Create a register to contain the ASCII decode of an enumerated signal type.
+This will allow trace viewers to show the ASCII name of states.
+
+First, parameters are built into an enumeration using the synopsys enum
+comment.  The comment must be between the keyword and the symbol.
+\(Annoying, but that's what Synopsys's dc_shell FSM reader requires.)
+
+Next, registers which that enum applies to are also tagged with the same
+enum.
+
+Finally, an AUTOASCIIENUM command is used.
+
+  The first parameter is the name of the signal to be decoded.
+
+  The second parameter is the name to store the ASCII code into.  For the
+  signal foo, I suggest the name _foo__ascii, where the leading _ indicates
+  a signal that is just for simulation, and the magic characters _ascii
+  tell viewers like Dinotrace to display in ASCII format.
+
+  The third optional parameter is a string which will be removed
+  from the state names.  It defaults to \"\" which removes nothing.
+
+  The fourth optional parameter is \"onehot\" to force one-hot
+  decoding.  If unspecified, if and only if the first parameter
+  width is 2^(number of states in enum) and does NOT match the
+  width of the enum, the signal is assumed to be a one-hot
+  decode.  Otherwise, it's a normal encoded state vector.
+
+  `verilog-auto-wire-type' may be used to change the datatype of
+  the declarations.
+
+  \"synopsys enum\" may be used in place of \"auto enum\".
+
+An example:
+
+        //== State enumeration
+        parameter [2:0] // auto enum state_info
+                           SM_IDLE =  3\\='b000,
+                           SM_SEND =  3\\='b001,
+                           SM_WAIT1 = 3\\='b010;
+        //== State variables
+        reg [2:0]  /* auto enum state_info */
+                   state_r;  /* auto state_vector state_r */
+        reg [2:0]  /* auto enum state_info */
+                   state_e1;
+
+        /*AUTOASCIIENUM(\"state_r\", \"state_ascii_r\", \"SM_\")*/
+
+Typing \\[verilog-auto] will make this into:
+
+        ...
+        /*AUTOASCIIENUM(\"state_r\", \"state_ascii_r\", \"SM_\")*/
+        // Beginning of automatic ASCII enum decoding
+        reg [39:0]              state_ascii_r;          // Decode of state_r
+        always @(state_r) begin
+           case ({state_r})
+                SM_IDLE:  state_ascii_r = \"idle \";
+                SM_SEND:  state_ascii_r = \"send \";
+                SM_WAIT1: state_ascii_r = \"wait1\";
+                default:  state_ascii_r = \"%Erro\";
+           endcase
+        end
+        // End of automatics"
+  (save-excursion
+    (let* ((params (verilog-read-auto-params 2 4))

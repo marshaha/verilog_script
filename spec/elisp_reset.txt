@@ -1,0 +1,111 @@
+(defun verilog-auto-reset ()
+  "Expand AUTORESET statements, as part of \\[verilog-auto].
+Replace the /*AUTORESET*/ comment with code to initialize all
+registers set elsewhere in the always block.
+
+Limitations:
+  AUTORESET will not clear memories.
+
+  AUTORESET uses <= if the signal has a <= assignment in the block,
+  else it uses =.
+
+  If <= is used, all = assigned variables are ignored if
+  `verilog-auto-reset-blocking-in-non' is nil; they are presumed
+  to be temporaries.
+
+/*AUTORESET*/ presumes that any signals mentioned between the previous
+begin/case/if statement and the AUTORESET comment are being reset manually
+and should not be automatically reset.  This includes omitting any signals
+used on the right hand side of assignments.
+
+By default, AUTORESET will include the width of the signal in the
+autos, SystemVerilog designs may want to change this.  To control
+this behavior, see `verilog-auto-reset-widths'.  In some cases
+AUTORESET must use a \\='0 assignment and it will print NOWIDTH; use
+`verilog-auto-reset-widths' unbased to prevent this.
+
+AUTORESET ties signals to deasserted, which is presumed to be zero.
+Signals that match `verilog-active-low-regexp' will be deasserted by tying
+them to a one.
+
+AUTORESET may try to reset arrays or structures that cannot be
+reset by a simple assignment, resulting in compile errors.  This
+is a feature to be taken as a hint that you need to reset these
+signals manually (or put them into a \"\\=`ifdef NEVER signal<=\\='0;
+\\=`endif\" so Verilog-Mode ignores them.)
+
+An example:
+
+        module ExampReset ();
+           always @(posedge clk or negedge reset_l) begin
+              if (!reset_l) begin
+                  c <= 1;
+                  /*AUTORESET*/
+              end
+              else begin
+                  a <= in_a;
+                  b <= in_b;
+                  c <= in_c;
+              end
+           end
+        endmodule
+
+Typing \\[verilog-auto] will make this into:
+
+        ...
+                  c <= 1;
+                  /*AUTORESET*/
+                  // Beginning of autoreset for uninitialized flops
+                  a <= 1'h0;
+                  b <= 1'h0;
+                  // End of automatics
+        ..."
+
+  (interactive)
+  (save-excursion
+    ;; Find beginning
+    (let* ((indent-pt (current-indentation))
+	   (modi (verilog-modi-current))
+	   (moddecls (verilog-modi-get-decls modi))
+	   (all-list (verilog-decls-get-signals moddecls))
+	   sigss sig-list dly-list prereset-sigs)
+      ;; Read signals in always, eliminate outputs from reset list
+      (setq prereset-sigs (verilog-signals-from-signame
+			   (save-excursion
+			     (verilog-read-signals
+			      (save-excursion
+				(verilog-re-search-backward-quick
+				 "\\(@\\|\\<\\(begin\\|if\\|case[xz]?\\|always\\(_latch\\|_ff\\|_comb\\)?\\)\\>\\)" nil t)
+				(point))
+			      (point)))))
+      (save-excursion
+	(verilog-re-search-backward-quick "\\(@\\|\\<\\(always\\(_latch\\|_ff\\|_comb\\)?\\)\\>\\)" nil t)
+        (setq sigss (verilog-read-always-signals)))
+      (setq dly-list (verilog-alw-get-outputs-delayed sigss))
+      (setq sig-list (verilog-signals-not-in-struct
+		      (append
+		       (verilog-alw-get-outputs-delayed sigss)
+		       (when (or (not (verilog-alw-get-uses-delayed sigss))
+				 verilog-auto-reset-blocking-in-non)
+			 (verilog-alw-get-outputs-immediate sigss)))
+		      (append
+		       (verilog-alw-get-temps sigss)
+		       prereset-sigs)))
+      (setq sig-list (sort sig-list #'verilog-signals-sort-compare))
+      (when sig-list
+	(insert "\n");
+	(verilog-insert-indent "// Beginning of autoreset for uninitialized flops\n");
+	(while sig-list
+          (let ((sig (or (assoc (verilog-sig-name (car sig-list)) all-list)  ; As sig-list has no widths
+			 (car sig-list))))
+	    (indent-to indent-pt)
+	    (insert (verilog-sig-name sig)
+		    (if (assoc (verilog-sig-name sig) dly-list)
+			(concat " <= " verilog-assignment-delay)
+		      " = ")
+		    (verilog-sig-tieoff sig)
+		    ";\n")
+	    (setq sig-list (cdr sig-list))))
+	(verilog-insert-indent "// End of automatics")))))
+
+(defun verilog-auto-tieoff ()

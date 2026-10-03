@@ -113,7 +113,7 @@ _LINE_COMMENT = re.compile(r"^\s*//")
 _DIRECTIVE = re.compile(r"^\s*`(?:if|ifdef|ifndef|elsif|else|endif)\b")
 _BLANK = re.compile(r"^\s*$")
 _PORT_KEYWORD = re.compile(r"^\s*(input|output|inout)\b\s*")
-_IFACE_PORT_DECL = re.compile(r"^\s*(\w+)(?:\.(\w+))?\s+(\w+)\s*[,;]?\s*$")
+_IFACE_PORT_DECL = re.compile(r"^\s*(\w+)(?:\.(\w+))?\s+(\w+)\s*\)?\s*[,;]?\s*$")
 _IFACE_HEADER = re.compile(r"\binterface\s+(\w+)\s*(?:#\s*\(|\(|;)")
 _BREAK_LINE = re.compile(r"^\s*(?:always|endmodule|wire)\b")
 _PORT_NAME = re.compile(r"(\w+)\s*\(")
@@ -242,6 +242,19 @@ def find_interfaces(libdirs: Sequence[str]) -> dict[str, Path]:
             for m in re.finditer(r"^\s*interface\s+(\w+)", text, re.M):
                 found.setdefault(m.group(1), path)
     return found
+
+
+def interfaces_for(lines: Sequence[str], libdirs: Sequence[str], extra: Iterable[str] = ()) -> "set[str]":
+    """Interface names for port parsing: library interfaces + user names +
+    the buffer's ``verilog-align-typedef-words`` (verilog-mode feeds those
+    words into its typedef/interface handling, e.g. ``svi.master m``)."""
+    from .libdirs import parse_align_typedef_words
+
+    return (
+        set(find_interfaces(libdirs))
+        | set(extra)
+        | set(parse_align_typedef_words(lines))
+    )
 
 
 def _port_continues(line: str) -> bool:
@@ -509,6 +522,9 @@ def parse_module_ports(
         if not _LINE_COMMENT.match(line):
             line = _strip_lc(line)
         line = re.sub(r"^\s*,", "", line)
+        # the header's opening '(' may sit at the start of the first port
+        # line itself (``(output [w-1:0] q,`` after a #(...) block)
+        line = re.sub(r"^\s*\((?=\s*(?:input|output|inout)\b)", "", line)
         if re.match(r"^\s*module\b", line):
             seen_module = True
             if not mod_name:
@@ -1485,7 +1501,7 @@ def create_by_args(args_l=None):
     )
     parser.add_argument(
         "command",
-        choices=["ait", "aiu", "aiu1", "kill", "eai", "eap", "aif", "apf", "adf", "af", "aall"],
+        choices=["ait", "aiu", "aiu1", "kill", "eai", "eap", "aif", "apf", "adf", "af", "aall", "ainj"],
         help="ait/aiu/aiu1/kill: automatic.vim commands; "
         "eai: verilog-mode AUTOINST; eap: verilog-mode AUTOINSTPARAM; "
         "aif/apf/adf/af: automatic.vim format commands (buffer-local); "
@@ -1608,19 +1624,39 @@ def _eai_like_step(lines: list[str], keyword: str, resolved: set[str], include_s
 
 def _main_aall(text: str, lines: list[str], args) -> list[str]:
     """The AALL pipeline in ONE process, emacs verilog-batch-auto order:
-    eap -> eai -> aio -> aw -> areg -> adt -> arg -> af.  Instance module files are
-    resolved (dir-listing cached) and read (thread pool) exactly once — the
-    seven separate CLI commands would repeat both per command."""
-    from . import arg, autodef, emacs, fmt, inout, wire
+    AUTOINSERTLISP -> AUTOINSTPARAM -> AUTOINST -> AUTOASCIIENUM ->
+    AUTOINOUTMODPORT -> AUTOINOUTMODULE -> AUTOINOUTCOMP -> AUTOINOUTIN ->
+    AUTOINOUTPARAM -> AUTOOUTPUT/AUTOINPUT/AUTOINOUT -> AUTOTIEOFF -> AUTOUNDEF
+    -> AUTOASSIGNMODPORT -> AUTOLOGIC -> AUTOWIRE -> AUTOREG -> AUTOREGINPUT ->
+    AUTOOUTPUTEVERY -> AUTOSENSE -> AUTORESET -> AUTOUNUSED -> AUTOARG ->
+    AUTOINSERTLAST -> format.  Instance module files are resolved (dir-listing
+    cached) and read (thread pool) exactly once — the separate CLI commands
+    would repeat both per command."""
+    from . import arg, autodef, emacs, fmt, inout, misc, sense, wire, xfer
     from .libdirs import parse_typedef_regexp
 
     # emacs verilog-delete-auto-buffer ("Clear existing autos else we'll be
-    # screwed by existing ones"): drop last round's wire/reg regions up
-    # front — left in place, their declarations would poison this round's
-    # AUTOINPUT/AUTOWIRE exclusions (the regions are regenerated below)
+    # screwed by existing ones"): drop last round's regions up front — left
+    # in place, their declarations would poison this round's exclusions
+    # (the regions are regenerated below)
     lines = wire.kill_auto_wire(lines)
     lines = wire.kill_auto_reg(lines)
     lines = autodef.kill_auto_def_t(lines)
+    lines = misc.kill_auto_ascii_enum(lines)
+    lines = misc.kill_auto_logic(lines)
+    lines = misc.kill_auto_tieoff(lines)
+    lines = misc.kill_auto_unused(lines)
+    lines = misc.kill_auto_undef(lines)
+    lines = misc.kill_auto_insert_lisp(lines)
+    lines = misc.kill_auto_insert_last(lines)
+    lines = xfer.kill_auto_inoutmodule(lines)  # also COMP/IN, same header
+    lines = xfer.kill_auto_inoutparam(lines)
+    lines = xfer.kill_auto_inoutmodport(lines)
+    lines = xfer.kill_auto_assign_modport(lines)
+    lines = xfer.kill_auto_outputevery(lines)
+    lines = xfer.kill_auto_reginput(lines)
+    lines = sense.kill_auto_sense(lines)
+    lines = sense.kill_auto_reset(lines)
     text = "\n".join(lines)
 
     _log(f"aall: {Path(args.ref_file or args.in_file).name}: resolving instance modules ...")
@@ -1630,8 +1666,15 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
             names_emacs |= set(emacs.marker_modules(lines, kw, include_star=args.star_expand))
         except ValueError:
             pass
-    # marker-less instances can only be resolved by name (autodef/aw path)
-    names_wire = names_emacs | autodef._candidate_module_names(lines)
+    # marker-less instances can only be resolved by name (autodef/aw path);
+    # AUTOINOUTMODULE/COMP/IN/PARAM markers name their source module in the
+    # first quoted argument
+    names_xfer: set[str] = set()
+    for _kw in ("AUTOINOUTMODULE", "AUTOINOUTCOMP", "AUTOINOUTIN", "AUTOINOUTPARAM"):
+        for _mk in xfer._find_markers(text, _kw):
+            if _mk.args:
+                names_xfer.add(_mk.args[0])
+    names_wire = names_emacs | autodef._candidate_module_names(lines) | names_xfer
 
     libdirs, inst_files, vc_entries, extensions = _cli_resolve(args, lines)
     files = _resolve_module_files(
@@ -1656,10 +1699,25 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
             file=sys.stderr,
         )
     td_re = parse_typedef_regexp(lines)
-    interfaces = set(find_interfaces(libdirs)) | set(args.interface)
+    interfaces = interfaces_for(lines, libdirs, args.interface)
     templates = find_auto_templates(text)
 
-    # 1. EAP (AUTOINSTPARAM)
+    # Interface table for AUTOINOUTMODPORT / AUTOASSIGNMODPORT — buffer
+    # definitions shadow same-named library interfaces (verilog-mode reads
+    # the current buffer first)
+    ifaces: dict = {}
+    for iname, ipath in find_interfaces(libdirs).items():
+        try:
+            ifaces[iname] = xfer.parse_interface_info(ipath.read_text().splitlines(), td_re)
+        except (OSError, ValueError):
+            pass
+    ifaces.update(xfer.buffer_interfaces(lines, td_re))
+
+    # 1. AUTOINSERTLISP (emacs runs it first)
+    lines = misc.auto_insert_lisp(lines)
+    _log("aall: AUTOINSERTLISP done")
+
+    # 2. EAP (AUTOINSTPARAM)
     which, resolvable, step_missing = _eai_like_step(
         lines, "AUTOINSTPARAM", resolved, include_star=args.star_expand
     )
@@ -1699,6 +1757,13 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     else:
         print(f"warning: AUTOINST skipped, module file not found for: {step_missing}", file=sys.stderr)
 
+    # 3. AUTOINST done above; 4. AUTOASCIIENUM; 5-8. AUTOINOUTMODPORT/MODULE/
+    # COMP/IN; 9. AUTOINOUTPARAM — all before AIO so their declarations are
+    # visible to the wire/reg passes
+    lines = misc.auto_ascii_enum(lines)
+    _log("aall: AUTOASCIIENUM done")
+    lines = xfer.auto_inoutmodport(lines, ifaces)
+    _log("aall: AUTOINOUTMODPORT done")
     # 3. AIO (AUTOOUTPUT/AUTOINPUT/AUTOINOUT, emacs order) / 4. AW / 5. AREG /
     # 6. AD (autodef) share the plain port mapping; AIO runs first so the
     # new port declarations are visible to AW/AREG/ADT
@@ -1707,19 +1772,60 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
         for n in names_wire
         if (s := src_of(n))
     }
+    lines = xfer.auto_inoutmodule(lines, modules_w)
+    lines = xfer.auto_inoutcomp(lines, modules_w)
+    lines = xfer.auto_inoutin(lines, modules_w)
+    _log("aall: AUTOINOUTMODULE/COMP/IN done")
+    # AUTOINOUTPARAM copies the submodule's parameters: needs with_params
+    if xfer._find_markers("\n".join(lines), "AUTOINOUTPARAM"):
+        modules_p = {
+            n: parse_module_ports(s, with_params=True, typedef_regexp=td_re, interfaces=interfaces)
+            for n in names_wire
+            if (s := src_of(n))
+        }
+    else:
+        modules_p = modules_w
+    lines = xfer.auto_inoutparam(lines, modules_p)
+    _log("aall: AUTOINOUTPARAM done")
     lines = inout.auto_output(lines, modules_w)
     lines = inout.auto_input(lines, modules_w)
     lines = inout.auto_inout(lines, modules_w)
     _log("aall: AUTOOUTPUT/AUTOINPUT/AUTOINOUT done")
+    # 10. AUTOTIEOFF; 11. AUTOUNDEF; 12. AUTOASSIGNMODPORT
+    lines = misc.auto_tieoff(lines, modules_w)
+    _log("aall: AUTOTIEOFF done")
+    lines = misc.auto_undef(lines)
+    _log("aall: AUTOUNDEF done")
+    lines = xfer.auto_assign_modport(lines, ifaces)
+    _log("aall: AUTOASSIGNMODPORT done")
+    # 13. AUTOLOGIC; 14. AUTOWIRE; 15. AUTOREG; 16. AUTOREGINPUT;
+    # 17. AUTOOUTPUTEVERY
+    lines = misc.auto_logic(lines, modules_w)
+    _log("aall: AUTOLOGIC done")
     lines = wire.auto_wire(lines, modules_w)
     lines = wire.auto_reg(lines, modules_w)
     lines = autodef.auto_def_t(lines, modules_w)
     _log("aall: AUTOWIRE/AUTOREG/autodef done")
-    # 7. AR (autoarg) / 8. AF (all format) need no module table (AR uses it
-    # only for the inout inference on direction-less port-list names)
+    lines = xfer.auto_reginput(lines, modules_w)
+    _log("aall: AUTOREGINPUT done")
+    lines = xfer.auto_outputevery(lines)
+    _log("aall: AUTOOUTPUTEVERY done")
+    # 18. AUTOSENSE/AS; 19. AUTORESET; 20. AUTOUNUSED
+    lines = sense.auto_sense(lines)
+    _log("aall: AUTOSENSE done")
+    lines = sense.auto_reset(lines)
+    _log("aall: AUTORESET done")
+    lines = misc.auto_unused(lines, modules_w)
+    _log("aall: AUTOUNUSED done")
+    # 21. AR (autoarg) / 22. AUTOINSERTLAST / 23. AF (all format).  AR uses
+    # the module table only for the inout inference on direction-less
+    # port-list names.
     lines = arg.auto_arg(lines, modules_w)
+    _log("aall: autoarg done")
+    lines = misc.auto_insert_last(lines)
+    _log("aall: AUTOINSERTLAST done")
     lines = fmt.all_format(lines)
-    _log("aall: autoarg + format done")
+    _log("aall: format done")
     return lines
 
 
@@ -1768,7 +1874,7 @@ def _main_emacs(command: str, text: str, lines: list[str], args) -> list[str]:
 
     td_re = parse_typedef_regexp(lines)
     if command == "eai":
-        interfaces = set(find_interfaces(libdirs)) | set(args.interface)
+        interfaces = interfaces_for(lines, libdirs, args.interface)
         modules = {}
         for name in names:
             src = _module_lines(name, files, buffer_mods)
@@ -1801,7 +1907,7 @@ def main(argv=None) -> None:
     args = create_by_args(argv)
     text = Path(args.in_file).read_text()
     lines = text.splitlines()
-    if args.command in ("eai", "aall") and not args.param_value:
+    if args.command in ("eai", "aall", "ainj") and not args.param_value:
         # the buffer's own Local Variables can switch param-value
         # substitution on, like emacs file-local variables
         if re.search(r"^\s*//\s*verilog-auto-inst-param-value\s*:\s*t\b", text, re.M):
@@ -1810,6 +1916,15 @@ def main(argv=None) -> None:
         _t0 = time.monotonic()
         out = _main_aall(text, lines, args)
         _log(f"aall: done, {len(lines)} -> {len(out)} line(s), {time.monotonic() - _t0:.1f}s total")
+    elif args.command == "ainj":
+        # verilog-inject-auto + verilog-auto: insert AUTOARG/AS/AUTOINST
+        # markers into legacy code, then run the full pipeline
+        from . import inject as _inject
+        _t0 = time.monotonic()
+        lines = _inject.inject_auto(lines)
+        text = "\n".join(lines)
+        out = _main_aall(text, lines, args)
+        _log(f"ainj: done, {time.monotonic() - _t0:.1f}s total")
     elif args.command == "kill":
         out = kill_auto_inst(lines, args.which)
     elif args.command in ("aif", "apf", "adf", "af"):
@@ -1858,7 +1973,7 @@ def main(argv=None) -> None:
         modules = {
             name: parse_module_ports(
                 path.read_text().splitlines(),
-                interfaces=set(find_interfaces(libdirs)) | set(args.interface),
+                interfaces=interfaces_for(lines, libdirs, args.interface),
             )
             for name, path in files.items()
         }

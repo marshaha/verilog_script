@@ -41,6 +41,8 @@
 "   <leader>aif :AIF      <leader>adf :ADF    <leader>apf :APF  <leader>af :AF
 "   <leader>am  :AM       <leader>ame :AME    <leader>d   :KI
 "   <leader>eai :EAI      <leader>eap :EAP    <leader>aio :AIO
+"   <leader>as  :ASEN     <leader>arst:ARST    <leader>atie:ATIE
+"   <leader>ainj:AINJ     <leader>adif:ADIF
 " Disable the whole set with:  let g:verilog_tooling_no_mappings = 1
 
 if exists('g:loaded_verilog_tooling')
@@ -245,6 +247,69 @@ function! s:InstCmd(cmd, extra) abort
     call s:Run('verilog_tooling.inst', a:cmd, a:extra, v:count1 - 1)
 endfunction
 
+" verilog-diff-auto: expand AUTOs on a temp copy and show the unified diff
+" in a preview window (empty diff => AUTOs are up to date).
+function! s:DiffAuto() abort
+    if !s:CheckPython()
+        return
+    endif
+    let l:in = tempname() . '.v'
+    let l:out = tempname() . '.diff'
+    call writefile(getline(1, '$'), l:in)
+    let l:argv = [s:Python(), '-m', 'verilog_tooling.diffauto', 'diff',
+          \ '-i', l:in, '-o', l:out, '--ref_file', expand('%:p')]
+          \ + s:InterfaceArgs() + s:LibdirArgs()
+    let l:save_pp = $PYTHONPATH
+    let $PYTHONPATH = s:py_path . (empty(l:save_pp) ? '' : ':' . l:save_pp)
+    call system(join(map(l:argv, 'shellescape(v:val)'), ' '))
+    let $PYTHONPATH = l:save_pp
+    call delete(l:in)
+    if !filereadable(l:out)
+        echohl ErrorMsg | echom '[verilog_tooling] ADIF: failed — see :messages' | echohl None
+        return
+    endif
+    let l:lines = readfile(l:out)
+    call delete(l:out)
+    if empty(l:lines)
+        echom '[verilog_tooling] ADIF: no differences — AUTOs are up to date'
+        return
+    endif
+    pedit! [AUTO-diff]
+    wincmd P
+    setlocal buftype=nofile bufhidden=wipe noswapfile
+    call setline(1, l:lines)
+    setlocal filetype=diff
+    wincmd p
+endfunction
+
+" verilog-auto-template-lint: warn about unused AUTO_TEMPLATE lines,
+" listed in the quickfix window.
+function! s:LintTemplates() abort
+    if !s:CheckPython()
+        return
+    endif
+    let l:in = tempname() . '.v'
+    call writefile(getline(1, '$'), l:in)
+    let l:argv = [s:Python(), '-m', 'verilog_tooling.lint', 'lint',
+          \ '-i', l:in, '--ref_file', expand('%:p')]
+          \ + s:InterfaceArgs() + s:LibdirArgs()
+    let l:save_pp = $PYTHONPATH
+    let $PYTHONPATH = s:py_path . (empty(l:save_pp) ? '' : ':' . l:save_pp)
+    let l:result = system(join(map(l:argv, 'shellescape(v:val)'), ' '))
+    let $PYTHONPATH = l:save_pp
+    call delete(l:in)
+    if v:shell_error != 0
+        echohl ErrorMsg | echom '[verilog_tooling] ATLINT: failed — see :messages' | echohl None
+        return
+    endif
+    if l:result ==# ''
+        echom '[verilog_tooling] ATLINT: no unused AUTO_TEMPLATE lines'
+        return
+    endif
+    cgetexpr split(l:result, "\n")
+    copen
+endfunction
+
 " Run the full AUTO expansion set in emacs verilog-batch-auto order:
 " EAP (AUTOINSTPARAM) -> EAI (AUTOINST) -> AW (AUTOWIRE) -> AREG (AUTOREG)
 " -> AD (autodef) -> AR (autoarg) -> AF (all format).
@@ -306,6 +371,34 @@ command! -nargs=0 AREG call s:Run('verilog_tooling.wire', 'ar', s:InterfaceArgs(
 " verilog-mode input/output/inout port auto-declaration (AUTOOUTPUT + AUTOINPUT + AUTOINOUT)
 command! -nargs=0 AIO  call s:Run('verilog_tooling.inout', 'aio', s:InterfaceArgs(), -1)
 
+" verilog-mode AUTOSENSE / AUTORESET (sense.py)
+command! -nargs=0 ASEN call s:Run('verilog_tooling.sense', 'asense', [], -1)
+command! -nargs=0 ARST call s:Run('verilog_tooling.sense', 'areset', [], -1)
+
+" verilog-mode AUTOINOUT* copy family (xfer.py)
+command! -nargs=0 AIM  call s:Run('verilog_tooling.xfer', 'ainoutmodule', s:InterfaceArgs(), -1)
+command! -nargs=0 AIC  call s:Run('verilog_tooling.xfer', 'ainoutcomp', s:InterfaceArgs(), -1)
+command! -nargs=0 AII  call s:Run('verilog_tooling.xfer', 'ainoutin', s:InterfaceArgs(), -1)
+command! -nargs=0 AIMP call s:Run('verilog_tooling.xfer', 'ainoutmodport', s:InterfaceArgs(), -1)
+command! -nargs=0 AIP  call s:Run('verilog_tooling.xfer', 'ainoutparam', s:InterfaceArgs(), -1)
+command! -nargs=0 AAMP call s:Run('verilog_tooling.xfer', 'aassignmodport', s:InterfaceArgs(), -1)
+command! -nargs=0 AOE  call s:Run('verilog_tooling.xfer', 'aoutputevery', s:InterfaceArgs(), -1)
+command! -nargs=0 ARI  call s:Run('verilog_tooling.xfer', 'areginput', s:InterfaceArgs(), -1)
+
+" verilog-mode misc AUTOs (misc.py)
+command! -nargs=0 AASC call s:Run('verilog_tooling.misc', 'aascii', s:InterfaceArgs(), -1)
+command! -nargs=0 ALGC call s:Run('verilog_tooling.misc', 'alogic', s:InterfaceArgs(), -1)
+command! -nargs=0 ATIE call s:Run('verilog_tooling.misc', 'atieoff', s:InterfaceArgs(), -1)
+command! -nargs=0 AUNU call s:Run('verilog_tooling.misc', 'aunused', s:InterfaceArgs(), -1)
+command! -nargs=0 AUND call s:Run('verilog_tooling.misc', 'aundef', [], -1)
+command! -nargs=0 AIL  call s:Run('verilog_tooling.misc', 'ainsertlisp', [], -1)
+command! -nargs=0 AILL call s:Run('verilog_tooling.misc', 'ainsertlast', [], -1)
+
+" verilog-mode inject / diff / template-lint
+command! -nargs=0 AINJ   call s:Run('verilog_tooling.inst', 'ainj', s:InterfaceArgs(), -1)
+command! -nargs=0 ADIF   call s:DiffAuto()
+command! -nargs=0 ATLINT call s:LintTemplates()
+
 " Auto-generate the new-file skeleton when creating a .v/.sv file
 " (the old automatic.vim AutoTemplate BufNewFile behaviour, Python-backed).
 autocmd BufNewFile *.v,*.sv call s:AutoTemplateBuffer()
@@ -359,6 +452,11 @@ function! s:InstallDefaultMaps() abort
     call s:DefMap('<leader>eai',  'EAI')
     call s:DefMap('<leader>eap',  'EAP')
     call s:DefMap('<leader>aio',  'AIO')
+    call s:DefMap('<leader>as',   'ASEN')
+    call s:DefMap('<leader>arst', 'ARST')
+    call s:DefMap('<leader>atie', 'ATIE')
+    call s:DefMap('<leader>ainj', 'AINJ')
+    call s:DefMap('<leader>adif', 'ADIF')
     call s:DefMap('<leader>d',    'KI')
 endfunction
 

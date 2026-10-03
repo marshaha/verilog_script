@@ -98,7 +98,7 @@ marker.
 
 | Command | What it does | Key |
 |---|---|---|
-| `AALL` | full AUTO set in one pass: EAP → EAI → AIO → AW → AREG → AD → AR → AF | `<leader>a` |
+| `AALL` | full AUTO set in one pass, emacs `verilog-batch-auto` order (see below) | `<leader>a` |
 | `EAI` / `EAP` | verilog-mode AUTOINST / AUTOINSTPARAM | `<leader>eai` `eap` |
 | `AIT` | (re)build instance connections from the module definition | `<leader>ait` |
 | `AIU` / `AIU1` | minimal-diff instance updates (keep manual connections) | `<leader>aiu` `aiu1` |
@@ -109,6 +109,22 @@ marker.
 | `KAR` | collapse the `/*autoarg*/` region | |
 | `AW` / `AREG` | AUTOWIRE / AUTOREG | `<leader>aw` `arg` |
 | `AIO` | AUTOOUTPUT + AUTOINPUT + AUTOINOUT (wrapper port generation) | `<leader>aio` |
+| `ASEN` | AUTOSENSE / AS — sensitivity list from signals read in the always block | `<leader>as` |
+| `ARST` | AUTORESET — reset assignments for every signal driven in a reset block | `<leader>arst` |
+| `AIM` / `AIC` / `AII` | AUTOINOUTMODULE / AUTOINOUTCOMP / AUTOINOUTIN — copy I/O from another module | |
+| `AIMP` / `AIP` | AUTOINOUTMODPORT / AUTOINOUTPARAM — I/O from an interface modport / params from a module | |
+| `AAMP` | AUTOASSIGNMODPORT — assignments into an interface modport | |
+| `AOE` | AUTOOUTPUTEVERY — every signal becomes an output | |
+| `ARI` | AUTOREGINPUT — `reg` for undeclared AUTOINST input nets | |
+| `AASC` | AUTOASCIIENUM — ASCII decode register for an enum state vector | |
+| `ALGC` | AUTOLOGIC — AUTOWIRE with `logic` declarations | |
+| `ATIE` | AUTOTIEOFF — tie undriven outputs to deasserted | `<leader>atie` |
+| `AUNU` | AUTOUNUSED — comma list of unused inputs/inouts (for `_unused_ok`) | |
+| `AUND` | AUTOUNDEF — `` `undef `` every file-local `` `define `` | |
+| `AIL` / `AILL` | AUTOINSERTLISP / AUTOINSERTLAST — insert shell-command output (`!cmd`) | |
+| `AINJ` | inject AUTO markers into legacy code, then run AALL | `<leader>ainj` |
+| `ADIF` | diff current buffer against full AUTO expansion (preview window) | `<leader>adif` |
+| `ATLINT` | warn about unused AUTO_TEMPLATE lines (quickfix) | |
 | `AF` | format: ports, wire/reg, parameter/localparam, instances | `<leader>af` |
 | `AIF` `APF` `ADF` | individual format passes | `<leader>aif` `apf` `adf` |
 | `AM` `AME` | instance stub from the word under the cursor | `<leader>am` `ame` |
@@ -146,11 +162,21 @@ verilog-mode's `verilog-auto-read-includes` defaults to nil, reads only
 
 ### AALL — everything, in the right order
 
-Runs the emacs `verilog-batch-auto` sequence — EAP → EAI → AIO → AW →
-AREG → AD → AR → AF — in a single Python process. The output is
-byte-identical to running the eight commands in that order, but module
-files are resolved and read only once. `g:verilog_tooling_eai_flags` (e.g.
-`--sort`) is honored.
+Runs the emacs `verilog-batch-auto` sequence in a single Python process:
+
+AIL → EAP → EAI → AASC → AIMP → AIM → AIC → AII → AIP → AIO → ATIE →
+AUND → AAMP → ALGC → AW → AREG → ARI → AOE → ASEN → ARST → AUNU → AD →
+AR → AILL → AF
+
+(AUTOINSERTLISP, AUTOINSTPARAM, AUTOINST, AUTOASCIIENUM, AUTOINOUTMODPORT,
+AUTOINOUTMODULE, AUTOINOUTCOMP, AUTOINOUTIN, AUTOINOUTPARAM,
+AUTOOUTPUT/AUTOINPUT/AUTOINOUT, AUTOTIEOFF, AUTOUNDEF, AUTOASSIGNMODPORT,
+AUTOLOGIC, AUTOWIRE, AUTOREG, AUTOREGINPUT, AUTOOUTPUTEVERY, AUTOSENSE,
+AUTORESET, AUTOUNUSED, autodef, AUTOARG, AUTOINSERTLAST, format).
+The output is byte-identical to running the commands in that order, but
+module files are resolved and read only once. `g:verilog_tooling_eai_flags`
+(e.g. `--sort`) is honored. Markers you don't use are no-ops, so AALL is
+safe on any buffer.
 
 ### EAI — verilog-mode AUTOINST
 
@@ -236,6 +262,110 @@ on stderr / in `:messages`.
 `/*AUTOWIRE*/` declares wires for nets driven by instance outputs;
 `/*AUTOREG*/` declares `reg` for module outputs with no driver. See
 [AUTOWIRE / AUTOREG](#autowire--autoreg-awareg) below.
+
+### ASEN / ARST — AUTOSENSE / AUTORESET
+
+`always @(/*AUTOSENSE*/)` (or `/*AS*/`) rewrites the sensitivity list from
+the signals the block actually reads — signals assigned inside the block
+are excluded, `/*AUTO_CONSTANT(`x) */` excludes `` `define``s, memories get
+a `/*memory or*/` note. `/*AUTORESET*/` inside a reset branch emits
+`// Beginning of autoreset for uninitialized flops` with
+`sig <= width'h0;` for every signal driven elsewhere in the always block
+but not manually reset before the marker (`<=` vs `=` follows the block's
+style; active-low names per `verilog-active-low-regexp` reset to 1).
+
+### AIM / AIC / AII / AIMP / AIP — copy I/O from elsewhere
+
+- `/*AUTOINOUTMODULE("Mod"[,"re"])*/` (AIM): copy input/output/inout
+  declarations from another module — the null-shell workhorse.
+- `/*AUTOINOUTCOMP("Mod"[,"re"[,"not-re"]])*/` (AIC): same, complemented
+  (inputs become outputs) — for testbenches.
+- `/*AUTOINOUTIN("Mod"[,"re"])*/` (AII): same, everything as input — for
+  monitors.
+- `/*AUTOINOUTMODPORT("If","mp-re"[,"re"[,"prefix"]])*/` (AIMP): copy I/O
+  from an interface modport.
+- `/*AUTOINOUTPARAM("Mod"[,"re"])*/` (AIP): copy `parameter` declarations
+  (value-less, SystemVerilog-2009 style).
+
+Inside a module header they emit Verilog-2001 comma style, otherwise
+1995 `;` declarations. `?!` prefix on a regexp excludes matches.
+
+### AAMP — AUTOASSIGNMODPORT
+
+`/*AUTOASSIGNMODPORT("If","mp-re","inst"[,"re"[,"prefix"]])*/` builds
+`assign` statements wiring the modport signals to/from the interface
+instance — for UVM verification modules.
+
+### AOE / ARI — AUTOOUTPUTEVERY / AUTOREGINPUT
+
+`/*AUTOOUTPUTEVERY[("re")]*/` declares every non-input signal an output
+(keeps synthesis from optimizing signals away). `/*AUTOREGINPUT*/`
+declares `reg` for undeclared nets feeding AUTOINST input pins
+(`// To <inst> of <Mod>.v`), handy for top-level test shells.
+
+### AASC — AUTOASCIIENUM
+
+`/*AUTOASCIIENUM("sig", "ascii_sig"[,"prefix"[,"onehot"]])*/` builds an
+ASCII decode register for an enum state vector: parameters tagged
+`// auto enum <name>` (or `synopsys enum`) define the states, the signal
+tagged `/* auto state_vector <sig> */` selects the vector. Emits
+`reg [8*N-1:0] ascii_sig; // Decode of sig` plus the `always @(sig)`
+case decoder (`"%Err"` default).
+
+### ALGC — AUTOLOGIC
+
+`/*AUTOLOGIC*/` is AUTOWIRE declaring `logic` instead of `wire`. A file-local
+`// verilog-auto-wire-type: "logic"` switches `/*AUTOWIRE*/` the same way.
+
+### ATIE — AUTOTIEOFF
+
+`/*AUTOTIEOFF*/` ties every unterminated module output to deasserted:
+`wire [w:0] o = w'h0;` (`~w'h0` for active-low names, `w'sh0` for signed).
+Outputs already declared, driven by AUTOINST, or matching
+`verilog-auto-tieoff-ignore-regexp` are skipped. The classic stub-module
+companion to `AUNU`.
+
+### AUNU — AUTOUNUSED
+
+`/*AUTOUNUSED*/` expands inline to the comma-separated list of unused
+input/inout signals — designed for
+`wire _unused_ok = &{1'b0, /*AUTOUNUSED*/ 1'b0};` so one pragma silences
+all unused warnings. `verilog-auto-unused-ignore-regexp` excludes names.
+
+### AUND — AUTOUNDEF
+
+`/*AUTOUNDEF[("re")]*/` emits `` `undef `` for every `` `define `` seen
+since the previous AUTOUNDEF (already-undef'd names are skipped, so
+`` `ifdef NEVER `` guards work), sorted, optionally regexp-filtered —
+keeps file-local defines out of the global namespace.
+
+### AIL / AILL — AUTOINSERTLISP / AUTOINSERTLAST
+
+`/*AUTOINSERTLISP(!command args)*/` runs the shell command and inserts its
+stdout into a `// Beginning of automatic insert lisp` region, before (AIL)
+or after (AILL) all other AUTOs. Emacs evaluates elisp here; this port runs
+shell instead — the documented difference (elisp `defun`s are not
+supported, mirroring the AUTO_TEMPLATE `@"..."` subset rule).
+
+### AINJ — inject AUTOs into legacy code
+
+Inserts `/*AUTOARG*/` into module headers, `/*AS*/` into always blocks
+whose hand-written sensitivity list already matches, and `/*AUTOINST*/`
+into pin lists (deleting `.x(x)` identity pins), then runs the full AALL
+pipeline — the `verilog-inject-auto` workflow for bringing old files
+under AUTO control.
+
+### ADIF — diff AUTOs
+
+Expands AUTOs on a copy and shows the unified diff in a preview window
+(whitespace-insensitive detection, like `verilog-diff-auto`). Empty output
+means the buffer is fully expanded — suitable for a lint/regression check.
+
+### ATLINT — unused AUTO_TEMPLATE lines
+
+Runs the EAI/EAP expansion with hit-tracking and lists template entries
+never consumed by any instance in the quickfix window
+(`verilog-auto-template-warn-unused`).
 
 ### AF family — alignment
 

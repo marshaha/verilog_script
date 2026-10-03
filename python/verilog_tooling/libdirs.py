@@ -133,14 +133,31 @@ def parse_local_variables(
     return {"dirs": dirs, "vc_files": vc_files, "inst_files": inst_files}
 
 
+def parse_align_typedef_words(lines: Iterable[str]) -> list[str]:
+    """The buffer's ``// verilog-align-typedef-words: ("w1" "w2")`` Local
+    Variable.  verilog-mode builds its internal typedef regexp from these
+    words, so ports typed by them parse as (possibly modport'd) interface
+    ports — e.g. ``svi.master m`` / ``svi m`` in a module header."""
+    for line in lines:
+        m = re.search(r"verilog-align-typedef-words\s*:\s*\(([^)]*)\)", line)
+        if m:
+            return re.findall(r'"([^"]+)"', m.group(1))
+    return []
+
+
 def parse_typedef_regexp(lines: Iterable[str]) -> str | None:
     """The buffer's ``// verilog-typedef-regexp:"..."`` Local Variable (a
     regexp matching names that are TYPES, not nets — they must never be
-    declared as wires)."""
+    declared as wires).  ``verilog-align-typedef-words`` feeds the same
+    typedef regexp inside verilog-mode, so its words are honored too."""
+    words = parse_align_typedef_words(lines)
     for line in lines:
         m = re.search(r"verilog-typedef-regexp\s*:\s*\"([^\"]*)\"", line)
         if m:
-            return m.group(1)
+            pats = [m.group(1)] + [rf"\b{w}\b" for w in words]
+            return "|".join(pats)
+    if words:
+        return "|".join(rf"\b{w}\b" for w in words)
     return None
 
 

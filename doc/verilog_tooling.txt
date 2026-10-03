@@ -3,7 +3,10 @@
 ==============================================================================
 COMMANDS                                                      *verilog_tooling*
 
-AALL        full AUTO set (EAP -> EAI -> AIO -> AW -> AREG -> AD -> AR -> AF)
+AALL        full AUTO set in emacs verilog-batch-auto order (AIL -> EAP ->
+              EAI -> AASC -> AIMP -> AIM -> AIC -> AII -> AIP -> AIO -> ATIE
+              -> AUND -> AAMP -> ALGC -> AW -> AREG -> ARI -> AOE -> ASEN ->
+              ARST -> AUNU -> AD -> AR -> AILL -> AF)
 EAI         verilog-mode AUTOINST (regexp AUTO_TEMPLATE, .*, interfaces)
 EAP         verilog-mode AUTOINSTPARAM (template, or default value)
 AIT AIU AIU1  instantiate template / update instances (manual connections
@@ -15,6 +18,22 @@ AW AREG     AUTOWIRE / AUTOREG
 AIO         AUTOOUTPUT + AUTOINPUT + AUTOINOUT (wrapper ports; v2k comma
               repair inside the module header, /*AUTOINPUT("^i_")*/ regexp
               filter)
+ASEN ARST   AUTOSENSE/AS (sensitivity lists) / AUTORESET (reset assignments)
+AIM AIC AII AUTOINOUTMODULE / COMP / IN (copy I/O from another module)
+AIMP AIP    AUTOINOUTMODPORT (I/O from an interface modport) /
+              AUTOINOUTPARAM (params from another module)
+AAMP        AUTOASSIGNMODPORT (assignments into an interface modport)
+AOE ARI     AUTOOUTPUTEVERY (every signal an output) / AUTOREGINPUT (reg
+              for undeclared AUTOINST input nets)
+AASC        AUTOASCIIENUM (ASCII decode register for an enum state vector)
+ALGC        AUTOLOGIC (AUTOWIRE declaring logic)
+ATIE        AUTOTIEOFF (tie undriven outputs to deasserted)
+AUNU        AUTOUNUSED (unused input/inout list for _unused_ok)
+AUND        AUTOUNDEF (`undef every file-local `define)
+AIL AILL    AUTOINSERTLISP / AUTOINSERTLAST (insert shell-command output)
+AINJ        inject AUTO markers into legacy code, then run AALL
+ADIF        diff buffer against full AUTO expansion (preview window)
+ATLINT      warn about unused AUTO_TEMPLATE lines (quickfix)
 AF          format: ports, wire/reg, parameter/localparam, instances
 AIF APF ADF   individual format passes
 AM AME APM AFM  module/parameter/FSM snippets
@@ -40,6 +59,9 @@ unmapped (your own mappings always win):
     <leader>ar    AR          <leader>aw    AW
     <leader>aio   AIO         <leader>arg   AREG
     <leader>eai   EAI         <leader>eap   EAP
+    <leader>as    ASEN        <leader>arst  ARST
+    <leader>atie  ATIE        <leader>ainj  AINJ
+    <leader>adif  ADIF
     <leader>d     KI
     <leader>bpn   BPN         <leader>bp    BP
     <leader>ba    BA

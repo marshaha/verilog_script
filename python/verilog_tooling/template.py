@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+from typing import Callable
 
 _LITERAL_PORT = re.compile(r"[A-Za-z0-9`_$]+")
 _DEFAULT_AT_REGEXP = r"([0-9]+)"
@@ -528,6 +529,7 @@ def template_connection(
     vl_cell_name: str = "",
     vl_dir: str = "",
     packed_note: str = "",
+    on_hit: "Callable[[TemplateEntry], None] | None" = None,
 ) -> str | None:
     """Connection for PORT_NAME under TEMPLATE, or None when no entry matches.
 
@@ -541,6 +543,8 @@ def template_connection(
     """
     for entry in reversed(template.entries):
         if not entry.is_regex and entry.pattern == port_name:
+            if on_hit is not None:
+                on_hit(entry)
             return expand_connection(
                 entry.connection, at_value, port_width, env,
                 vl_name=port_name, vl_cell_name=vl_cell_name, vl_dir=vl_dir,
@@ -558,6 +562,8 @@ def template_connection(
             ) from exc
         m = rx.match(port_name)
         if m:
+            if on_hit is not None:
+                on_hit(entry)
             expr = m.expand(_emacs_repl_to_python(entry.connection))
             return expand_connection(
                 expr, at_value, port_width, env,

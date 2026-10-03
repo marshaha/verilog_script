@@ -1,0 +1,81 @@
+(defun verilog-auto-insert-lisp ()
+  "Expand AUTOINSERTLISP statements, as part of \\[verilog-auto].
+The Lisp code provided is called before other AUTOS are expanded,
+and the Lisp code generally will call `insert' to insert text
+into the current file beginning on the line after the
+AUTOINSERTLISP.
+
+See also AUTOINSERTLAST and `verilog-auto-insert-last' which
+executes after (as opposed to before) other AUTOs.
+
+See also AUTO_LISP, which takes a Lisp expression and evaluates
+it during `verilog-auto-inst' but does not insert any text.
+
+An example:
+
+        module ExampInsertLisp;
+           /*AUTOINSERTLISP(my-verilog-insert-hello \"world\")*/
+        endmodule
+
+        // For this example we declare the function in the
+        // module's file itself.  Often you'd define it instead
+        // in a site-start.el or init file.
+        /*
+         Local Variables:
+         eval:
+           (defun my-verilog-insert-hello (who)
+             (insert (concat \"initial $write(\\\"hello \" who \"\\\");\\n\")))
+         End:
+        */
+
+Typing \\[verilog-auto] will call my-verilog-insert-hello and
+expand the above into:
+
+           /*AUTOINSERTLISP(my-verilog-insert-hello \"world\")*/
+           // Beginning of automatic insert Lisp
+           initial $write(\"hello world\");
+           // End of automatics
+
+You can also call an external program and insert the returned
+text:
+
+           /*AUTOINSERTLISP(insert (shell-command-to-string \"echo //hello\"))*/
+           // Beginning of automatic insert lisp
+           //hello
+           // End of automatics"
+  (save-excursion
+    ;; Point is at end of /*AUTO...*/
+    (let* ((indent-pt (current-indentation))
+	   (cmd-end-pt (save-excursion (search-backward ")")
+				       (forward-char)
+                                       (point)))  ; Closing paren
+	   (cmd-beg-pt (save-excursion (goto-char cmd-end-pt)
+                                       (backward-sexp 1)  ; Inside comment
+                                       (point)))  ; Beginning paren
+	   (cmd (buffer-substring-no-properties cmd-beg-pt cmd-end-pt)))
+      (verilog-forward-or-insert-line)
+      ;; Some commands don't move point (like insert-file) so we always
+      ;; add the begin/end comments, then delete it if not needed
+      (verilog-insert-indent "// Beginning of automatic insert lisp\n")
+      (verilog-insert-indent "// End of automatics\n")
+      (forward-line -1)
+      (eval (read cmd))
+      (forward-line -1)
+      (setq verilog-scan-cache-tick nil)  ; Clear cache; inserted unknown text
+      (verilog-delete-empty-auto-pair))))
+
+(defun verilog-auto-insert-last ()
+  "Expand AUTOINSERTLAST statements, as part of \\[verilog-auto].
+The Lisp code provided is called after all other AUTOS have been
+expanded, and the Lisp code generally will call `insert' to
+insert text into the current file beginning on the line after the
+AUTOINSERTLAST.
+
+Other than when called (after AUTOs are expanded), the functionality
+is otherwise identical to AUTOINSERTLISP and `verilog-auto-insert-lisp' which
+executes before (as opposed to after) other AUTOs.
+
+See `verilog-auto-insert-lisp' for examples."
+  (verilog-auto-insert-lisp))
+
+(defun verilog-auto-sense-sigs (moddecls presense-sigs)

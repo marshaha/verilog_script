@@ -1,0 +1,243 @@
+(defun verilog-auto-inout-modport ()
+  "Expand AUTOINOUTMODPORT statements, as part of \\[verilog-auto].
+Take input/output/inout statements from the specified interface
+and modport and insert into the current module.  This is useful
+for making verification modules that connect to UVM interfaces.
+
+  The first parameter is the name of an interface.
+
+  The second parameter is a regexp of modports to read from in
+  that interface.
+
+  The optional third parameter is a regular expression, and only
+  signals matching the regular expression will be included.
+
+  The optional fourth parameter is a prefix to add to the signals.
+
+Limitations:
+  If placed inside the parenthesis of a module declaration, it creates
+  Verilog 2001 style, else uses Verilog 1995 style.
+
+  Interface names must be resolvable to filenames.  See `verilog-auto-inst'.
+
+As with other autos, any inputs/outputs declared in the module
+will suppress the AUTO from redeclaring an inputs/outputs by
+the same name.
+
+An example:
+
+        interface ExampIf
+          ( input logic clk );
+           logic        req_val;
+           logic [7:0]  req_dat;
+           clocking mon_clkblk @(posedge clk);
+              input     req_val;
+              input     req_dat;
+           endclocking
+           modport mp(clocking mon_clkblk);
+        endinterface
+
+
+        module ExampMain
+        ( input clk,
+          /*AUTOINOUTMODPORT(\"ExampIf\", \"mp\")*/
+        );
+
+        ExampleIf i;
+
+        /*AUTOASSIGNMODPORT(\"ExampIf\", \"mp\", \"i\")*/
+
+        endmodule
+
+Typing \\[verilog-auto] will make this into:
+
+        module ExampMain
+        ( input clk,
+          /*AUTOINOUTMODPORT(\"ExampIf\", \"mp\")*/
+          // Beginning of automatic in/out/inouts (from modport)
+          input        req_val,
+          input [7:0]  req_dat
+          // End of automatics
+        );
+
+        ExampleIf i;
+
+        /*AUTOASSIGNMODPORT(\"ExampIf\", \"mp\", \"i\")*/
+        // Beginning of automatic assignments from modport
+        assign i.req_dat = req_dat;
+        assign i.req_val = req_val;
+        // End of automatics
+
+        endmodule
+
+If the modport is part of a UVM monitor/driver class, this
+creates a wrapper module that may be used to instantiate the
+driver/monitor using AUTOINST in the testbench."
+  (save-excursion
+    (let* ((params (verilog-read-auto-params 2 4))
+	   (submod (nth 0 params))
+	   (modport-re (nth 1 params))
+	   (regexp (nth 2 params))
+           (prefix (nth 3 params))
+           ;; direction-re  ; direction argument not supported until requested
+           submodi)
+      ;; Lookup position, etc of co-module
+      ;; Note this may raise an error
+      (when (setq submodi (verilog-modi-lookup submod t))
+	(let* ((indent-pt (current-indentation))
+	       (v2k  (verilog-in-paren-quick))
+	       (modi (verilog-modi-current))
+	       (moddecls (verilog-modi-get-decls modi))
+	       (submoddecls (verilog-modi-get-decls submodi))
+	       (submodportdecls (verilog-modi-modport-lookup submodi modport-re))
+               (sig-list-i (verilog-signals-in  ; Decls doesn't have data types, must resolve
+			    (verilog-decls-get-vars submoddecls)
+			    (verilog-signals-not-in
+			     (verilog-decls-get-inputs submodportdecls)
+                             (verilog-decls-get-ports submoddecls))))
+               (sig-list-o (verilog-signals-in  ; Decls doesn't have data types, must resolve
+			    (verilog-decls-get-vars submoddecls)
+			    (verilog-signals-not-in
+			     (verilog-decls-get-outputs submodportdecls)
+                             (verilog-decls-get-ports submoddecls))))
+               (sig-list-io (verilog-signals-in  ; Decls doesn't have data types, must resolve
+			     (verilog-decls-get-vars submoddecls)
+			     (verilog-signals-not-in
+			      (verilog-decls-get-inouts submodportdecls)
+                              (verilog-decls-get-ports submoddecls)))))
+	  (forward-line 1)
+	  (setq sig-list-i  (verilog-signals-edit-wire-reg
+                             (verilog-signals-not-in
+                              (verilog-signals-add-prefix
+                               (verilog-signals-matching-dir-re
+                                (verilog-signals-matching-regexp sig-list-i regexp)
+                                "input" nil) ;; direction-re
+                               prefix)
+                              (verilog-decls-get-ports moddecls)))
+		sig-list-o  (verilog-signals-edit-wire-reg
+                             (verilog-signals-not-in
+                              (verilog-signals-add-prefix
+                               (verilog-signals-matching-dir-re
+                                (verilog-signals-matching-regexp sig-list-o regexp)
+                                "output" nil) ;; direction-re
+                               prefix)
+                              (verilog-decls-get-ports moddecls)))
+		sig-list-io (verilog-signals-edit-wire-reg
+                             (verilog-signals-not-in
+                              (verilog-signals-add-prefix
+                               (verilog-signals-matching-dir-re
+                                (verilog-signals-matching-regexp sig-list-io regexp)
+                                "inout" nil) ;; direction-re
+                               prefix)
+                              (verilog-decls-get-ports moddecls))))
+	  (when v2k (verilog-repair-open-comma))
+	  (when (or sig-list-i sig-list-o sig-list-io)
+	    (verilog-insert-indent "// Beginning of automatic in/out/inouts (from modport)\n")
+	    ;; Don't sort them so an upper AUTOINST will match the main module
+	    (verilog-insert-definition modi sig-list-o  "output" indent-pt v2k t)
+	    (verilog-insert-definition modi sig-list-io "inout" indent-pt v2k t)
+	    (verilog-insert-definition modi sig-list-i  "input" indent-pt v2k t)
+	    (verilog-insert-indent "// End of automatics\n"))
+	  (when v2k (verilog-repair-close-comma)))))))
+
+(defun verilog-auto-insert-lisp ()
+(defun verilog-auto-assign-modport ()
+  "Expand AUTOASSIGNMODPORT statements, as part of \\[verilog-auto].
+Take input/output/inout statements from the specified interface
+and modport and use to build assignments into the modport, for
+making verification modules that connect to UVM interfaces.
+
+  The first parameter is the name of an interface.
+
+  The second parameter is a regexp of modports to read from in
+  that interface.
+
+  The third parameter is the instance name to use to dot reference into.
+
+  The optional fourth parameter is a regular expression, and only
+  signals matching the regular expression will be included.
+
+  The optional fifth parameter is a prefix to add to the signals.
+
+Limitations:
+
+  Interface names must be resolvable to filenames.  See `verilog-auto-inst'.
+
+  Inouts are not supported, as assignments must be unidirectional.
+
+  If a signal is part of the interface header and in both a
+  modport and the interface itself, it will not be listed.  (As
+  this would result in a syntax error when the connections are
+  made.)
+
+See the example in `verilog-auto-inout-modport'."
+  (save-excursion
+    (let* ((params (verilog-read-auto-params 3 5))
+	   (submod (nth 0 params))
+	   (modport-re (nth 1 params))
+	   (inst-name (nth 2 params))
+	   (regexp (nth 3 params))
+           (prefix (nth 4 params))
+           ;; direction-re  ; direction argument not supported until requested
+           submodi)
+      ;; Lookup position, etc of co-module
+      ;; Note this may raise an error
+      (when (setq submodi (verilog-modi-lookup submod t))
+	(let* ((indent-pt (current-indentation))
+	       (submoddecls (verilog-modi-get-decls submodi))
+	       (submodportdecls (verilog-modi-modport-lookup submodi modport-re))
+               (sig-list-i (verilog-signals-in  ; Decls doesn't have data types, must resolve
+			    (verilog-decls-get-vars submoddecls)
+			    (verilog-signals-not-in
+			     (verilog-decls-get-inputs submodportdecls)
+			     (verilog-decls-get-ports submoddecls))))
+               (sig-list-o (verilog-signals-in  ; Decls doesn't have data types, must resolve
+			    (verilog-decls-get-vars submoddecls)
+			    (verilog-signals-not-in
+			     (verilog-decls-get-outputs submodportdecls)
+			     (verilog-decls-get-ports submoddecls)))))
+	  (forward-line 1)
+	  (setq sig-list-i  (verilog-signals-edit-wire-reg
+			     (verilog-signals-matching-dir-re
+			      (verilog-signals-matching-regexp sig-list-i regexp)
+                             "input" nil)) ;; direction-re
+		sig-list-o  (verilog-signals-edit-wire-reg
+			     (verilog-signals-matching-dir-re
+			      (verilog-signals-matching-regexp sig-list-o regexp)
+                             "output" nil))) ;; direction-re
+	  (setq sig-list-i (sort (copy-alist sig-list-i) #'verilog-signals-sort-compare))
+	  (setq sig-list-o (sort (copy-alist sig-list-o) #'verilog-signals-sort-compare))
+	  (when (or sig-list-i sig-list-o)
+	    (verilog-insert-indent "// Beginning of automatic assignments from modport\n")
+	    ;; Don't sort them so an upper AUTOINST will match the main module
+	    (let ((sigs sig-list-o))
+	      (while sigs
+                (verilog-insert-indent "assign "
+                                       (concat prefix (verilog-sig-name (car sigs)))
+                                       " = " inst-name
+                                       "." (verilog-sig-name (car sigs)) ";\n")
+		(setq sigs (cdr sigs))))
+	    (let ((sigs sig-list-i))
+	      (while sigs
+                (verilog-insert-indent "assign " inst-name
+                                       "." (verilog-sig-name (car sigs))
+                                       " = "
+                                       (concat prefix (verilog-sig-name (car sigs)))
+                                       ";\n")
+		(setq sigs (cdr sigs))))
+	    (verilog-insert-indent "// End of automatics\n")))))))
+
+(defun verilog-auto-inst-port-map (_port-st)
+  nil)
+
+;; These are used by user's AUTO_TEMPLATE Lisp expressions
+(defvar vl-cell-type nil "See `verilog-auto-inst'.") ; Prevent compile warning
+(defvar vl-cell-name nil "See `verilog-auto-inst'.") ; Prevent compile warning
+(defvar vl-memory    nil "See `verilog-auto-inst'.") ; Prevent compile warning
+(defvar vl-modport   nil "See `verilog-auto-inst'.") ; Prevent compile warning
+(defvar vl-name  nil "See `verilog-auto-inst'.") ; Prevent compile warning
+(defvar vl-width nil "See `verilog-auto-inst'.") ; Prevent compile warning
+(defvar vl-dir   nil "See `verilog-auto-inst'.") ; Prevent compile warning
+(defvar vl-bits  nil "See `verilog-auto-inst'.") ; Prevent compile warning
+(defvar vl-mbits nil "See `verilog-auto-inst'.") ; Prevent compile warning
+

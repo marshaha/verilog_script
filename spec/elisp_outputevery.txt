@@ -1,0 +1,78 @@
+(defun verilog-auto-output-every ()
+  "Expand AUTOOUTPUTEVERY statements, as part of \\[verilog-auto].
+Make output statements for any signals that aren't primary inputs or
+outputs already.  This makes every signal in the design an output.  This is
+useful to get synthesis to preserve every signal in the design, since it
+won't optimize away the outputs.
+
+An example:
+
+        module ExampOutputEvery (o,i,tempa,tempb);
+           output o;
+           input i;
+           /*AUTOOUTPUTEVERY*/
+           wire tempa = i;
+           wire tempb = tempa;
+           wire o = tempb;
+        endmodule
+
+Typing \\[verilog-auto] will make this into:
+
+        module ExampOutputEvery (
+           /*AUTOOUTPUTEVERY*/
+           // Beginning of automatic outputs (every signal)
+           output          o,
+           output          tempa,
+           output          tempb,
+           // End of automatics
+           input i
+           );
+           wire tempa = i;
+           wire tempb = tempa;
+           wire o = tempb;
+        endmodule
+
+You may also provide an optional regular expression, in which
+case only signals matching the regular expression will be
+included,or excluded if the regexp begins with ?! (question-mark
+exclamation-mark).  For example the same expansion will result
+from only extracting outputs starting with ov:
+
+           /*AUTOOUTPUTEVERY(\"^ov\")*/"
+  (save-excursion
+    ;;Point must be at insertion point
+    (let* ((indent-pt (current-indentation))
+	   (params (verilog-read-auto-params 0 1))
+	   (regexp (nth 0 params))
+	   (v2k  (verilog-in-paren-quick))
+	   (modi (verilog-modi-current))
+	   (moddecls (verilog-modi-get-decls modi))
+	   (sig-list (verilog-signals-combine-bus
+		      (verilog-signals-not-in
+		       (verilog-decls-get-signals moddecls)
+		       (verilog-decls-get-ports moddecls)))))
+      (when regexp
+	(setq sig-list (verilog-signals-matching-regexp
+			sig-list regexp)))
+      (setq sig-list (verilog-signals-not-matching-regexp
+		      sig-list verilog-auto-output-ignore-regexp))
+      (verilog-forward-or-insert-line)
+      (when v2k (verilog-repair-open-comma))
+      (when sig-list
+	(verilog-insert-indent "// Beginning of automatic outputs (every signal)\n")
+	(verilog-insert-definition modi sig-list "output" indent-pt v2k)
+	(verilog-insert-indent "// End of automatics\n"))
+      (when v2k (verilog-repair-close-comma)))))
+
+(defun verilog-auto-input ()
+  "Expand AUTOINPUT statements, as part of \\[verilog-auto].
+Make input statements for any input signal into an /*AUTOINST*/ that
+isn't declared elsewhere inside the module.  This is useful for modules which
+only instantiate other modules.
+
+Limitations:
+  This ONLY detects inputs of AUTOINSTants (see `verilog-read-sub-decls').
+
+  If placed inside the parenthesis of a module declaration, it creates
+  Verilog 2001 style, else uses Verilog 1995 style.
+

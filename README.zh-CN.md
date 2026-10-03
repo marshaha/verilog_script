@@ -95,7 +95,7 @@ endmodule
 
 | 命令 | 作用 | 按键 |
 |---|---|---|
-| `AALL` | 一次跑完整套 AUTO：EAP → EAI → AIO → AW → AREG → AD → AR → AF | `<leader>a` |
+| `AALL` | 一次跑完整套 AUTO（emacs verilog-auto 顺序，26 步） | `<leader>a` |
 | `EAI` / `EAP` | verilog-mode 的 AUTOINST / AUTOINSTPARAM | `<leader>eai` `eap` |
 | `AIT` | 按模块定义（重）建实例连接 | `<leader>ait` |
 | `AIU` / `AIU1` | 最小差异的实例更新（保留手动连接） | `<leader>aiu` `aiu1` |
@@ -106,6 +106,19 @@ endmodule
 | `KAR` | 折叠 `/*autoarg*/` 区域 | |
 | `AW` / `AREG` | AUTOWIRE / AUTOREG | `<leader>aw` `arg` |
 | `AIO` | AUTOOUTPUT + AUTOINPUT + AUTOINOUT（封装模块端口生成） | `<leader>aio` |
+| `ASEN` / `ARST` | AUTOSENSE（敏感列表）/ AUTORESET（复位赋值） | `<leader>as` `arst` |
+| `AIM` / `AIC` / `AII` | AUTOINOUTMODULE / COMP / IN（从指定模块复制端口声明） | |
+| `AIMP` / `AIP` | AUTOINOUTMODPORT / AUTOINOUTPARAM | |
+| `AAMP` | AUTOASSIGNMODPORT（modport 信号自动 assign） | |
+| `AOE` / `ARI` | AUTOOUTPUTEVERY / AUTOREGINPUT | |
+| `AASC` | AUTOASCIIENUM（ASCII 枚举参数） | |
+| `ALGC` | AUTOLOGIC（logic 版 AUTOWIRE） | |
+| `ATIE` | AUTOTIEOFF（未驱动输出 tie 到无效值） | `<leader>atie` |
+| `AUNU` / `AUND` | AUTOUNUSED（未用输入列表）/ AUTOUNDEF（`undef` 宏定义） | |
+| `AIL` / `AILL` | AUTOINSERTLISP / AUTOINSERTLAST（执行 shell 命令插入输出） | |
+| `AINJ` | verilog-inject-auto：给 legacy 代码插入 AUTO 标记再全跑 | `<leader>ainj` |
+| `ADIF` | 对比当前 AUTO 展开与重新展开的差异 | `<leader>adif` |
+| `ATLINT` | 检查未使用的 AUTO_TEMPLATE | |
 | `AF` | 对齐：端口、wire/reg、parameter/localparam、实例 | `<leader>af` |
 | `AIF` `APF` `ADF` | 单独的各路对齐 | `<leader>aif` `apf` `adf` |
 | `AM` `AME` | 把光标下的单词变成实例空壳 | `<leader>am` `ame` |
@@ -121,10 +134,15 @@ endmodule
 
 ### 性能（大型 SoC 顶层）
 
-`AALL` 在**单个 Python 进程**里跑完整个流水线，八步共享同一份模块表；
+`AALL` 在**单个 Python 进程**里按 emacs `verilog-auto` 顺序跑完整个流水线
+（AUTOINSERTLISP → AUTOINSTPARAM → AUTOINST → AUTOASCIIENUM →
+AUTOINOUTMODPORT → AUTOINOUTMODULE/COMP/IN → AUTOINOUTPARAM →
+AUTOOUTPUT/AUTOINPUT/AUTOINOUT → AUTOTIEOFF → AUTOUNDEF →
+AUTOASSIGNMODPORT → AUTOLOGIC → AUTOWIRE → AUTOREG → AUTOREGINPUT →
+AUTOOUTPUTEVERY → AUTOSENSE → AUTORESET → AUTOUNUSED → AUTOARG →
+AUTOINSERTLAST），各步共享同一份模块表；
 模块文件通过目录列表缓存定位、用线程池读取（对 NFS 友好——没有
-"每个模块×每个目录一次 stat"的风暴）。在 199 个文件的工程上实测：
-比分开跑八个命令快 3.4 倍，输出逐字节一致。
+"每个模块×每个目录一次 stat"的风暴）。
 
 ### `include 处理
 

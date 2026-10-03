@@ -1,0 +1,70 @@
+(defun verilog-auto-inout-param ()
+  "Expand AUTOINOUTPARAM statements, as part of \\[verilog-auto].
+Take input/output/inout statements from the specified module and insert
+into the current module.  This is useful for making null templates and
+shell modules which need to have identical I/O with another module.
+Any I/O which are already defined in this module will not be redefined.
+For the complement of this function, see `verilog-auto-inout-comp',
+and to make monitors with all inputs, see `verilog-auto-inout-in'.
+
+Limitations:
+  If placed inside the parenthesis of a module declaration, it creates
+  Verilog 2001 style, else uses Verilog 1995 style.
+
+  Module names must be resolvable to filenames.  See `verilog-auto-inst'.
+
+  Parameters are inserted in the same order as in the original module.
+
+  Parameters do not have values, which is SystemVerilog 2009 syntax.
+
+An example:
+
+        module ExampMain ();
+          parameter PARAM = 22;
+        endmodule
+
+        module ExampInoutParam ();
+           /*AUTOINOUTPARAM(\"ExampMain\")*/
+        endmodule
+
+Typing \\[verilog-auto] will make this into:
+
+        module ExampInoutParam ();
+           /*AUTOINOUTPARAM(\"ExampMain\")*/
+           // Beginning of automatic parameters (from specific module)
+           parameter       PARAM;
+           // End of automatics
+        endmodule
+
+You may also provide an optional regular expression, in which case only
+parameters matching the regular expression will be included.  For example the
+same expansion will result from only extracting parameters starting with i:
+
+           /*AUTOINOUTPARAM(\"ExampMain\",\"^i\")*/"
+  (save-excursion
+    (let* ((params (verilog-read-auto-params 1 2))
+	   (submod (nth 0 params))
+	   (regexp (nth 1 params))
+	   submodi)
+      ;; Lookup position, etc of co-module
+      ;; Note this may raise an error
+      (when (setq submodi (verilog-modi-lookup submod t))
+	(let* ((indent-pt (current-indentation))
+	       (v2k  (verilog-in-paren-quick))
+	       (modi (verilog-modi-current))
+	       (moddecls (verilog-modi-get-decls modi))
+	       (submoddecls (verilog-modi-get-decls submodi))
+	       (sig-list-p  (verilog-signals-not-in
+			     (verilog-decls-get-gparams submoddecls)
+			     (append (verilog-decls-get-gparams moddecls)))))
+	  (forward-line 1)
+	  (setq sig-list-p  (verilog-signals-matching-regexp sig-list-p regexp))
+	  (when v2k (verilog-repair-open-comma))
+	  (when sig-list-p
+	    (verilog-insert-indent "// Beginning of automatic parameters (from specific module)\n")
+	    ;; Don't sort them so an upper AUTOINST will match the main module
+	    (verilog-insert-definition modi sig-list-p  "parameter" indent-pt v2k t)
+	    (verilog-insert-indent "// End of automatics\n"))
+	  (when v2k (verilog-repair-close-comma)))))))
+
+(defun verilog-auto-inout-modport ()

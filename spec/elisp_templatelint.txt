@@ -1,0 +1,32 @@
+(defun verilog-auto-template-lint ()
+  "Check AUTO_TEMPLATEs for unused lines.
+Enable with `verilog-auto-template-warn-unused'."
+  (let ((name1 (or (buffer-file-name) (buffer-name))))
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward
+	      "^\\s-*/?\\*?\\s-*[a-zA-Z0-9`_$]+\\s-+AUTO_TEMPLATE" nil t)
+	(let* ((tpl-info (verilog-read-auto-template-middle))
+	       (tpl-list (aref tpl-info 1))
+	       (tlines (append (nth 0 tpl-list) (nth 1 tpl-list)))
+	       tpl-ass)
+	  (while tlines
+	    (setq tpl-ass (car tlines)
+		  tlines (cdr tlines))
+	    ;;
+            (unless (or (not (eval-when-compile (fboundp 'make-hash-table)))  ; Not supported, no warning
+			(not verilog-auto-template-hits)
+			(gethash (vector (nth 2 tpl-ass) (nth 3 tpl-ass))
+				 verilog-auto-template-hits))
+	      (verilog-warn-error "%s:%d: AUTO_TEMPLATE line unused: \".%s (%s)\""
+				  name1
+                                  (+ (elt tpl-ass 3)  ; Template line number
+				     (count-lines (point-min) (point)))
+				  (elt tpl-ass 0) (elt tpl-ass 1))
+	      )))))))
+
+
+;;; Auto top level:
+;;
+
+(defun verilog-auto (&optional inject)  ; Use verilog-inject-auto instead of passing an arg
