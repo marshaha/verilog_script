@@ -473,21 +473,34 @@ def auto_wire(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[st
     definitions, as in :func:`verilog_tooling.inst.auto_inst`.
     """
     lines = kill_auto_wire(lines)
+    full = list(lines)
+    from .inst import map_module_spans
+
+    return map_module_spans(
+        lines, _AUTOWIRE_MARK_FULL, lambda span: _auto_wire_single(span, modules, full)
+    )
+
+
+def _auto_wire_single(
+    lines: Sequence[str], modules: Mapping[str, ModuleDef], full: Sequence[str]
+) -> list[str]:
+    """AUTOWIRE for ONE module span (FULL is the whole buffer, for the
+    compilation-unit `define set)."""
     from .libdirs import parse_typedef_regexp
     from .inst import set_typedef_regexp
 
-    typedef_re = parse_typedef_regexp(lines)
+    typedef_re = parse_typedef_regexp(full)
     set_typedef_regexp(typedef_re)
-    set_ignore_concat(parse_ignore_concat(lines))
+    set_ignore_concat(parse_ignore_concat(full))
     from .autodef import set_param_value
 
-    set_param_value(parse_param_value(lines))
+    set_param_value(parse_param_value(full))
     driven = _inst_driven_nets(lines, modules)
     if not driven:
         return list(lines)
     ports, usrdef, _ = _module_tables(lines)
     declared = set(ports.signals) | set(usrdef.signals)
-    declared |= get_all_defs(lines) | get_all_paras(lines)
+    declared |= get_all_defs(full) | get_all_paras(lines)
     # a port-list name on an instance inout pin is an inout PORT by intent
     # (autoarg emits the inout declaration) — never an AUTOWIRE wire
     from .inst import auto_arg_port_names
@@ -529,7 +542,7 @@ def auto_wire(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[st
         # output-driven one From
         direction = "To/From" if net.direction == "inout" else "From"
         comments[name] = f"// {direction} {net.inst} of {net.module}.v"
-    if not _wire_comment_enabled(lines):
+    if not _wire_comment_enabled(full):
         comments = {}
     return _regen(lines, _AUTOWIRE_MARK_FULL, _WIRE_HEADER, "wire ", sigs, comments)
 
@@ -547,14 +560,26 @@ def auto_reg(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = Non
     instance-driven exclusion, as in :func:`auto_wire`.
     """
     lines = kill_auto_reg(lines)
-    set_ignore_concat(parse_ignore_concat(lines))
+    full = list(lines)
+    from .inst import map_module_spans
+
+    return map_module_spans(
+        lines, _AUTOREG_MARK_FULL, lambda span: _auto_reg_single(span, modules, full)
+    )
+
+
+def _auto_reg_single(
+    lines: Sequence[str], modules: Mapping[str, ModuleDef] | None, full: Sequence[str]
+) -> list[str]:
+    """AUTOREG for ONE module span (FULL for the compilation-unit `define set)."""
+    set_ignore_concat(parse_ignore_concat(full))
     from .autodef import set_param_value
 
-    set_param_value(parse_param_value(lines))
+    set_param_value(parse_param_value(full))
     ports, usrdef, assigns = _module_tables(lines)
     driven = set(_inst_driven_nets(lines, modules or {}))
     excluded = set(usrdef.signals) | assigns | driven
-    excluded |= get_all_defs(lines) | get_all_paras(lines)
+    excluded |= get_all_defs(full) | get_all_paras(lines)
     sigs = [
         Signal(width=sig.width, type="io_reg", name=name)
         for name, sig in ports.signals.items()

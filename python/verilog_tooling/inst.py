@@ -1380,6 +1380,41 @@ def buffer_module_defs(text: str) -> dict[str, list[str]]:
     return mods
 
 
+def module_spans(lines: Sequence[str]) -> list[tuple[int, int]]:
+    """(start, end) inclusive line range of every module in the buffer."""
+    spans: list[tuple[int, int]] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        if re.match(r"\s*module\s+\w+", lines[i]):
+            start = i
+            while i < n and not re.match(r"\s*endmodule\b", lines[i]):
+                i += 1
+            spans.append((start, i))
+        i += 1
+    return spans
+
+
+def map_module_spans(
+    lines: Sequence[str], mark_re: "re.Pattern[str]", fn
+) -> list[str]:
+    """Apply FN(span_lines) to every module span holding a MARK_RE match,
+    splicing the results back (spans are processed bottom-up so earlier
+    indices stay valid); all other lines pass through unchanged.
+
+    Declaration-table commands (AIO/AW/AREG) must scope their exclusion
+    sets to ONE module: a sibling module's ports/declarations in the same
+    buffer are not visible here and must never suppress this module's
+    candidates."""
+    out = list(lines)
+    for start, end in reversed(module_spans(lines)):
+        span = out[start : end + 1]
+        if not any(mark_re.search(ln) for ln in span):
+            continue
+        out[start : end + 1] = fn(span)
+    return out
+
+
 def _module_lines(
     name: str, files: Mapping[str, Path], buffer_mods: Mapping[str, list[str]]
 ) -> list[str] | None:

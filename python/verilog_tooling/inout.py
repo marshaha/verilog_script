@@ -98,6 +98,11 @@ from .wire import (
 _INPUT_HEADER = "// Beginning of automatic inputs (from unused autoinst inputs)"
 _OUTPUT_HEADER = "// Beginning of automatic outputs (from unused autoinst outputs)"
 _INOUT_HEADER = "// Beginning of automatic inouts (from unused autoinst inouts)"
+
+_AUTOINPUT_MARK = re.compile(r"/\*\s*\bAUTOINPUT\b", re.IGNORECASE)
+_AUTOOUTPUT_MARK = re.compile(r"/\*\s*\bAUTOOUTPUT\b", re.IGNORECASE)
+_AUTOINOUT_MARK = re.compile(r"/\*\s*\bAUTOINOUT\b", re.IGNORECASE)
+
 _END_OF_AUTOMATICS = "// End of automatics"
 _INPUT_HEADER_RE = re.compile(r"^\s*// Beginning of automatic inputs\b")
 # not "(every signal)": an AUTOOUTPUTEVERY region is not ours to delete
@@ -169,7 +174,8 @@ def _declared_port_names(lines: Sequence[str]) -> set[str]:
 
 
 def _input_sigs(
-    lines: Sequence[str], modules: Mapping[str, ModuleDef]
+    lines: Sequence[str], modules: Mapping[str, ModuleDef],
+    full: "Sequence[str] | None" = None,
 ) -> "tuple[list[Signal], dict[str, str]]":
     """AUTOINPUT candidates: nets feeding instance INPUT ports, minus
     everything declared or driven inside the module.  An undeclared
@@ -180,7 +186,7 @@ def _input_sigs(
     ports, usrdef, _ = _module_tables(lines)
     declared = set(ports.signals) | _declared_port_names(lines)
     declared |= set(usrdef.signals) | driven
-    declared |= get_all_defs(lines) | get_all_paras(lines)
+    declared |= get_all_defs(full or lines) | get_all_paras(lines)
     from .libdirs import parse_typedef_regexp
     from .inst import set_typedef_regexp
 
@@ -205,7 +211,8 @@ def _input_sigs(
 
 
 def _output_sigs(
-    lines: Sequence[str], modules: Mapping[str, ModuleDef]
+    lines: Sequence[str], modules: Mapping[str, ModuleDef],
+    full: "Sequence[str] | None" = None,
 ) -> "tuple[list[Signal], dict[str, str]]":
     """AUTOOUTPUT candidates: nets driven by instance OUTPUT ports, minus
     this module's ports and nets feeding an instance input/inout (those are
@@ -241,7 +248,8 @@ def _output_sigs(
 
 
 def _inout_sigs(
-    lines: Sequence[str], modules: Mapping[str, ModuleDef]
+    lines: Sequence[str], modules: Mapping[str, ModuleDef],
+    full: "Sequence[str] | None" = None,
 ) -> "tuple[list[Signal], dict[str, str]]":
     """AUTOINOUT candidates: nets on instance INOUT ports, minus this
     module's ports and nets seen on instance input/output ports (verilog-mode
@@ -416,10 +424,13 @@ def _regen(
     sigs: Sequence[Signal],
     comments: Mapping[str, str],
     ignore_var: str,
+    full: "Sequence[str] | None" = None,
 ) -> list[str]:
     """Expand every marker of MARK_KEYWORD (each with its own regexp
     filter); the region goes after the marker line, Verilog-2001 comma style
-    inside the module header parens, ``;`` style in the body."""
+    inside the module header parens, ``;`` style in the body.  The ignore
+    regexp is a FILE-local — read it from FULL (the whole buffer) when given,
+    since Local Variables sit outside any module span."""
     from . import emacs
 
     markers = emacs.find_auto_markers(lines, mark_keyword)
@@ -427,7 +438,9 @@ def _regen(
         return list(lines)
     text = "\n".join(lines)
     m = re.search(
-        r'^\s*//\s*' + ignore_var + r'\s*:\s*"([^"]+)"', text, re.M
+        r'^\s*//\s*' + ignore_var + r'\s*:\s*"([^"]+)"',
+        "\n".join(full) if full else text,
+        re.M,
     )
     ignore_re = m.group(1) if m else None
     for marker in reversed(markers):
@@ -454,12 +467,18 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[s
     set_ignore_concat(parse_ignore_concat(lines))
     set_param_value(parse_param_value(lines))
     lines = kill_auto_input(lines)
-    sigs, comments = _input_sigs(lines, modules)
-    if not _wire_comment_enabled(lines):
-        comments = {}
-    return _regen(
-        lines, "AUTOINPUT", _INPUT_HEADER, "input", sigs, comments, _IGNORE_RE["input"]
-    )
+    full = list(lines)
+    from .inst import map_module_spans
+
+    def _single(span: Sequence[str]) -> list[str]:
+        sigs, comments = _input_sigs(span, modules, full)
+        if not _wire_comment_enabled(full):
+            comments = {}
+        return _regen(
+            span, "AUTOINPUT", _INPUT_HEADER, "input", sigs, comments, _IGNORE_RE["input"], full
+        )
+
+    return map_module_spans(lines, _AUTOINPUT_MARK, _single)
 
 
 def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[str]:
@@ -476,12 +495,18 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[
     set_ignore_concat(parse_ignore_concat(lines))
     set_param_value(parse_param_value(lines))
     lines = kill_auto_output(lines)
-    sigs, comments = _output_sigs(lines, modules)
-    if not _wire_comment_enabled(lines):
-        comments = {}
-    return _regen(
-        lines, "AUTOOUTPUT", _OUTPUT_HEADER, "output", sigs, comments, _IGNORE_RE["output"]
-    )
+    full = list(lines)
+    from .inst import map_module_spans
+
+    def _single(span: Sequence[str]) -> list[str]:
+        sigs, comments = _output_sigs(span, modules, full)
+        if not _wire_comment_enabled(full):
+            comments = {}
+        return _regen(
+            span, "AUTOOUTPUT", _OUTPUT_HEADER, "output", sigs, comments, _IGNORE_RE["output"], full
+        )
+
+    return map_module_spans(lines, _AUTOOUTPUT_MARK, _single)
 
 
 def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[str]:
@@ -498,12 +523,18 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[s
     set_ignore_concat(parse_ignore_concat(lines))
     set_param_value(parse_param_value(lines))
     lines = kill_auto_inout(lines)
-    sigs, comments = _inout_sigs(lines, modules)
-    if not _wire_comment_enabled(lines):
-        comments = {}
-    return _regen(
-        lines, "AUTOINOUT", _INOUT_HEADER, "inout", sigs, comments, _IGNORE_RE["inout"]
-    )
+    full = list(lines)
+    from .inst import map_module_spans
+
+    def _single(span: Sequence[str]) -> list[str]:
+        sigs, comments = _inout_sigs(span, modules, full)
+        if not _wire_comment_enabled(full):
+            comments = {}
+        return _regen(
+            span, "AUTOINOUT", _INOUT_HEADER, "inout", sigs, comments, _IGNORE_RE["inout"], full
+        )
+
+    return map_module_spans(lines, _AUTOINOUT_MARK, _single)
 
 
 def auto_io(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[str]:
