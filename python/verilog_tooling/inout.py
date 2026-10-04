@@ -324,6 +324,28 @@ def _inout_sigs(
 # emission
 
 
+def _local_declare_nettype(lines: Sequence[str]) -> str | None:
+    """verilog-auto-declare-nettype file-local: e.g. ``// verilog-auto-declare-nettype: wire``."""
+    m = re.search(r'^\s*//\s*verilog-auto-declare-nettype\s*:\s*"?(\w+)"?', "\n".join(lines), re.M)
+    return m.group(1) if m else None
+
+
+def _apply_declare_nettype(sigs: Sequence[Signal], nettype: str | None) -> list[Signal]:
+    """Copy SIGS, filling net_type with NETTYPE for signals without a type
+    (verilog-auto-declare-nettype, for `default_nettype none code)."""
+    if not nettype:
+        return list(sigs)
+    out = []
+    for s in sigs:
+        if not s.data_type and not s.net_type:
+            # dataclasses.replace-style copy; Signal is a dataclass
+            import dataclasses
+            out.append(dataclasses.replace(s, net_type=nettype))
+        else:
+            out.append(s)
+    return out
+
+
 def _emit_io_line(sig: Signal, max_len: int, keyword: str, indent: int, v2k: bool, comment: str) -> str:
     body = _emit_signal(sig, max_len, keyword, emacs_dims=True)[:-1] + ("," if v2k else ";")
     line = " " * indent + body
@@ -511,6 +533,7 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[s
         sigs, comments = _input_sigs(span, modules, full)
         if not _wire_comment_enabled(full):
             comments = {}
+        sigs = _apply_declare_nettype(sigs, _local_declare_nettype(full))
         return _regen(
             span, "AUTOINPUT", _INPUT_HEADER, "input", sigs, comments, _IGNORE_RE["input"], full
         )
@@ -539,6 +562,7 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[
         sigs, comments = _output_sigs(span, modules, full)
         if not _wire_comment_enabled(full):
             comments = {}
+        sigs = _apply_declare_nettype(sigs, _local_declare_nettype(full))
         return _regen(
             span, "AUTOOUTPUT", _OUTPUT_HEADER, "output", sigs, comments, _IGNORE_RE["output"], full
         )

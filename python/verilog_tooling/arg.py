@@ -542,7 +542,8 @@ def _expand_arg_markers(
     Only markers inside the header (at or before the module's first ``);``
     line) are expanded; a marker after the header close is misplaced and is
     left verbatim."""
-    sections = (("//Inputs", inputs), ("//Outputs", outputs), ("//Inouts", inouts))
+    # emacs verilog-auto-arg order: Outputs, Inouts, Inputs
+    sections = (("//Outputs", outputs), ("//Inouts", inouts), ("//Inputs", inputs))
     close_idx = next((k for k, ln in enumerate(lines) if _CLOSE.search(ln)), None)
     out: list[str] = []
     for idx, line in enumerate(lines):
