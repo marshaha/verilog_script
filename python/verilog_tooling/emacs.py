@@ -792,6 +792,7 @@ def _connect(
     param_values: Mapping[str, str] | None = None,
     env: dict | None = None,
     inst_name: str = "",
+    inst_vector: str = "t",
 ) -> tuple[str, bool]:
     """(connection, templated) for PORT: identity ``port[bits]`` unless a
     template entry matches. Multidimensional ports get a verilog-mode
@@ -835,11 +836,39 @@ def _connect(
     # connection; their full shape is attached as a /*...*/ comment.
     if port.is_multidim:
         return f"{port.name}{packed_note}", False
-    return port.name + (f"[{width}]" if width else ""), False
+    # verilog-auto-inst-vector: t (default) always subscripts, nil never,
+    # unsigned only for unsigned ports
+    use_vector = inst_vector == "t" or (inst_vector == "unsigned" and not port.signed)
+    return port.name + (f"[{width}]" if width and use_vector else ""), False
 
 
 # ---------------------------------------------------------------------------
 # AUTOINST (verilog-auto-inst)
+
+
+_INST_TEMPLATE_REQUIRED_RE = re.compile(
+    r"^\s*//\s*verilog-auto-inst-template-required\s*:\s*(\w+)", re.M
+)
+_INST_VECTOR_RE = re.compile(
+    r"^\s*//\s*verilog-auto-inst-vector\s*:\s*(\w+)", re.M
+)
+
+
+def _inst_template_required(lines: Sequence[str]) -> bool:
+    """verilog-auto-inst-template-required file-local (default nil): non-nil
+    omits ports without a template from AUTOINST."""
+    m = _INST_TEMPLATE_REQUIRED_RE.search("\n".join(lines))
+    return bool(m) and m.group(1).lower() != "nil"
+
+
+def _inst_vector(lines: Sequence[str]) -> str:
+    """verilog-auto-inst-vector file-local (default t): bus subscripts on
+    default connections; nil skips them, unsigned subscripts only unsigned
+    ports."""
+    m = _INST_VECTOR_RE.search("\n".join(lines))
+    if m and m.group(1).lower() in ("nil", "unsigned"):
+        return m.group(1).lower()
+    return "t"
 
 
 def auto_inst(
@@ -933,6 +962,8 @@ def auto_inst(
             text = _auto_inst_one(
                 text, marker, open_idx, close_idx, moddef, module, inst,
                 templates, sort, dot_name, column, param_value, is_star, star_save,
+                template_required=_inst_template_required(lines),
+                inst_vector=_inst_vector(lines),
             )
         except ValueError as exc:
             # AUTO_LISP / @"..." template evaluation outside the Python
@@ -949,6 +980,7 @@ def auto_inst(
 def _auto_inst_one(
     text, marker, open_idx, close_idx, moddef, module, inst,
     templates, sort, dot_name, column, param_value, is_star, star_save,
+    template_required=False, inst_vector="t",
 ):
     lisp_env = read_auto_lisp(text, marker.offset)
     tpl = (
@@ -982,8 +1014,11 @@ def _auto_inst_one(
         entries = []
         for port in ports:
             conn, templated = _connect(
-                tpl, at_value, port, param_values, lisp_env, inst_name=inst
+                tpl, at_value, port, param_values, lisp_env, inst_name=inst,
+                inst_vector=inst_vector,
             )
+            if template_required and not templated:
+                continue  # verilog-auto-inst-template-required: omit the port
             if dot_name and conn == port.name:
                 conn = None
             # star expansions tag non-templated pins so they can be

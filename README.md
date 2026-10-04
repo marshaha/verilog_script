@@ -552,6 +552,19 @@ With `verilog-auto-inst-param-value:t` in Local Variables (or CLI
 substituted into port widths and template connections (constant
 expressions and `$clog2` are folded).
 
+Other supported verilog-mode file-locals (all default to the emacs value
+when absent):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `verilog-auto-inst-vector` | `t` | bus subscripts on default AUTOINST connections; `nil` skips them, `unsigned` subscripts only unsigned ports |
+| `verilog-auto-inst-template-required` | `nil` | non-nil omits ports with no template entry from AUTOINST |
+| `verilog-auto-arg-sort` | `nil` | sorts AUTOARG port names instead of declaration order |
+| `verilog-auto-arg-format` | `packed` | `single` puts one AUTOARG port per line |
+| `verilog-auto-declare-nettype` | `nil` | io declarations with no data type get `<direction> <nettype>` (for `` `default_nettype none``) |
+
+Note: AUTOARG sections follow the emacs order — Outputs, Inouts, Inputs.
+
 ## /*autodef*/ (AD/ADT)
 
 Regenerates every undeclared signal into fixed sections, inferring widths

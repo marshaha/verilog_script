@@ -415,6 +415,18 @@ modport):`cpu_bus.master bus` 连为 `.bus (bus.master)`。
 加 `--param-value`）后，实例 `#(...)` 的覆盖值还会代入口位宽和
 模板连接（常量表达式和 `$clog2` 会求值折叠）。
 
+其他支持的 verilog-mode 文件局部变量（缺省时取 emacs 默认值）：
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `verilog-auto-inst-vector` | `t` | AUTOINST 默认连接带总线下标；`nil` 不带，`unsigned` 仅无符号端口带 |
+| `verilog-auto-inst-template-required` | `nil` | 非 nil 时 AUTOINST 省略无模板条目的端口 |
+| `verilog-auto-arg-sort` | `nil` | AUTOARG 端口名排序（默认按声明顺序） |
+| `verilog-auto-arg-format` | `packed` | `single` 时 AUTOARG 每行一个端口 |
+| `verilog-auto-declare-nettype` | `nil` | 无数据类型的 io 声明补 `<方向> <nettype>`（用于 `` `default_nettype none``） |
+
+注意：AUTOARG 分节顺序遵循 emacs —— Outputs、Inouts、Inputs。
+
 ## /*autodef*/ (AD/ADT)
 
 把所有未声明的信号重新生成到固定分节中，位宽从驱动侧推导
