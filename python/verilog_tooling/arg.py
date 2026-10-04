@@ -348,6 +348,22 @@ def _consume_ansi_header(lines: Sequence[str]) -> "tuple[list[str], list[str]]":
     return out, decls
 
 
+def _local_arg_sort(lines: Sequence[str]) -> bool:
+    """verilog-auto-arg-sort file-local (default nil): non-nil sorts AUTOARG
+    signal names instead of using declaration order."""
+    m = re.search(r"^\s*//\s*verilog-auto-arg-sort\s*:\s*(\w+)", "\n".join(lines), re.M)
+    return bool(m) and m.group(1).lower() != "nil"
+
+
+def _local_arg_format(lines: Sequence[str]) -> str:
+    """verilog-auto-arg-format file-local (default packed): 'single puts one
+    signal per line, 'packed fills lines up to the column limit."""
+    m = re.search(r"^\s*//\s*verilog-auto-arg-format\s*:\s*(\w+)", "\n".join(lines), re.M)
+    if m and m.group(1).lower() == "single":
+        return "single"
+    return "packed"
+
+
 def _pack_ports(ports: Sequence[str], *, trailing_comma: bool) -> list[str]:
     """Greedily pack PORTS onto ``    a, b, c`` lines, like the Vim loop.
 
@@ -432,6 +448,10 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
             i = j
             continue
         inputs, outputs, inouts = _collect_ports(_filter_lines(body))
+        # verilog-auto-arg-sort: declaration order is the default; sorted
+        # order reduces churn when declarations move around
+        if _local_arg_sort(lines):
+            inputs, outputs, inouts = sorted(inputs), sorted(outputs), sorted(inouts)
         declared = set(inputs) | set(outputs) | set(inouts)
         infer = sorted(
             name for name in old_names if name in inout_nets and name not in declared
@@ -439,7 +459,10 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
         # ANSI io declarations in the header move to the body (1995 style):
         # the regenerated name list would otherwise leave them dangling
         body, ansi_decls = _consume_ansi_header(body)
-        expanded = _expand_arg_markers(body, inputs, outputs, inouts + infer)
+        expanded = _expand_arg_markers(
+            body, inputs, outputs, inouts + infer,
+            arg_format=_local_arg_format(lines),
+        )
         if ansi_decls:
             ins = next(
                 (k for k, ln in enumerate(expanded) if re.match(r"\s*\);\s*$", ln)),
@@ -495,11 +518,23 @@ def _emit_inout_decls(
     return [_emit_signal(sig, max_len, "inout wire") for sig in sigs]
 
 
+def _single_ports(ports: Sequence[str], *, trailing_comma: bool) -> list[str]:
+    """One port per line (verilog-auto-arg-format 'single)."""
+    out = [_ARG_MARGIN + name + "," for name in ports[:-1]]
+    last = _ARG_MARGIN + ports[-1]
+    if trailing_comma:
+        last += ","
+    out.append(last)
+    return out
+
+
 def _expand_arg_markers(
     lines: Sequence[str],
     inputs: Sequence[str],
     outputs: Sequence[str],
     inouts: Sequence[str],
+    *,
+    arg_format: str = "packed",
 ) -> list[str]:
     """Expand every /*autoarg*/ marker in one module's LINES with the given
     Inputs/Outputs/Inouts sections.
@@ -529,7 +564,10 @@ def _expand_arg_markers(
                 out.append("")
             later = any(ports_ for _, ports_ in sections[pos + 1 :])
             out.append(_ARG_MARGIN + header)
-            out.extend(_pack_ports(ports, trailing_comma=later))
+            if arg_format == "single":
+                out.extend(_single_ports(ports, trailing_comma=later))
+            else:
+                out.extend(_pack_ports(ports, trailing_comma=later))
         out.append(");")
     return out
 

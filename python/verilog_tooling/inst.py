@@ -725,13 +725,40 @@ def _padded_dir(direction: str) -> str:
     return direction + " " if direction in ("input", "inout") else direction
 
 
-def default_connection(port: Port) -> str:
+def _local_inst_template_required(lines: Sequence[str]) -> bool:
+    """verilog-auto-inst-template-required file-local (default nil): non-nil
+    omits ports without a template from AUTOINST (instead of connecting
+    them to a same-named net)."""
+    m = re.search(r"^\s*//\s*verilog-auto-inst-template-required\s*:\s*(\w+)", "\n".join(lines), re.M)
+    return bool(m) and m.group(1).lower() != "nil"
+
+
+def _local_inst_vector(lines: Sequence[str]) -> str:
+    """verilog-auto-inst-vector file-local (default t): t uses bus subscripts
+    for default AUTOINST ports, nil skips them, unsigned uses them only for
+    unsigned (non-signed) ports."""
+    m = re.search(r"^\s*//\s*verilog-auto-inst-vector\s*:\s*(\w+)", "\n".join(lines), re.M)
+    if m:
+        v = m.group(1).lower()
+        if v in ("nil", "unsigned"):
+            return v
+    return "t"
+
+
+def default_connection(port: Port, inst_vector: str = "t") -> str:
     """The no-template instantiation connection: ``name.modport`` for an
     interface port declared with a modport, ``name`` for a plain interface
-    port, ``name[width]`` for a vector, ``name`` for a scalar."""
+    port, ``name[width]`` for a vector, ``name`` for a scalar.
+
+    INST_VECTOR is verilog-auto-inst-vector: 't' (default) always uses the
+    subscript, 'nil' skips it, 'unsigned' uses it only for unsigned ports."""
     if port.is_interface:
         return f"{port.name}.{port.modport}" if port.modport else port.name
-    return port.name + (f"[{port.width}]" if port.width else "")
+    use_vector = (
+        inst_vector == "t"
+        or (inst_vector == "unsigned" and not port.signed)
+    )
+    return port.name + (f"[{port.width}]" if (port.width and use_vector) else "")
 
 
 def format_connection(
@@ -911,13 +938,17 @@ class VerilogBuffer:
 
     @staticmethod
     def _templated_or_identity(
-        template: AutoTemplate | None, port: Port, at_value: str
-    ) -> str:
+        template: AutoTemplate | None, port: Port, at_value: str,
+        template_required: bool = False, inst_vector: str = "t",
+    ) -> str | None:
         if template is not None:
             conn = template_connection(template, port.name, at_value, port.width)
             if conn is not None:
                 return conn
-        return default_connection(port)
+        if template_required:
+            # verilog-auto-inst-template-required: omit non-templated ports
+            return None
+        return default_connection(port, inst_vector)
 
     @staticmethod
     def _get_port_name(line: str) -> str:
@@ -952,6 +983,8 @@ class VerilogBuffer:
         """
         lines = self._lines
         target = set(self._targets(which))
+        template_required = _local_inst_template_required(lines)
+        inst_vector = _local_inst_vector(lines)
         out: list[str] = []
         i = 0
         n = len(lines)
@@ -999,6 +1032,8 @@ class VerilogBuffer:
         killed = self.kill_auto_inst(which)
         lines = killed.lines
         target = set(killed._targets(which))
+        template_required = _local_inst_template_required(lines)
+        inst_vector = _local_inst_vector(lines)
         out: list[str] = []
         for i, line in enumerate(lines):
             if i not in target:
@@ -1017,20 +1052,39 @@ class VerilogBuffer:
                 for entry in moddef.entries:
                     if not isinstance(entry, Port):
                         continue
-                    conn = self._templated_or_identity(template, entry, at_value)
+                    conn = self._templated_or_identity(
+                        template, entry, at_value, template_required, inst_vector
+                    )
+                    if conn is None:
+                        continue
                     parts.append(f" .{entry.name}({conn}),")
                 out.append(re.sub(r"\),\s*$", "));", "".join(parts)))
                 continue
             out.append(opener)
-            last_name = moddef.last_port_name()
+            # filter first: template-required may drop ports, so the last
+            # EMITTED port (not the last defined port) gets the `)` terminator
+            emitted: list[tuple[object, str]] = []
             for entry in moddef.entries:
+                if isinstance(entry, Keep):
+                    emitted.append((entry, ""))  # Keep lines pass through
+                    continue
+                conn = self._templated_or_identity(
+                    template, entry, at_value, template_required, inst_vector
+                )
+                if conn is None:
+                    continue
+                emitted.append((entry, conn))
+            last_idx = max(
+                (k for k, (e, _) in enumerate(emitted) if isinstance(e, Port)),
+                default=-1,
+            )
+            for k, (entry, conn) in enumerate(emitted):
                 if isinstance(entry, Keep):
                     out.append(self._emit_keep(entry))
                     continue
-                conn = self._templated_or_identity(template, entry, at_value)
                 out.append(
                     format_connection(
-                        entry, conn, prefix_max_len, suffix_max_len, entry.name == last_name
+                        entry, conn, prefix_max_len, suffix_max_len, k == last_idx
                     )
                 )
             out.append(");")
@@ -1057,6 +1111,8 @@ class VerilogBuffer:
         date = date or _now()
         lines = self._lines
         target = set(self._targets(which))
+        template_required = _local_inst_template_required(lines)
+        inst_vector = _local_inst_vector(lines)
         out: list[str] = []
         i = 0
         n = len(lines)
@@ -1079,7 +1135,11 @@ class VerilogBuffer:
                 out.append(re.sub(r"\);\s*", "", line, count=1))
                 last_name = moddef.last_port_name()
                 for port in moddef.ports:
-                    conn = self._templated_or_identity(template, port, at_value)
+                    conn = self._templated_or_identity(
+                        template, port, at_value, template_required, inst_vector
+                    )
+                    if conn is None:
+                        continue
                     out.append(
                         format_connection(
                             port, conn, prefix_max_len, suffix_max_len, port.name == last_name
@@ -1102,7 +1162,11 @@ class VerilogBuffer:
                     for port in moddef.ports:
                         if port.name in seen:
                             continue
-                        conn = self._templated_or_identity(template, port, at_value)
+                        conn = self._templated_or_identity(
+                            template, port, at_value, template_required, inst_vector
+                        )
+                        if conn is None:
+                            continue
                         out.append(
                             format_connection(
                                 port, conn, prefix_max_len, suffix_max_len, port.name == last_name
@@ -1217,6 +1281,8 @@ class VerilogBuffer:
                 buf = buf.auto_inst(modules, which=marker_pos, templates=templates, sort=sort)
         lines = buf.lines
         target = set(buf._targets(which))
+        template_required = _local_inst_template_required(lines)
+        inst_vector = _local_inst_vector(lines)
         out: list[str] = []
         i = 0
         n = len(lines)
@@ -1276,7 +1342,11 @@ class VerilogBuffer:
                     else:
                         out.append(self._fix_comma(raw, old_last, new_last))
                 else:
-                    conn = self._templated_or_identity(template, entry, at_value)
+                    conn = self._templated_or_identity(
+                        template, entry, at_value, template_required, inst_vector
+                    )
+                    if conn is None:
+                        continue
                     out.append(
                         format_connection(entry, conn, prefix_max_len, suffix_max_len, new_last)
                         + f" // INST_NEW {date}"

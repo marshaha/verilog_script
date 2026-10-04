@@ -285,12 +285,22 @@ def _xfer_signal(
     )
 
 
-def _type_text(keyword: str, sig: Signal) -> str:
+def _local_declare_nettype(lines: Sequence[str]) -> str | None:
+    """verilog-auto-declare-nettype file-local: e.g. ``// verilog-auto-declare-nettype: wire``.
+    When set, io declarations without a data type get ``<direction> <nettype>``
+    (for `default_nettype none code)."""
+    m = re.search(r'^\s*//\s*verilog-auto-declare-nettype\s*:\s*"?(\w+)"?', "\n".join(lines), re.M)
+    return m.group(1) if m else None
+
+
+def _type_text(keyword: str, sig: Signal, declare_nettype: str | None = None) -> str:
     """The ``type`` text verilog-insert-one-definition inserts: the direction
     keyword plus data type, signed and packed ranges, e.g. ``"output"``,
     ``"output logic [7:0]"``, ``"input [3:0] [7:0]"``, ``"my_svi.master"``.
     For ``reg`` a sig type REPLACES the keyword (verilog-insert-definition
-    only prepends the direction for io directions)."""
+    only prepends the direction for io directions).  DECLARE_NETTYPE
+    (verilog-auto-declare-nettype) supplies the net type for io directions
+    when the signal has no data type."""
     text = keyword
     if keyword == "reg" and (sig.data_type or sig.net_type):
         text = sig.data_type or sig.net_type
@@ -298,6 +308,8 @@ def _type_text(keyword: str, sig: Signal) -> str:
         text += " " + sig.data_type
     elif sig.net_type:
         text += " " + sig.net_type
+    elif declare_nettype and keyword in ("input", "output", "inout"):
+        text += " " + declare_nettype
     if sig.signed:
         text += " signed"
     if sig.packed_dims:
@@ -402,12 +414,14 @@ def _splice_region(
     header: str,
     decls: Sequence[tuple[str, Signal, str]],
     v2k: "bool | None" = None,
+    declare_nettype: "str | None" = None,
 ) -> str:
     """Splice one generated region after MARKER's line.  DECLS is
     ``(keyword, signal, comment)`` per declaration line; V2K (marker inside
     the module header parens) uses comma style with verilog-mode's open/close
     comma repairs.  Empty DECLS still runs the repairs, like verilog-mode.
-    V2K may be forced (AUTOREGINPUT is always Verilog-1995 style)."""
+    V2K may be forced (AUTOREGINPUT is always Verilog-1995 style).
+    DECLARE_NETTYPE is verilog-auto-declare-nettype."""
     masked = mask_comments(text)
     if v2k is None:
         v2k = _in_paren(masked, marker.offset)
@@ -443,7 +457,7 @@ def _splice_region(
         rows = [pad + header]
         for keyword, sig, comment in decls:
             rows.append(
-                _emit_def_line(indent, _type_text(keyword, sig),
+                _emit_def_line(indent, _type_text(keyword, sig, declare_nettype),
                                sig.name, v2k, comment))
         rows.append(pad + _END_OF_AUTOMATICS)
         region = "\n".join(rows) + "\n"
@@ -874,6 +888,9 @@ def _auto_inout_x(
     # old region is deleted marker-scoped in _single (like emacs).
     from .inst import map_module_spans
 
+    # file-local vars live outside module spans — read once at top level
+    declare_nettype = _local_declare_nettype(lines)
+
     def _single(span: Sequence[str]) -> list[str]:
         text = "\n".join(span)
         markers = _find_markers(text, keyword)
@@ -899,6 +916,7 @@ def _auto_inout_x(
             text = _splice_region(
                 text, mk, _INOUTMODULE_HEADER,
                 [(kw, s, "") for _, kw, s in decls],
+                declare_nettype=declare_nettype,
             )
         return text.split("\n")
 
@@ -1304,6 +1322,7 @@ def auto_outputevery(lines: Sequence[str]) -> list[str]:
     auto_wire_type = parse_wire_type(full)
     if auto_wire_type is None and any(_LOGIC_MARK.search(l) for l in full):
         auto_wire_type = "logic"
+    declare_nettype = _local_declare_nettype(full)
 
     def _single(span: Sequence[str]) -> list[str]:
         ports, _, _ = _module_tables(span)
@@ -1340,7 +1359,8 @@ def auto_outputevery(lines: Sequence[str]) -> list[str]:
         ]
         for mk, decls in reversed(plans):
             text = _splice_region(
-                text, mk, _OUTPUTEVERY_HEADER, [(kw, s, c) for _, kw, s, c in decls]
+                text, mk, _OUTPUTEVERY_HEADER, [(kw, s, c) for _, kw, s, c in decls],
+                declare_nettype=declare_nettype,
             )
         return text.split("\n")
 
