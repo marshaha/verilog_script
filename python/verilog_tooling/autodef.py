@@ -384,10 +384,12 @@ class SignalTable:
             sig.signed = True
             rest = re.sub(r"^signed\b\s*", "", rest)
         if rest.startswith("["):
-            m = re.match(r"^\[(.*):", rest)  # msb of [msb:lsb]
+            # Match [msb:lsb] - msb/lsb cannot contain brackets or colon.
+            # Non-greedy to avoid swallowing unpacked dims like [0:7] after name.
+            m = re.match(r"^\[([^:\]]+):", rest)  # msb of [msb:lsb]
             if m:
                 sig.width = m.group(1).strip()
-                rest = re.sub(r"^\[.*:.*\]\s*", "", rest)
+                rest = re.sub(r"^\[[^:\]]+:[^\]]+\]\s*", "", rest)
             else:
                 # [`DEFINE_RANGE] — the whole range rides in a macro
                 m = re.match(r"^\[([^\]]+)\]\s*", rest)
