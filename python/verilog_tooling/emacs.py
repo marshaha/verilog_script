@@ -52,6 +52,38 @@ from .template import (
     template_for_module,
 )
 
+# Verilog gate primitives: name -> list of port directions.
+# First port is output (or inout for tran), rest are inputs (implied).
+# From emacs verilog-mode verilog-gate-ios.
+_GATE_PRIMITIVES: dict[str, list[str]] = {
+    "and": ["output"],
+    "buf": ["output"],
+    "bufif0": ["output"],
+    "bufif1": ["output"],
+    "cmos": ["output"],
+    "nand": ["output"],
+    "nmos": ["output"],
+    "nor": ["output"],
+    "not": ["output"],
+    "notif0": ["output"],
+    "notif1": ["output"],
+    "or": ["output"],
+    "pmos": ["output"],
+    "pulldown": ["output"],
+    "pullup": ["output"],
+    "rcmos": ["output"],
+    "rnmos": ["output"],
+    "rpmos": ["output"],
+    "rtran": ["inout", "inout"],
+    "rtranif0": ["inout", "inout"],
+    "rtranif1": ["inout", "inout"],
+    "tran": ["inout", "inout"],
+    "tranif0": ["inout", "inout"],
+    "tranif1": ["inout", "inout"],
+    "xnor": ["output"],
+    "xor": ["output"],
+}
+
 _DEFAULT_COLUMN = 40
 
 _TYPE_WORDS = {
