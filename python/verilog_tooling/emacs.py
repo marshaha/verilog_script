@@ -443,9 +443,10 @@ def read_auto_lisp(text: str, upto: int) -> dict:
     return env
 
 
-# Cache for verilog-auto-python-file resolution: filename -> path or None.
-# The libdirs are global (set via set_include_dirs), so filename alone keys it.
-_PY_FILE_PATH_CACHE: dict[str, str | None] = {}
+# Cache for verilog-auto-python-file resolution: (filename, dirs) -> path
+# or None — keyed by the include dirs too: they change per file in batch
+# processes (closed loops), so a filename-only cache would go stale.
+_PY_FILE_PATH_CACHE: "dict[tuple[str, tuple[str, ...]], str | None]" = {}
 # Cache for loaded Python modules: path -> (mtime, env dict)
 _PY_MODULE_CACHE: dict[str, tuple[float, dict]] = {}
 
@@ -453,7 +454,8 @@ _PY_MODULE_CACHE: dict[str, tuple[float, dict]] = {}
 def _local_python_file(lines: Sequence[str]) -> str | None:
     """verilog-auto-python-file file-local: path to a Python file whose
     top-level definitions (functions) are available in @"..." template
-    expressions. Relative paths search the -y libdirs (and vc dirs)."""
+    expressions. Relative paths search the -y libdirs (and vc dirs);
+    ``~`` and ``$VAR`` are expanded."""
     m = re.search(
         r"^\s*//\s*verilog-auto-python-file\s*:\s*(\S+)",
         "\n".join(lines), re.M
@@ -462,22 +464,20 @@ def _local_python_file(lines: Sequence[str]) -> str | None:
 
 
 def _resolve_python_file(filename: str) -> str | None:
-    """Resolve FILENAME to an absolute path, searching include dirs.
-    Cached: filesystem is hit at most once per filename."""
-    if filename in _PY_FILE_PATH_CACHE:
-        return _PY_FILE_PATH_CACHE[filename]
+    """Resolve FILENAME to an absolute path, searching the include dirs
+    (reusing libdirs._find_include's miss cache)."""
     import os
-    if os.path.isabs(filename) and os.path.isfile(filename):
-        _PY_FILE_PATH_CACHE[filename] = filename
-        return filename
-    from .libdirs import include_dirs
-    for d in include_dirs() or (".",):
-        p = os.path.normpath(os.path.join(d, filename))
-        if os.path.isfile(p):
-            _PY_FILE_PATH_CACHE[filename] = p
-            return p
-    _PY_FILE_PATH_CACHE[filename] = None
-    return None
+    from .libdirs import _find_include, include_dirs
+
+    filename = os.path.expanduser(os.path.expandvars(filename))
+    if os.path.isabs(filename):
+        return filename if os.path.isfile(filename) else None
+    key = (filename, include_dirs())
+    if key in _PY_FILE_PATH_CACHE:
+        return _PY_FILE_PATH_CACHE[key]
+    path = _find_include(filename)
+    _PY_FILE_PATH_CACHE[key] = path
+    return path
 
 
 def _load_python_file(path: str) -> dict:

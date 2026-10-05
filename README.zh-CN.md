@@ -394,6 +394,25 @@ mm_cdma_parse u_parse (/*autoinst*/);
   绑定变量 `vl-name`、`vl-cell-name`、`vl-width`、`vl-dir`)
 - 标记前的 `/*AUTO_LISP(expr)*/` 会先求值一段 Python 绑定，供
   `@"..."` 表达式引用
+- `/*AUTO_PYTHON( <代码> )*/` 定义普通 Python 函数，可在 `@"..."`
+  中直接调用（elisp `defun` 的 Python 替代；因连字符不是合法 Python
+  标识符，额外绑定下划线别名 `vl_name` / `vl_cell_name` / `vl_width` /
+  `vl_dir`)：
+
+  ```verilog
+  /*AUTO_PYTHON(
+  def surround(sig):
+      return "{" + sig + "," + sig + "}"
+  )*/
+  /* my_mod AUTO_TEMPLATE (
+      .\\(.*\\)  (@"surround(vl_name)"),
+  ); */
+  ```
+
+  `// verilog-auto-python-file: myfuncs.py`（文件局部变量）改为从共享
+  Python 文件加载顶层定义——相对路径在 `-y`/vc 库目录和 buffer 所在
+  目录中查找（支持 `~`/`$VAR` 展开，按 mtime 缓存）。同名时文件内联
+  块优先于文件定义。
 
 没有模板条目的端口连接同名线网（带位宽）；如果线网还没声明，
 AW/AD 会帮你声明。支持 SystemVerilog `interface` 端口（含

@@ -528,6 +528,26 @@ mm_cdma_parse u_parse (/*autoinst*/);
   `setq`; `vl-name`, `vl-cell-name`, `vl-width`, `vl-dir` are bound)
 - `/*AUTO_LISP(expr)*/` before the marker evaluates Python bindings that
   `@"..."` expressions can reference
+- `/*AUTO_PYTHON( <code> )*/` defines plain Python functions callable from
+  `@"..."` (the Python-native alternative to elisp `defun`; underscore
+  aliases `vl_name` / `vl_cell_name` / `vl_width` / `vl_dir` are bound,
+  since hyphens aren't valid Python identifiers):
+
+  ```verilog
+  /*AUTO_PYTHON(
+  def surround(sig):
+      return "{" + sig + "," + sig + "}"
+  )*/
+  /* my_mod AUTO_TEMPLATE (
+      .\(.*\)  (@"surround(vl_name)"),
+  ); */
+  ```
+
+  `// verilog-auto-python-file: myfuncs.py` (file-local) loads top-level
+  definitions from a shared Python file instead — resolved against the
+  `-y`/vc library dirs and the buffer's own directory (`~`/`$VAR`
+  expanded, cached by mtime). Inline blocks override same-named file
+  definitions.
 
 Without a template entry, a port connects to a same-named net (range
 included); if the net is not declared yet, AW/AD declare it for you.
