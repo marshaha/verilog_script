@@ -1837,7 +1837,8 @@ def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = 
         head = sig.data_type
     elif sig.net_type and keyword.strip() == "wire":
         head = sig.net_type
-    line = head + _cal_margin(_TYPE_FIELD, len(head))
+    # emacs: single space after type keyword, not padded to fixed width
+    line = head.strip() + " "
     if sig.data_type:
         if keyword.strip() != "wire":
             line += sig.data_type
