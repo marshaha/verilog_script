@@ -557,7 +557,10 @@ when absent):
 
 | Variable | Default | Effect |
 |---|---|---|
-| `verilog-auto-inst-vector` | `t` | bus subscripts on default AUTOINST connections; `nil` skips them, `unsigned` subscripts only unsigned ports |
+| `verilog-auto-inst-vector` | `t` | bus subscripts on default AUTOINST connections; `nil` skips the subscript when the parent declares the net with a matching width, `unsigned` subscripts only unsigned ports |
+| `verilog-auto-inst-sort` | `nil` | sorts AUTOINST pins within each direction group |
+| `verilog-auto-inst-dot-name` | `nil` | SystemVerilog `.name` shorthand when the connection equals the port name |
+| `verilog-auto-simplify-expressions` | `t` | `nil` keeps range expressions verbatim instead of folding constants |
 | `verilog-auto-inst-template-required` | `nil` | non-nil omits ports with no template entry from AUTOINST |
 | `verilog-auto-arg-sort` | `nil` | sorts AUTOARG port names instead of declaration order |
 | `verilog-auto-arg-format` | `packed` | `single` puts one AUTOARG port per line |

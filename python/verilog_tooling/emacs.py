@@ -1041,22 +1041,21 @@ def _auto_inst_one(
     at_value = template_at_value(tpl, inst) if tpl else ""
     param_values = read_inst_param_values(text, open_idx) if param_value else {}
     # Parent module signal declarations (for inst-vector:nil width matching):
-    # map net name -> width string from wire/reg/logic declarations
+    # every wire/reg/logic AND io declaration of the enclosing module —
+    # multi-name decls included (misc._scan_decls handles both)
     parent_signals: dict[str, str] = {}
     if inst_vector == "nil":
-        # Find enclosing module: search backward for 'module' keyword
-        mod_start = text.rfind("module", 0, marker.offset)
-        if mod_start >= 0:
-            mod_text = text[mod_start:marker.offset]
-            for m in re.finditer(
-                r'^\s*(?:wire|reg|logic)\s*(?:signed\s*)?(?:\[([^\]]+)\]\s*)?(\w+)',
-                mod_text, re.M
-            ):
-                width, name = m.group(1), m.group(2)
-                # Handle comma-separated: wire [3:0] a, b;
-                # (simplified: only first name per decl for now)
-                if name not in parent_signals:
-                    parent_signals[name] = width or ""
+        from .inst import module_spans
+        from .misc import _scan_decls
+
+        tlines = text.split("\n")
+        for lo, hi in module_spans(tlines):
+            if lo <= text.count("\n", 0, marker.offset) <= hi:
+                for d in _scan_decls(tlines[lo : hi + 1]):
+                    if d.bits:
+                        rng = re.sub(r"\s+", "", d.bits).strip("[]")
+                        parent_signals.setdefault(d.name, rng)
+                break
     # commented-out pins before the marker are NOT connected: mask
     # comments (positions preserved) before collecting names
     pins = set(

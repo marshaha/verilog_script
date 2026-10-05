@@ -419,7 +419,10 @@ modport):`cpu_bus.master bus` 连为 `.bus (bus.master)`。
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `verilog-auto-inst-vector` | `t` | AUTOINST 默认连接带总线下标；`nil` 不带，`unsigned` 仅无符号端口带 |
+| `verilog-auto-inst-vector` | `t` | AUTOINST 默认连接带总线下标；`nil` 时父模块已用相同位宽声明的 net 不带，`unsigned` 仅无符号端口带 |
+| `verilog-auto-inst-sort` | `nil` | AUTOINST 引脚在各方向组内排序 |
+| `verilog-auto-inst-dot-name` | `nil` | 连接名等于端口名时用 SV `.name` 简写 |
+| `verilog-auto-simplify-expressions` | `t` | `nil` 时位宽表达式保持原样不折叠常量 |
 | `verilog-auto-inst-template-required` | `nil` | 非 nil 时 AUTOINST 省略无模板条目的端口 |
 | `verilog-auto-arg-sort` | `nil` | AUTOARG 端口名排序（默认按声明顺序） |
 | `verilog-auto-arg-format` | `packed` | `single` 时 AUTOARG 每行一个端口 |
