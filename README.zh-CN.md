@@ -391,7 +391,12 @@ mm_cdma_parse u_parse (/*autoinst*/);
 - `@"expr"` 对表达式求值——Python(`@"'pre_%d' % @"`）或带括号的
   elisp(`@"(downcase vl-name)"`；支持的形式：`substring`、
   `downcase`、`concat`、`if`、`equal`、算术、`let`、`setq`；
-  绑定变量 `vl-name`、`vl-cell-name`、`vl-width`、`vl-dir`)
+  绑定变量 `vl-name`、`vl-cell-name`、`vl-width`、`vl-dir`)。
+  在 Python 表达式中，连字符变量名（如 `vl-width`）会自动改写为
+  下划线别名（`vl_width`），因为连字符在 Python 里会被解析为减号。
+  `vl-width`/`vl_width` 是*数值*位宽（`[0:3]` 对应 `'4'`，单比特对应
+  `'1'`，参数化 range 对应 `'(1+(`a)-(`b))'`）——与 emacs 的
+  `verilog-sig-width` 一致。
 - 标记前的 `/*AUTO_LISP(expr)*/` 会先求值一段 Python 绑定，供
   `@"..."` 表达式引用
 - `/*AUTO_PYTHON( <代码> )*/` 定义普通 Python 函数，可在 `@"..."`

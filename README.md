@@ -525,7 +525,12 @@ mm_cdma_parse u_parse (/*autoinst*/);
 - `@"expr"` evaluates an expression — Python (`@"'pre_%d' % @"`), or
   parenthesised elisp (`@"(downcase vl-name)"`; supported forms:
   `substring`, `downcase`, `concat`, `if`, `equal`, arithmetic, `let`,
-  `setq`; `vl-name`, `vl-cell-name`, `vl-width`, `vl-dir` are bound)
+  `setq`; `vl-name`, `vl-cell-name`, `vl-width`, `vl-dir` are bound).
+  In Python expressions, hyphenated names (`vl-width`) are automatically
+  rewritten to underscore aliases (`vl_width`), since hyphens parse as
+  subtraction. `vl-width`/`vl_width` is the *numeric* port width
+  (`'4'` for `[0:3]`, `'1'` for a single bit, `'(1+(`a)-(`b))'` for
+  parameterised ranges) — matching emacs `verilog-sig-width`.
 - `/*AUTO_LISP(expr)*/` before the marker evaluates Python bindings that
   `@"..."` expressions can reference
 - `/*AUTO_PYTHON( <code> )*/` defines plain Python functions callable from

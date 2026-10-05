@@ -471,6 +471,28 @@ def _elisp_eval(form, scope: dict):
     raise ValueError(f"unsupported elisp form: {name!r}")
 
 
+def _range_to_width(range_str: str | None) -> str:
+    """Compute numeric width from a range string like '0:3' -> '4'.
+    For non-numeric ranges (parameters), returns the width expression
+    '(1+(msb)-(lsb))' like emacs verilog-sig-width.
+    Empty/None range (single bit) -> '1'.
+    """
+    if not range_str:
+        return "1"
+    parts = range_str.split(":")
+    if len(parts) != 2:
+        return range_str
+    msb, lsb = parts[0].strip(), parts[1].strip()
+    try:
+        # Try numeric computation
+        msb_v = int(msb)
+        lsb_v = int(lsb)
+        return str(abs(msb_v - lsb_v) + 1)
+    except ValueError:
+        # Non-numeric: return expression form
+        return f"(1+({msb})-({lsb}))"
+
+
 def expand_connection(
     expr: str, at_value: str, port_width: str | None, env: dict | None = None,
     *, vl_name: str = "", vl_cell_name: str = "", vl_dir: str = "",
@@ -487,21 +509,38 @@ def expand_connection(
         def _eval(m: re.Match) -> str:
             code = m.group(1).replace('\\"', '"').replace("@", at_value or "0")
             scope = dict(env or {})
+            # vl-width is the NUMERIC width (e.g. '4' for [0:3]), not the range
+            vl_width_num = _range_to_width(port_width)
             scope.setdefault("vl-name", vl_name)
             scope.setdefault("vl-cell-name", vl_cell_name)
-            scope.setdefault("vl-width", port_width or "")
+            scope.setdefault("vl-width", vl_width_num)
             scope.setdefault("vl-dir", vl_dir)
             # Python-friendly aliases (hyphens aren't valid identifiers):
             # AUTO_PYTHON functions use vl_name, vl_width, etc.
             scope.setdefault("vl_name", vl_name)
             scope.setdefault("vl_cell_name", vl_cell_name)
-            scope.setdefault("vl_width", port_width or "")
+            scope.setdefault("vl_width", vl_width_num)
             scope.setdefault("vl_dir", vl_dir)
             try:
                 if code.lstrip().startswith("("):
                     value = _elisp_eval(_elisp_parse(_elisp_tokenize(code)), scope)
                 else:
-                    value = eval(code, {"__builtins__": {}}, scope)  # noqa: S307
+                    # Python expr: rewrite hyphenated vl- vars to underscore
+                    # aliases (vl-width -> vl_width), since hyphens parse as
+                    # subtraction in Python.
+                    py_code = code
+                    for hyphen, under in (
+                        ("vl-cell-name", "vl_cell_name"),
+                        ("vl-name", "vl_name"),
+                        ("vl-width", "vl_width"),
+                        ("vl-dir", "vl_dir"),
+                    ):
+                        # word-boundary replace to avoid partial matches
+                        py_code = re.sub(
+                            r"(?<![\w-])" + re.escape(hyphen) + r"(?![\w-])",
+                            under, py_code,
+                        )
+                    value = eval(py_code, {"__builtins__": {}}, scope)  # noqa: S307
             except Exception as exc:  # noqa: BLE001
                 raise ValueError(f'AUTO_TEMPLATE @"..." evaluation failed: {code!r}: {exc}') from exc
             return _elisp_str(value)
