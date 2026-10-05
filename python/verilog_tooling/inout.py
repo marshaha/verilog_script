@@ -99,6 +99,12 @@ _INPUT_HEADER = "// Beginning of automatic inputs (from unused autoinst inputs)"
 _OUTPUT_HEADER = "// Beginning of automatic outputs (from unused autoinst outputs)"
 _INOUT_HEADER = "// Beginning of automatic inouts (from unused autoinst inouts)"
 
+
+def _mod_comment_suffix(module: str) -> str:
+    """'.v' suffix for module comments, except for gate primitives."""
+    from . import emacs as _emacs
+    return "" if module in _emacs._GATE_PRIMITIVES else ".v"
+
 _AUTOINPUT_MARK = re.compile(r"/\*\s*\bAUTOINPUT\b", re.IGNORECASE)
 _AUTOOUTPUT_MARK = re.compile(r"/\*\s*\bAUTOOUTPUT\b", re.IGNORECASE)
 _AUTOINOUT_MARK = re.compile(r"/\*\s*\bAUTOINOUT\b", re.IGNORECASE)
@@ -227,7 +233,8 @@ def _input_sigs(
             )
         )
         comments[name] = (
-            f"// To {net.inst} of {net.module}.v" + (", ..." if net.multi else "")
+            f"// To {net.inst} of {net.module}{_mod_comment_suffix(net.module)}"
+            + (", ..." if net.multi else "")
         )
     return sigs, comments
 
@@ -271,7 +278,8 @@ def _output_sigs(
             )
         )
         comments[name] = (
-            f"// From {net.inst} of {net.module}.v" + (", ..." if net.multi else "")
+            f"// From {net.inst} of {net.module}{_mod_comment_suffix(net.module)}"
+            + (", ..." if net.multi else "")
         )
     return sigs, comments
 
@@ -314,7 +322,7 @@ def _inout_sigs(
             )
         )
         comments[name] = (
-            f"// To/From {net.inst} of {net.module}.v"
+            f"// To/From {net.inst} of {net.module}{_mod_comment_suffix(net.module)}"
             + (", ..." if net.multi else "")
         )
     return sigs, comments

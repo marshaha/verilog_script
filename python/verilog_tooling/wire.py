@@ -275,6 +275,81 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
         nets[rec.name] = replace(prev, multi=True)
 
 
+def _primitive_nets(
+    text: str, open_idx: int, module: str, inst: str,
+    dir_list: list[str],
+    nets: dict,
+    directions: "tuple[str, ...] | None",
+    simple_only: bool,
+) -> None:
+    """Extract nets from a gate primitive instance (or/buf/etc.).
+
+    Primitive ports are positional: e.g., or u_or (o, i0, i1) has o=output,
+    i0/i1=inputs per _GATE_PRIMITIVES. Parses the comma-separated expressions,
+    strips bit-selects ([31:0]), and adds InstNet entries for ports matching
+    DIRECTIONS.
+    """
+    from . import emacs
+    import re
+    close_idx = emacs._matching_paren(text, open_idx)
+    span = text[open_idx + 1 : close_idx]
+    masked = emacs.mask_comments(span)
+    # Split by commas at depth 0
+    exprs = []
+    depth = 0
+    cur = []
+    for ch in masked:
+        if ch in "([{":
+            depth += 1
+            cur.append(ch)
+        elif ch in ")]}":
+            depth -= 1
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            exprs.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        exprs.append("".join(cur).strip())
+    # Filter empty and AUTOINST markers
+    exprs = [e for e in exprs if e and "AUTOINST" not in e]
+    want_dirs = directions if directions is not None else ("output", "inout")
+    for idx, expr in enumerate(exprs):
+        # Skip named connections (.pin) - primitives use positional
+        if expr.lstrip().startswith("."):
+            continue
+        m = re.match(r"(\w+)", expr.strip())
+        if not m:
+            continue
+        net_name = m.group(1)
+        # Direction: first port uses dir_list[0], rest are inputs (implied)
+        if idx < len(dir_list):
+            port_dir = dir_list[idx]
+        else:
+            port_dir = "inout" if "inout" in dir_list else "input"
+        if port_dir not in want_dirs:
+            continue
+        if simple_only:
+            # Allow bare name or name[range]
+            stripped = expr.strip()
+            if stripped != net_name and not re.match(
+                rf"^{re.escape(net_name)}\s*\[[^\]]+\]$", stripped
+            ):
+                continue
+        # Width: extract msb from [msb:lsb], or "c0" for scalar
+        width = "c0"
+        wm = re.search(r"\[\s*([^\]:\s]+)\s*:", expr)
+        if wm:
+            width = wm.group(1).strip()
+        rec = InstNet(
+            name=net_name, width=width, inst=inst, module=module,
+            direction=port_dir,
+        )
+        if net_name not in nets:
+            nets[net_name] = rec
+
+
 def _inst_driven_nets(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef],
@@ -327,6 +402,15 @@ def _inst_driven_nets(
             continue
         moddef = modules.get(module)
         if moddef is None:
+            # Gate primitive (or/buf/etc.): parse positional ports.
+            # Array instance resolution (u_or [31:0]) is handled in
+            # _resolve_instance_at.
+            if module in emacs._GATE_PRIMITIVES:
+                _primitive_nets(
+                    text, open_idx, module, inst,
+                    emacs._GATE_PRIMITIVES[module],
+                    nets, directions, simple_only,
+                )
             continue
         if directions is None:
             # the AUTOWIRE driver set: outputs and inouts — an interface
@@ -614,8 +698,11 @@ def _auto_wire_single(
         # an inout-driven net is commented To/From (verilog-mode), an
         # output-driven one From
         direction = "To/From" if net.direction == "inout" else "From"
+        # Primitives (or/buf/etc.) are not files, so no .v suffix
+        from . import emacs as _emacs
+        mod_suffix = "" if net.module in _emacs._GATE_PRIMITIVES else ".v"
         comments[name] = (
-            f"// {direction} {net.inst} of {net.module}.v"
+            f"// {direction} {net.inst} of {net.module}{mod_suffix}"
             + (", ..." if net.multi else "")
         )
     if not _wire_comment_enabled(full):

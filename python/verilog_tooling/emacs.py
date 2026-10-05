@@ -684,6 +684,22 @@ def _resolve_instance_at(text: str, open_idx: int) -> tuple[str, str]:
     """(module, instance) for the pin list opened at OPEN_IDX."""
     inst, j = _prev_word(text, open_idx)
     if not inst:
+        # Might be an array instance: u_or [31:0] (
+        # Skip back over [...] and try again
+        k = _skip_back(text, open_idx)
+        if k > 0 and text[k - 1] == "]":
+            # Find matching [
+            depth = 1
+            k -= 1
+            while k > 0 and depth > 0:
+                k -= 1
+                if text[k] == "]":
+                    depth += 1
+                elif text[k] == "[":
+                    depth -= 1
+            if depth == 0:
+                inst, j = _prev_word(text, k)
+    if not inst:
         raise ValueError("AUTOINST: cannot resolve instance name")
     group = _skip_group_back(text, j)
     if group is not None:
@@ -693,7 +709,16 @@ def _resolve_instance_at(text: str, open_idx: int) -> tuple[str, str]:
             j -= 1
         if j > 0 and text[j - 1] == "#":
             j -= 1
-    module, _ = _prev_word(text, j)
+    module, mj = _prev_word(text, j)
+    # Handle # <value> (e.g., buf #1 mybuf): module would be "1", skip it
+    if module and module[0].isdigit():
+        # Skip back over the number and #
+        k = mj
+        while k > 0 and text[k - 1] in " \t\n":
+            k -= 1
+        if k > 0 and text[k - 1] == "#":
+            k -= 1
+            module, _ = _prev_word(text, k)
     if not module:
         raise ValueError("AUTOINST: cannot resolve module name")
     return module, inst
