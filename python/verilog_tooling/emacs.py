@@ -793,15 +793,22 @@ def _connect(
     env: dict | None = None,
     inst_name: str = "",
     inst_vector: str = "t",
+    simplify: bool = True,
+    parent_signals: Mapping[str, str] | None = None,
 ) -> tuple[str, bool]:
     """(connection, templated) for PORT: identity ``port[bits]`` unless a
     template entry matches. Multidimensional ports get a verilog-mode
     ``port/*[packed].[unpacked]*/`` comment instead of an expanded range.
     With ``param_values`` (the instance's ``#(...)`` overrides), parameters
-    inside the port's width are substituted. ENV feeds @"..." templates."""
+    inside the port's width are substituted. ENV feeds @"..." templates.
+    PARENT_SIGNALS maps net name -> width in the instantiating module (for
+    verilog-auto-inst-vector:nil matching)."""
     width = port.width
     if width and param_values:
         width = _apply_param_values(width, param_values)
+    if width and simplify:
+        # verilog-auto-simplify-expressions (default t): fold constants
+        width = _fold_numeric_expr(width)
     # a multidim port's shape rides as a verilog-mode /*[D1][D2]*/ note —
     # in default connections AND as the []/[][] expansion in templates.
     # Dims get the instance's #(...) substitutions, redundant-paren
@@ -836,9 +843,17 @@ def _connect(
     # connection; their full shape is attached as a /*...*/ comment.
     if port.is_multidim:
         return f"{port.name}{packed_note}", False
-    # verilog-auto-inst-vector: t (default) always subscripts, nil never,
-    # unsigned only for unsigned ports
-    use_vector = inst_vector == "t" or (inst_vector == "unsigned" and not port.signed)
+    # verilog-auto-inst-vector: t (default) always subscripts, nil skips when
+    # the net is declared in the parent with matching width, unsigned only
+    # for unsigned ports
+    if inst_vector == "t":
+        use_vector = True
+    elif inst_vector == "unsigned":
+        use_vector = not port.signed
+    else:  # nil
+        # Skip subscript only if parent declares the net with matching width
+        parent_width = (parent_signals or {}).get(port.name)
+        use_vector = not (parent_width and parent_width == width)
     return port.name + (f"[{width}]" if width and use_vector else ""), False
 
 
@@ -869,6 +884,35 @@ def _inst_vector(lines: Sequence[str]) -> str:
     if m and m.group(1).lower() in ("nil", "unsigned"):
         return m.group(1).lower()
     return "t"
+
+
+def _local_bool(lines: Sequence[str], name: str, default: bool = False) -> bool:
+    """A boolean file-local variable: ``// {name}: nil`` -> False,
+    ``// {name}: t`` (or anything else) -> True, absent -> DEFAULT."""
+    import re
+    m = re.search(r"^\s*//\s*" + name + r"\s*:\s*(\w+)", "\n".join(lines), re.M)
+    if not m:
+        return default
+    return m.group(1).lower() != "nil"
+
+
+def _local_inst_sort(lines: Sequence[str]) -> bool:
+    """verilog-auto-inst-sort file-local (default nil): sort AUTOINST pins
+    within each direction group."""
+    return _local_bool(lines, "verilog-auto-inst-sort", False)
+
+
+def _local_inst_dot_name(lines: Sequence[str]) -> bool:
+    """verilog-auto-inst-dot-name file-local (default nil): use SystemVerilog
+    .name shorthand when port connects to same-named net."""
+    return _local_bool(lines, "verilog-auto-inst-dot-name", False)
+
+
+def _local_simplify_expressions(lines: Sequence[str]) -> bool:
+    """verilog-auto-simplify-expressions file-local (default t): when nil,
+    AUTO expansions keep range expressions verbatim instead of folding
+    constants (e.g. [2*2:1] stays, not [4:1])."""
+    return _local_bool(lines, "verilog-auto-simplify-expressions", True)
 
 
 def auto_inst(
@@ -903,6 +947,9 @@ def auto_inst(
     Every ``/*AUTO_LISP(...)*/`` before each instance is evaluated first and
     its bindings feed ``@"..."`` template expressions (Python subset).
     """
+    # file-local vars OR with CLI flags (either enables the behavior)
+    sort = sort or _local_inst_sort(lines)
+    dot_name = dot_name or _local_inst_dot_name(lines)
     text = "\n".join(lines)
     markers = _select_markers(lines, "AUTOINST", which)
     if star_expand:
@@ -964,6 +1011,7 @@ def auto_inst(
                 templates, sort, dot_name, column, param_value, is_star, star_save,
                 template_required=_inst_template_required(lines),
                 inst_vector=_inst_vector(lines),
+                simplify=_local_simplify_expressions(lines),
             )
         except ValueError as exc:
             # AUTO_LISP / @"..." template evaluation outside the Python
@@ -980,7 +1028,7 @@ def auto_inst(
 def _auto_inst_one(
     text, marker, open_idx, close_idx, moddef, module, inst,
     templates, sort, dot_name, column, param_value, is_star, star_save,
-    template_required=False, inst_vector="t",
+    template_required=False, inst_vector="t", simplify=True,
 ):
     lisp_env = read_auto_lisp(text, marker.offset)
     tpl = (
@@ -992,6 +1040,23 @@ def _auto_inst_one(
     )
     at_value = template_at_value(tpl, inst) if tpl else ""
     param_values = read_inst_param_values(text, open_idx) if param_value else {}
+    # Parent module signal declarations (for inst-vector:nil width matching):
+    # map net name -> width string from wire/reg/logic declarations
+    parent_signals: dict[str, str] = {}
+    if inst_vector == "nil":
+        # Find enclosing module: search backward for 'module' keyword
+        mod_start = text.rfind("module", 0, marker.offset)
+        if mod_start >= 0:
+            mod_text = text[mod_start:marker.offset]
+            for m in re.finditer(
+                r'^\s*(?:wire|reg|logic)\s*(?:signed\s*)?(?:\[([^\]]+)\]\s*)?(\w+)',
+                mod_text, re.M
+            ):
+                width, name = m.group(1), m.group(2)
+                # Handle comma-separated: wire [3:0] a, b;
+                # (simplified: only first name per decl for now)
+                if name not in parent_signals:
+                    parent_signals[name] = width or ""
     # commented-out pins before the marker are NOT connected: mask
     # comments (positions preserved) before collecting names
     pins = set(
@@ -1015,7 +1080,8 @@ def _auto_inst_one(
         for port in ports:
             conn, templated = _connect(
                 tpl, at_value, port, param_values, lisp_env, inst_name=inst,
-                inst_vector=inst_vector,
+                inst_vector=inst_vector, simplify=simplify,
+                parent_signals=parent_signals,
             )
             if template_required and not templated:
                 continue  # verilog-auto-inst-template-required: omit the port
