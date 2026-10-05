@@ -92,7 +92,7 @@ _PART_SELECT = re.compile(r"\b(\w+)\s*\[([^\]]*?)\s*([+|-])\s*:\s*([^\]]*?)\s*\]
 _GENERATE_LABEL = re.compile(r"\bbegin\s*:\s*(\w+)")
 _GENVAR_DECL = re.compile(r"\bgenvar\s+(.+?);")
 
-_MAX_LEN_FLOOR = 39  # automatic.vim s:autodef_max_len
+_MAX_LEN_FLOOR = 39  # automatic.vim s:autodef_max_len (AUTODEF only; AUTOWIRE uses dynamic)
 _TYPE_FIELD = 12  # 'wire '/'reg  ' padded to 12 columns (CalMargin(12, 5))
 
 # automatic.vim s:VlogKeyWords (port/data/calc/stru/other lists), extended
@@ -384,18 +384,29 @@ class SignalTable:
             sig.signed = True
             rest = re.sub(r"^signed\b\s*", "", rest)
         if rest.startswith("["):
-            # Match [msb:lsb] - msb/lsb cannot contain brackets or colon.
+            # Match packed dimensions: [31:0][7:0] etc.
+            # First dim sets width; additional dims go to packed_dims.
             # Non-greedy to avoid swallowing unpacked dims like [0:7] after name.
-            m = re.match(r"^\[([^:\]]+):", rest)  # msb of [msb:lsb]
-            if m:
-                sig.width = m.group(1).strip()
-                rest = re.sub(r"^\[[^:\]]+:[^\]]+\]\s*", "", rest)
-            else:
-                # [`DEFINE_RANGE] — the whole range rides in a macro
-                m = re.match(r"^\[([^\]]+)\]\s*", rest)
-                if m:
-                    sig.width = m.group(1).strip()
-                    rest = rest[m.end() :]
+            dims = []
+            while rest.startswith("["):
+                dm = re.match(r"^\[([^\]]+)\]", rest)
+                if not dm:
+                    break
+                dims.append(dm.group(1).strip())
+                rest = rest[dm.end():].lstrip()
+                # Only continue if next is another [ (packed), not a name
+                # Unpacked dims come AFTER the name, so stop here.
+                # But we don't know where name starts yet; the loop will
+                # naturally stop when rest doesn't start with [.
+                # However, for [31:0][7:0] data_out, after [31:0], rest is
+                # "[7:0] data_out" which starts with [, so we continue.
+                # After [7:0], rest is "data_out" which doesn't start with [.
+            if dims:
+                # First dim: extract msb for width (e.g., "31:0" -> "31")
+                m0 = re.match(r"^([^:]+):", dims[0])
+                sig.width = m0.group(1).strip() if m0 else dims[0]
+                if len(dims) > 1:
+                    sig.packed_dims = tuple(dims[1:])
         m = re.match(r"\w+", rest)
         if not m:
             return seq  # incomplete decl (nameless header line): skip
@@ -1755,7 +1766,9 @@ def div_signals(signals: SignalTable) -> Divided:
             # complete net declaration — a supplementary body wire would be
             # redundant, and kill's unregenerable waiver would shuttle it
             # out of the region on the next run
-            if not sig.has_defined and not re.search(r"\]\s*\[", sig.width):
+            # Multi-dim check: either width contains ][ (legacy) or packed_dims is set
+            is_multidim = bool(sig.packed_dims) or re.search(r"\]\s*\[", sig.width)
+            if not sig.has_defined and not is_multidim:
                 sig.name = name
                 div.io_wire.append(sig)
         elif sig.type == "freg":
@@ -1837,8 +1850,9 @@ def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = 
         head = sig.data_type
     elif sig.net_type and keyword.strip() == "wire":
         head = sig.net_type
-    # emacs: single space after type keyword, not padded to fixed width
-    line = head.strip() + " "
+    # Type keyword padded: CalMargin(12, len) -> 12 - len + 1 spaces,
+    # so the field is 13 wide (automatic.vim arithmetic)
+    line = head + " " * (12 - len(head) + 1)
     if sig.data_type:
         if keyword.strip() != "wire":
             line += sig.data_type
