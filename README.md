@@ -543,11 +543,13 @@ mm_cdma_parse u_parse (/*autoinst*/);
   ); */
   ```
 
-  `// verilog-auto-python-file: myfuncs.py` (file-local) loads top-level
-  definitions from a shared Python file instead — resolved against the
-  `-y`/vc library dirs and the buffer's own directory (`~`/`$VAR`
-  expanded, cached by mtime). Inline blocks override same-named file
-  definitions.
+  `// verilog-auto-python-file: "myfuncs.py"` (file-local) loads top-level
+  definitions from shared Python files instead — same quoted,
+  whitespace-separated syntax as `verilog-library-files`
+  (`("a.py" "b.py")`, later files override earlier ones).  Resolved
+  against the `-y`/vc library dirs and the buffer's own directory
+  (`~`/`$VAR` expanded, cached by mtime).  Inline blocks override
+  same-named file definitions.
 
 Without a template entry, a port connects to a same-named net (range
 included); if the net is not declared yet, AW/AD declare it for you.

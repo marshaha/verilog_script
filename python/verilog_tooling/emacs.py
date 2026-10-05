@@ -451,16 +451,24 @@ _PY_FILE_PATH_CACHE: "dict[tuple[str, tuple[str, ...]], str | None]" = {}
 _PY_MODULE_CACHE: dict[str, tuple[float, dict]] = {}
 
 
-def _local_python_file(lines: Sequence[str]) -> str | None:
-    """verilog-auto-python-file file-local: path to a Python file whose
+def _local_python_files(lines: Sequence[str]) -> list[str]:
+    """verilog-auto-python-file file-local: one or more Python files whose
     top-level definitions (functions) are available in @"..." template
-    expressions. Relative paths search the -y libdirs (and vc dirs);
-    ``~`` and ``$VAR`` are expanded."""
+    expressions.  Same syntax as verilog-library-files — quoted,
+    whitespace-separated, optionally parenthesised::
+
+        // verilog-auto-python-file: "myfuncs.py"
+        // verilog-auto-python-file:("a.py" "b.py")
+
+    Relative paths search the -y libdirs (and vc dirs); ``~`` and ``$VAR``
+    are expanded."""
+    from .libdirs import _quoted_tokens
+
     m = re.search(
-        r"^\s*//\s*verilog-auto-python-file\s*:\s*(\S+)",
+        r"^\s*//\s*verilog-auto-python-file\s*:\s*(.+)$",
         "\n".join(lines), re.M
     )
-    return m.group(1) if m else None
+    return _quoted_tokens(m.group(1)) if m else []
 
 
 def _resolve_python_file(filename: str) -> str | None:
@@ -514,14 +522,14 @@ def read_auto_python(text: str, upto: int) -> dict:
 
     Like AUTO_LISP, execution is sandboxed (no builtins).
 
-    If the file has a ``// verilog-auto-python-file: <path>`` file-local,
-    that Python file's top-level definitions are loaded first (searched via
-    -y libdirs and vc dirs, cached). Inline /*AUTO_PYTHON*/ blocks override.
+    With ``// verilog-auto-python-file: "a.py" "b.py"`` file-locals, those
+    files' top-level definitions are loaded first (searched via -y libdirs
+    and vc dirs, cached). Inline /*AUTO_PYTHON*/ blocks override.
     """
     env: dict = {}
-    # File-local Python file first (lower precedence than inline blocks)
-    py_file = _local_python_file(text.split("\n"))
-    if py_file:
+    # File-local Python file(s) first (lower precedence than inline blocks;
+    # later files override earlier ones)
+    for py_file in _local_python_files(text.split("\n")):
         resolved = _resolve_python_file(py_file)
         if resolved:
             try:

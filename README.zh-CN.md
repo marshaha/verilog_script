@@ -409,10 +409,11 @@ mm_cdma_parse u_parse (/*autoinst*/);
   ); */
   ```
 
-  `// verilog-auto-python-file: myfuncs.py`（文件局部变量）改为从共享
-  Python 文件加载顶层定义——相对路径在 `-y`/vc 库目录和 buffer 所在
-  目录中查找（支持 `~`/`$VAR` 展开，按 mtime 缓存）。同名时文件内联
-  块优先于文件定义。
+  `// verilog-auto-python-file: "myfuncs.py"`（文件局部变量）改为从共享
+  Python 文件加载顶层定义——语法与 `verilog-library-files` 一致：带引号、
+  空格分隔、可加括号（`("a.py" "b.py")`，多文件时后者覆盖前者）。
+  相对路径在 `-y`/vc 库目录和 buffer 所在目录中查找（支持 `~`/`$VAR`
+  展开，按 mtime 缓存）。同名时文件内联块优先于文件定义。
 
 没有模板条目的端口连接同名线网（带位宽）；如果线网还没声明，
 AW/AD 会帮你声明。支持 SystemVerilog `interface` 端口（含
