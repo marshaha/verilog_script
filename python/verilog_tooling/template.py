@@ -491,6 +491,12 @@ def expand_connection(
             scope.setdefault("vl-cell-name", vl_cell_name)
             scope.setdefault("vl-width", port_width or "")
             scope.setdefault("vl-dir", vl_dir)
+            # Python-friendly aliases (hyphens aren't valid identifiers):
+            # AUTO_PYTHON functions use vl_name, vl_width, etc.
+            scope.setdefault("vl_name", vl_name)
+            scope.setdefault("vl_cell_name", vl_cell_name)
+            scope.setdefault("vl_width", port_width or "")
+            scope.setdefault("vl_dir", vl_dir)
             try:
                 if code.lstrip().startswith("("):
                     value = _elisp_eval(_elisp_parse(_elisp_tokenize(code)), scope)

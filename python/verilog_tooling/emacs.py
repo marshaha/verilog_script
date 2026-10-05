@@ -443,6 +443,35 @@ def read_auto_lisp(text: str, upto: int) -> dict:
     return env
 
 
+def read_auto_python(text: str, upto: int) -> dict:
+    """Evaluate every ``/*AUTO_PYTHON(...)*/`` block before UPTO offset, in
+    buffer order. Returns a dict of defined names (typically functions).
+
+    This is the Python-native alternative to elisp ``AUTO_LISP(defun ...)``:
+    users write plain Python (def, assignments, imports of nothing) and the
+    defined names become callable from ``@"..."`` template expressions, e.g.::
+
+        /*AUTO_PYTHON(
+        def testfunc(sig, bits):
+            return "{" + sig + "[0" + bits + "]}"
+        )*/
+        /*my_mod AUTO_TEMPLATE (
+            .\\(.*\\)  (@"testfunc(vl_name, vl_width)"),
+        ); */
+
+    Like AUTO_LISP, execution is sandboxed (no builtins).
+    """
+    env: dict = {}
+    for m in re.finditer(r"/\*\s*AUTO_PYTHON\s*\(", text[:upto]):
+        expr, _ = _balanced(text[:upto], m.end() - 1)
+        try:
+            code = compile(expr, "<AUTO_PYTHON>", "exec")
+            exec(code, {"__builtins__": {}}, env)
+        except Exception as exc:  # noqa: BLE001 - report and continue
+            raise ValueError(f"AUTO_PYTHON evaluation failed: {expr!r}: {exc}") from exc
+    return env
+
+
 # ---------------------------------------------------------------------------
 # module parameter parsing (verilog-decls-get-gparams: `parameter`, not
 # `localparam`, in declaration order)
@@ -1031,6 +1060,9 @@ def _auto_inst_one(
     template_required=False, inst_vector="t", simplify=True,
 ):
     lisp_env = read_auto_lisp(text, marker.offset)
+    # AUTO_PYTHON user functions merge into the template expression scope
+    # (Python-native alternative to elisp defun)
+    lisp_env.update(read_auto_python(text, marker.offset))
     tpl = (
         template_for_module(
             list(templates), module, before_line=text.count("\n", 0, marker.offset)
@@ -1196,6 +1228,7 @@ def _auto_param_one(
     )
     at_value = template_at_value(tpl, inst) if tpl else ""
     lisp_env = read_auto_lisp(text, marker.offset)
+    lisp_env.update(read_auto_python(text, marker.offset))
     # commented-out pins before the marker are NOT connected: mask
     # comments (positions preserved) before collecting names
     pins = set(
