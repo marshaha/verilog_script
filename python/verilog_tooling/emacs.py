@@ -443,6 +443,59 @@ def read_auto_lisp(text: str, upto: int) -> dict:
     return env
 
 
+# Cache for verilog-auto-python-file resolution: filename -> path or None.
+# The libdirs are global (set via set_include_dirs), so filename alone keys it.
+_PY_FILE_PATH_CACHE: dict[str, str | None] = {}
+# Cache for loaded Python modules: path -> (mtime, env dict)
+_PY_MODULE_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _local_python_file(lines: Sequence[str]) -> str | None:
+    """verilog-auto-python-file file-local: path to a Python file whose
+    top-level definitions (functions) are available in @"..." template
+    expressions. Relative paths search the -y libdirs (and vc dirs)."""
+    m = re.search(
+        r"^\s*//\s*verilog-auto-python-file\s*:\s*(\S+)",
+        "\n".join(lines), re.M
+    )
+    return m.group(1) if m else None
+
+
+def _resolve_python_file(filename: str) -> str | None:
+    """Resolve FILENAME to an absolute path, searching include dirs.
+    Cached: filesystem is hit at most once per filename."""
+    if filename in _PY_FILE_PATH_CACHE:
+        return _PY_FILE_PATH_CACHE[filename]
+    import os
+    if os.path.isabs(filename) and os.path.isfile(filename):
+        _PY_FILE_PATH_CACHE[filename] = filename
+        return filename
+    from .libdirs import include_dirs
+    for d in include_dirs() or (".",):
+        p = os.path.normpath(os.path.join(d, filename))
+        if os.path.isfile(p):
+            _PY_FILE_PATH_CACHE[filename] = p
+            return p
+    _PY_FILE_PATH_CACHE[filename] = None
+    return None
+
+
+def _load_python_file(path: str) -> dict:
+    """Load a Python file's top-level definitions, cached by mtime.
+    Sandboxed (no builtins), like AUTO_PYTHON blocks."""
+    import os
+    mtime = os.path.getmtime(path)
+    cached = _PY_MODULE_CACHE.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    env: dict = {}
+    with open(path) as f:
+        code = compile(f.read(), path, "exec")
+    exec(code, {"__builtins__": {}}, env)
+    _PY_MODULE_CACHE[path] = (mtime, env)
+    return env
+
+
 def read_auto_python(text: str, upto: int) -> dict:
     """Evaluate every ``/*AUTO_PYTHON(...)*/`` block before UPTO offset, in
     buffer order. Returns a dict of defined names (typically functions).
@@ -460,8 +513,23 @@ def read_auto_python(text: str, upto: int) -> dict:
         ); */
 
     Like AUTO_LISP, execution is sandboxed (no builtins).
+
+    If the file has a ``// verilog-auto-python-file: <path>`` file-local,
+    that Python file's top-level definitions are loaded first (searched via
+    -y libdirs and vc dirs, cached). Inline /*AUTO_PYTHON*/ blocks override.
     """
     env: dict = {}
+    # File-local Python file first (lower precedence than inline blocks)
+    py_file = _local_python_file(text.split("\n"))
+    if py_file:
+        resolved = _resolve_python_file(py_file)
+        if resolved:
+            try:
+                env.update(_load_python_file(resolved))
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(
+                    f"AUTO_PYTHON file {py_file!r} load failed: {exc}"
+                ) from exc
     for m in re.finditer(r"/\*\s*AUTO_PYTHON\s*\(", text[:upto]):
         expr, _ = _balanced(text[:upto], m.end() - 1)
         try:
