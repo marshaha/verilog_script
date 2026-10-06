@@ -1540,7 +1540,12 @@ def get_assign_side(
     if re.search(r"\[.*\]", lhs):
         base, dims, elem = _classify_lhs(lhs, loop_ranges, loop_bounds, sym_hi)
         if elem is not None and ":" in elem:
-            hi_s, lo_s = elem.split(":")
+            parts = elem.split(":")
+            if len(parts) != 2:
+                # obfuscated/garbled source (e.g. VCS-encrypted models):
+                # not a range select — declare width unknown, never crash
+                return Side(base, None, dims=dims, elem_range=elem)
+            hi_s, lo_s = parts
             if re.fullmatch(r"-?\d+", hi_s) and re.fullmatch(r"-?\d+", lo_s):
                 hi, lo = int(hi_s), int(lo_s)
                 width = str(1 + hi - lo) if hi >= lo else None
