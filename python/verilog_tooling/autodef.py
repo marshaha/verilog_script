@@ -244,6 +244,40 @@ def _norm_marker(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip())
 
 
+def _ansi_header_lines(lines: Sequence[str]) -> frozenset[int]:
+    """Line indexes inside a module header's port list (``module`` keyword
+    line through the line carrying the matching ``);``).
+
+    Ports declared there are complete ANSI declarations: a supplementary
+    body ``wire``/``reg`` would be a duplicate declaration (IEEE 1800-2017
+    23.2.2.2; Verilator: "Duplicate declaration of signal"), so autodef must
+    not emit one for them.  Verilog-2001 body declarations (after the header
+    ``);``) are NOT marked: ``input clk;`` in the body plus a ``wire clk;``
+    companion is legal there, and the Vim semantics stay.  Parameter blocks
+    ``#(...)`` sit inside the span too; they hold no io declarations."""
+    from .comments import mask_comments
+
+    text = mask_comments("\n".join(lines))
+    text = _STRING_LITERAL.sub('""', text)
+    marks: set[int] = set()
+    depth = 0
+    in_header = False
+    for idx, line in enumerate(text.split("\n")):
+        if not in_header:
+            if re.match(r"^\s*(?:macro)?module\s", line):
+                in_header = True
+                depth = line.count("(") - line.count(")")
+                marks.add(idx)
+                if depth <= 0 and ";" in line:
+                    in_header = False
+            continue
+        marks.add(idx)
+        depth += line.count("(") - line.count(")")
+        if depth <= 0 and ";" in line:
+            in_header = False
+    return frozenset(marks)
+
+
 def _skip_section(lines: Sequence[str], i: int, start: str, end: str) -> int:
     """Skip a generated region from the START marker line through the first
     line containing END (both whitespace-tolerant)."""
@@ -366,6 +400,8 @@ class SignalTable:
         rest = re.sub(r"^\s*(input|output|inout)\s*", "", line)
         sig = Signal(width="c0", type="io_wire", io_dir=io_dir)
         if complete:
+            # the declaration itself is complete (AUTO region or ANSI
+            # module header): no body wire/reg may be emitted for the port
             sig.has_defined = True
         if rest.startswith("wire") and (len(rest) == 4 or not rest[4].isalnum()):
             sig.has_defined = True
@@ -562,8 +598,24 @@ class SignalTable:
             if close < 0:
                 break
             tail = tail[close + 1:]
-        if tail.lstrip().startswith(","):
-            for part in _split_top_commas(tail.lstrip()[1:]):
+        # an initialiser on the first name precedes the comma list
+        # (`reg [2:0] a_reg = IDLE, a_next;`): drop `= INIT` (up to the
+        # first top-level comma) so the later names still register —
+        # missing them re-declares them here (verilog-axi duplicates)
+        ltail = tail.lstrip()
+        if ltail.startswith("="):
+            depth, cut = 0, -1
+            for pos, ch in enumerate(ltail):
+                if ch in "([{":
+                    depth += 1
+                elif ch in ")]}":
+                    depth -= 1
+                elif ch == "," and depth == 0:
+                    cut = pos
+                    break
+            ltail = ltail[cut:] if cut >= 0 else ""
+        if ltail.startswith(","):
+            for part in _split_top_commas(ltail[1:]):
                 em = re.match(r"\s*(\w+)", part)
                 if em:
                     extras.append(em.group(1))
@@ -2738,6 +2790,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     i = 0
     n = len(lines)
     in_auto_region = False
+    header_lines = _ansi_header_lines(lines)
     while i < n:
         # track AUTO-generated regions (AUTOWIRE/AUTOREG/AUTOINPUT/
         # AUTOOUTPUT): an io port declared there is complete by construction
@@ -2790,8 +2843,20 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             # join only while the statement still has no name: a header port
             # (no ';' and no name yet) continues; a complete multi-name decl
             # line ending in ',' already carries its first name and must not
-            # eat its sibling declarations
-            while t.endswith("]") and ";" not in stmt and k + 1 < n:
+            # eat its sibling declarations.  Exception: a DATA declaration
+            # whose line ends with ',' is an unfinished multi-name decl
+            # (names continue on the next line: `wire a,\n b;`) — join it,
+            # or the continuation names stay unregistered and are
+            # re-declared (zipcpu duplicates); port lines keep the old
+            # behaviour (each header port line is its own declaration)
+            while (
+                t.endswith("]")
+                or (
+                    _DATA_LINE.match(stmt)
+                    and not _PORT_LINE.match(stmt)
+                    and _strip_inline_comment(stmt).rstrip().endswith(",")
+                )
+            ) and ";" not in stmt and k + 1 < n:
                 nxt = _strip_inline_comment(lines[k + 1])
                 nxt_t = nxt.strip().rstrip(",").rstrip()
                 if not nxt_t:
@@ -2801,6 +2866,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
                 if (
                     re.match(r"^\s*\)", nxt)
                     or re.match(r"^\s*module\b", nxt)
+                    or re.match(r"^\s*`", nxt)  # preprocessor line: never join over it
                     or _BLOCK_BREAK.search(nxt)
                     or _AUTO_CMD.search(nxt)
                     or _DATA_LINE.match(nxt)
@@ -2811,13 +2877,20 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
                 stmt += " " + lines[k]
             stmt = _strip_inline_comment(stmt)
             if _PORT_LINE.match(stmt):
-                io_seq = signals.extend_io_from_line(stmt, io_seq, complete=in_auto_region)
+                io_seq = signals.extend_io_from_line(
+                    stmt, io_seq, complete=in_auto_region or i in header_lines
+                )
             elif _DATA_LINE.match(stmt) or _is_typedef_decl(stmt):
                 if ";" in _strip_inline_comment(lines[k]):
                     usr_line = lines[k]  # the declaration ends on this line
+                    anchor = k
                 else:
+                    # partial join (statement still unterminated): anchor at
+                    # the FIRST line so emission never stamps the first
+                    # line's text over a later continuation line
                     usr_line = line
-                usr_seq = signals.extend_usrdef_from_line(stmt, usr_seq, usr_line, k, orphan_idxs)
+                    anchor = i
+                usr_seq = signals.extend_usrdef_from_line(stmt, usr_seq, usr_line, anchor, orphan_idxs)
             i = k + 1
             continue
         elif _ALWAYS_OPEN.match(line):

@@ -220,14 +220,10 @@ assign wsel = din[7:0];
 endmodule
 """.splitlines()
     out = auto_def_t(lines)
-    # io section: every port without explicit wire/reg, in port (seq) order
-    assert out[6:10] == [
-        "// Define io wire here",
-        decl("wire ", "", "clk"),
-        decl("wire ", "", "rst_n"),
-        decl("wire ", "7", "din"),
-    ]
-    assert out[10:23] == [
+    # ANSI-header ports are complete declarations (IEEE 1800-2017
+    # 23.2.2.2): no io companion rows at all
+    assert out[6:7] == ["// Define io wire here"]
+    assert out[7:20] == [
         "// Define flip-flop registers here",
         decl("reg  ", "7", "cnt"),
         decl("reg  ", "7", "hi"),
@@ -243,7 +239,7 @@ endmodule
         "// Unresolved define signals here",
         "// End of automatic define",
     ]
-    assert out[23:] == lines[6:]
+    assert out[20:] == lines[6:]
 
 
 def test_io_wire_generation_seq_order_and_reg_promotion():
@@ -261,23 +257,25 @@ end
 endmodule
 """.splitlines()
     out = auto_def_t(lines)
-    assert out[7:12] == [
+    # every port sits in the ANSI header: no companion wire/reg is emitted
+    # for any of them (including 'done', whose reg-typed declaration is the
+    # header author's business)
+    assert out[7:9] == [
         "// Define io wire here",
-        decl("wire ", "3", "a"),
-        decl("wire ", "", "b"),
-        decl("reg  ", "", "done"),
         "// Define flip-flop registers here",
     ]
-    # the input wire with explicit 'wire' is NOT regenerated
-    assert not any(line.rstrip().endswith("clk;") for line in out[6:11])
+    # no generated line redeclares a header port
+    assert not any(line.rstrip().endswith(" clk;") for line in out)
+    assert not any(line.rstrip().endswith(" done;") for line in out)
     # the port lines themselves stay verbatim
     assert out[:6] == lines[:6]
 
 
 def test_undriven_output_declared_reg():
-    """An output with no driver is declared reg (matching -a/AUTOREG): the
-    user will drive it from an always block next.  assign-driven and
-    instance-driven outputs plus inputs/inouts stay wire."""
+    """Header-declared ports (driven or not) get no companion declaration:
+    the ANSI header's `output done` already IS the declaration, so the
+    AUTOREG-style `reg done;` completion is not emitted (it would be a
+    duplicate declaration).  Driven-ness classification is unchanged."""
     lines = """\
 module m (
     input        clk,
@@ -298,15 +296,7 @@ endmodule
 """.splitlines()
     out = auto_def_t(lines, sub_mods())
     region = out[out.index("// Define io wire here") : out.index("// Define flip-flop registers here")]
-    assert region == [
-        "// Define io wire here",
-        decl("wire ", "", "clk"),
-        decl("wire ", "3", "a"),
-        decl("reg  ", "", "done"),    # undriven output -> reg
-        decl("wire ", "7", "q"),      # assign-driven output stays wire
-        decl("wire ", "3", "sub_o"),  # instance-driven output stays wire
-        decl("wire ", "", "pad"),     # inout stays wire
-    ]
+    assert region == ["// Define io wire here"]
     # idempotent: the regenerated reg is re-derived, not duplicated
     assert auto_def_t(out, sub_mods()) == out
 
@@ -326,13 +316,9 @@ assign z = y;
 endmodule
 """.splitlines()
     out = auto_def_t(lines)
-    # ports clk/din have no explicit wire/reg: regenerated as io wires
-    assert out[5:8] == [
-        "// Define io wire here",
-        decl("wire ", "", "clk"),
-        decl("wire ", "7", "din"),
-    ]
-    assert out[8:18] == [
+    # clk/din are ANSI-header ports: no io companions
+    assert out[5:6] == ["// Define io wire here"]
+    assert out[6:16] == [
         "// Define flip-flop registers here",
         decl("reg  ", "7", "y"),
         "// Define combination registers here",
@@ -344,7 +330,7 @@ endmodule
         "// Unresolved define signals here",
         "// End of automatic define",
     ]
-    assert out[18:] == lines[5:]
+    assert out[16:] == lines[5:]
 
 
 def test_usrdef_lines_untouched():
@@ -384,8 +370,6 @@ endmodule
     region = out[out.index("// Define io wire here") : out.index("// End of automatic define")]
     assert region == [
         "// Define io wire here",
-        decl("wire ", "", "clk"),
-        decl("wire ", "7", "din"),
         "// Define flip-flop registers here",
         "// Define combination registers here",
         "// Define wires here",
@@ -1170,9 +1154,10 @@ end
 endmodule
 """
     out = "\n".join(_adt(text))
-    # signed port keeps its width AND its signedness; 'signed' is never an
-    # unresolved signal
-    assert "signed [7:0]" in out and " s;" in out
+    # signed port is a complete header declaration: recognised (its name
+    # is no unresolved signal) but no companion body declaration is emitted
+    assert "input signed [7:0] s" in out
+    assert "unresolved s;" not in out
     assert "unresolved signed;" not in out
     # the signed usrdef wire registers (not unresolved) and stays verbatim
     assert "wire signed [3:0] a;" in out
@@ -1233,6 +1218,55 @@ endmodule
     assert "unresolved c;" not in out
 
 
+def test_usrdef_multiname_initializer_and_continuation_names_register():
+    # verilog-axi shape: `reg [2:0] state_reg = STATE_IDLE, state_next;` —
+    # the second name used to be re-declared (Verilator: Duplicate)
+    text = """\
+module t(input clk);
+/*autodef*/
+reg [2:0] state_reg = 3'b0, state_next;
+always @(posedge clk) state_next <= state_reg;
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    assert out.count("state_next;") == 1  # only the hand-written decl
+    assert auto_def_t(out.splitlines()) == out.splitlines()
+    # zipcpu shape: multi-name declaration wraps to the next line
+    text = """\
+module t(input clk);
+/*autodef*/
+wire first_sel,
+     second_sel;
+assign second_sel = first_sel & clk;
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    region = out.split("/*autodef*/")[1].split("// End of automatic define")[0]
+    assert "first_sel;" not in region and "second_sel;" not in region
+    assert auto_def_t(out.splitlines()) == out.splitlines()
+
+
+def test_multiline_param_list_with_trailing_comments_not_duplicated():
+    # zipcpu shape: multi-name localparam whose continuation lines carry
+    # trailing comments (`WATCHDOG = 8'h1, // note`): the join must run
+    # past the comment to the ';' (else the decl's first line was stamped
+    # over the continuation line, duplicating it)
+    text = """\
+module t(input clk);
+/*autodef*/
+localparam [7:0] INTCTRL = 8'h0,
+                 WATCHDOG = 8'h1, // reset source
+                 BUSWD = 8'h2;
+assign hit = (sel == BUSWD);
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    assert out.count("INTCTRL") == 1 or "localparam [7:0] INTCTRL" in out
+    assert out.count("localparam [7:0] INTCTRL") == 1
+    assert "WATCHDOG = 8'h1" in out  # continuation line survives verbatim
+    assert auto_def_t(out.splitlines()) == out.splitlines()
+
+
 def test_link_no_width_source_defaults_to_scalar():
     # assign w = x & y; with x,y undeclared: no width source, w is still
     # declared as a 1-bit wire (per "no width written => 1 bit").
@@ -1248,6 +1282,11 @@ endmodule
 
 
 def test_ansi_single_line_header_io_wire():
+    # ANSI-header ports carry their complete declaration in the header
+    # (direction + type); repeating `wire clk;` in the body is a duplicate
+    # declaration (IEEE 1800-2017 23.2.2.2, Verilator-verified) — no
+    # companion rows for any of them (user-directed 2026-10-07, inverting
+    # automatic.vim's model; mor1kx/vaxi/zipcpu-scale real-world evidence)
     text = """\
 module t(input clk, input [3:0] d, output [3:0] q);
 /*autodef*/
@@ -1255,9 +1294,47 @@ assign q = d;
 endmodule
 """
     out = "\n".join(_adt(text))
-    assert "wire                                    clk;" in out
-    assert "wire         [3:0]                      d;" in out
-    assert "wire         [3:0]                      q;" in out
+    assert "wire                                    clk;" not in out
+    assert "wire         [3:0]                      d;" not in out
+    assert "wire         [3:0]                      q;" not in out
+
+
+def test_ansi_header_with_params_gets_no_companions_but_body_decl_does():
+    # real-world shape (mor1kx): parameter block + multi-line ANSI header
+    # — none of those ports may be redeclared in the body
+    text = """\
+module core #(
+    parameter W = 4
+) (
+    input clk,
+    output [W-1:0] q
+);
+/*autodef*/
+assign q = 4'b0;
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    io_region = out.split("/*autodef*/")[1].split("// End of automatic define")[0]
+    assert "wire                                    clk;" not in io_region
+    assert "clk;" not in io_region and "q;" not in io_region
+
+
+def test_verilog2001_body_io_decl_keeps_vim_companion():
+    # a bare `input clk;` in the BODY of a Verilog-2001 module is completed
+    # by the companion (`input clk;` + `wire clk;` is legal Verilog-2001 —
+    # only the ANSI-header redeclare is an error)
+    text = """\
+module t(a, y);
+input a;
+output y;
+/*autodef*/
+assign y = a;
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    assert "wire                                    a;" in out
+    assert "wire                                    y;" in out
+    assert auto_def_t(out.splitlines()) == out.splitlines()
 
 
 # ---------------------------------------------------------------------------
