@@ -407,10 +407,55 @@ class SignalTable:
                 sig.width = m0.group(1).strip() if m0 else dims[0]
                 if len(dims) > 1:
                     sig.packed_dims = tuple(dims[1:])
-        m = re.match(r"\w+", rest)
-        if not m:
+        # A user-defined type may precede the port name (``output
+        # mst_req_t [Cfg.N-1:0] name``), packed dims between type and
+        # name — same shape verilog-mode / inst._UDT_HEAD_RE reads.
+        # Without this the TYPE word was registered as the port name and
+        # the real port stayed "undeclared" (verilog-axi axi_xbar.sv ->
+        # AUTOWIRE duplicated its own module output port).
+        from .inst import _TYPEDEF_REGEXP as _inst_tre
+        from .inst import _UDT_HEAD_RE
+
+        names: list[str] = []
+        entries = _split_top_commas(rest)
+        for idx, entry in enumerate(entries):
+            entry = entry.strip().strip(";").strip()
+            if not entry:
+                continue
+            if idx == 0:
+                um = _UDT_HEAD_RE.match(entry)
+                if um and um.group(1) not in ("enum", "struct", "union"):
+                    sig.data_type = um.group(1)
+                    names.append(um.group(3))
+                    for dm in re.finditer(r"\[([^\]]*)\]", um.group(2) or ""):
+                        d = dm.group(1).strip()
+                        if sig.width == "c0":
+                            m0 = re.match(r"^([^:]+):", d)
+                            sig.width = m0.group(1).strip() if m0 else d
+                        else:
+                            sig.packed_dims = sig.packed_dims + (d,)
+                    continue
+                wm = re.match(r"\w+", entry)
+                if not wm:
+                    return seq  # incomplete decl (nameless header line)
+                first = wm.group(0)
+                if _inst_tre is not None and _inst_tre.search(first):
+                    nm2 = re.match(r"\s*(\w+)", entry[wm.end():])
+                    if not nm2:
+                        return seq
+                    sig.data_type = first
+                    names.append(nm2.group(1))
+                else:
+                    names.append(first)
+            else:
+                # later entries of a multi-name declare line share the
+                # direction/type of the first; register each bare name
+                wm = re.match(r"(\w+)", entry)
+                if wm:
+                    names.append(wm.group(1))
+        if not names:
             return seq  # incomplete decl (nameless header line): skip
-        name = m.group(0)
+        name = names[0]
         sig.seq = f"{seq:05d}"  # s:Seq2String pads to 5 chars
         existing = self.signals.get(name)
         if existing is not None and existing.type == "usrdef":
@@ -421,7 +466,18 @@ class SignalTable:
             sig.has_defined = True
             sig.line = existing.line
         self.signals[name] = sig
-        return seq + 1
+        seq += 1
+        for extra in names[1:]:
+            esig = Signal(
+                width=sig.width, type=sig.type, io_dir=io_dir,
+                data_type=sig.data_type, net_type=sig.net_type,
+                signed=sig.signed, packed_dims=sig.packed_dims,
+            )
+            esig.has_defined = sig.has_defined
+            esig.seq = f"{seq:05d}"
+            self.signals.setdefault(extra, esig)
+            seq += 1
+        return seq
 
     def extend_usrdef_from_line(
         self, line: str, seq: int, raw: str | None = None, line_idx: int = -1,
@@ -477,6 +533,40 @@ class SignalTable:
             if not m2:
                 return seq
             name = m2.group(1)
+            name_end = m.end() + m2.end()
+        elif (um := _inst_mod._UDT_HEAD_RE.match(rest)) and um.group(1) not in (
+            "enum",
+            "struct",
+            "union",
+        ):
+            # a typedef'd declaration with no verilog-typedef-regexp
+            # local in scope (`axi_resp_t slv_resp_cut;`): the FIRST word
+            # is the type even without the explicit regexp — without
+            # this the type name was registered and the real signal
+            # stayed "undeclared" (axi_demux.sv AUTOWIRE duplicates).
+            name = um.group(3)
+            name_end = um.end()
+        else:
+            name_end = m.end()
+        # Multi-name declarations (`logic a, b;`): every name is declared
+        # by this line — registering only the first left the others to be
+        # re-declared by AUTOWIRE/AUTODEF (pulp axi_demux.sv duplicates).
+        extras: list[str] = []
+        tail = rest[name_end:]
+        # skip unpacked dims of the first name (`name [0:3], other;`)
+        while True:
+            dm = re.match(r"\s*\[", tail)
+            if not dm:
+                break
+            close = tail.find("]", dm.end())
+            if close < 0:
+                break
+            tail = tail[close + 1:]
+        if tail.lstrip().startswith(","):
+            for part in _split_top_commas(tail.lstrip()[1:]):
+                em = re.match(r"\s*(\w+)", part)
+                if em:
+                    extras.append(em.group(1))
         existing = self.signals.get(name)
         if existing is not None:
             # a hand-written wire/reg declaration for an io port: mark the io
@@ -486,7 +576,17 @@ class SignalTable:
             return seq
         sig.seq = f"{seq:05d}"
         self.signals[name] = sig
-        return seq + 1
+        seq += 1
+        for extra in extras:
+            if extra in self.signals:
+                continue
+            esig = Signal(width=sig.width, type="usrdef", line=sig.line)
+            esig.seq = f"{seq:05d}"
+            # line_idx stays -1: the physical line is printed once via
+            # the first name's record; extras exist for name exclusion.
+            self.signals[extra] = esig
+            seq += 1
+        return seq
 
     def _update_usrdef_width(self, sig: Signal, new_msb: str) -> None:
         """Grow a hand-written declaration whose width is provably STALE:
@@ -879,6 +979,23 @@ def _wider(new_msb: str, old_msb: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # buffer pre-pass helpers (s:GetAllDefs / s:GetAllParas / s:GetAllSignals)
+
+
+def _split_top_commas(text: str) -> list[str]:
+    """Split TEXT at commas not nested inside (), [] or {}."""
+    parts, depth, cur = [], 0, []
+    for ch in text:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append("".join(cur))
+    return parts
 
 
 def get_all_defs(lines: Sequence[str]) -> set[str]:
@@ -2496,15 +2613,55 @@ def _structure_names(
     return names
 
 
+_UDT_DECL_LINE = re.compile(
+    r"^\s*(?P<type>[A-Za-z_][\w]*(?:::[A-Za-z_]\w*)*)\s+"
+    r"(?:\[[^\]]*\]\s*)?"
+    r"[A-Za-z_]\w*(?:\s*\[[^\]]*\])?"
+    r"(?:\s*,\s*[A-Za-z_]\w*(?:\s*\[[^\]]*\])?)*"
+    r"\s*(?:=.*)?;\s*$"
+)
+
+_UDT_SHAPE_KEYWORDS = frozenset({
+    "always", "always_comb", "always_ff", "always_latch", "assign",
+    "automatic", "begin", "bit", "byte", "case", "clocking", "const",
+    "else", "end", "endcase", "endclass", "endmodule", "enum", "for",
+    "function", "generate", "genvar", "if", "import", "initial",
+    "input", "inout", "integer", "interface", "localparam", "logic",
+    "modport", "module", "output", "package", "parameter", "property",
+    "reg", "return", "shortint", "shortreal", "signed", "static",
+    "string", "struct", "task", "time", "typedef", "union", "unsigned",
+    "var", "void", "while", "wire",
+})
+
+
+def is_udt_decl_line(line: str) -> bool:
+    """True when LINE is a ``<type-name> <var> [, <var>]*;`` declaration.
+
+    With no ``verilog-typedef-regexp`` in the buffer, recognition is
+    structural: the first word is a type-position identifier and the
+    line is a plain name list closed by ``;``.  Statements that are not
+    declarations are kept out by the keyword blocklist, the no-parens
+    rule (rules out instantiations and calls) and the ``;`` terminator.
+    """
+    m = _UDT_DECL_LINE.match(line)
+    if not m or "(" in line or ")" in line:
+        return False
+    return m.group("type").rsplit("::", 1)[-1] not in _UDT_SHAPE_KEYWORDS
+
+
 def _is_typedef_decl(line: str) -> bool:
     """A ``reqcmd_t BReq;``-style declaration: the first word matches the
-    buffer's verilog-typedef-regexp (a TYPE); the second word is the signal."""
+    buffer's verilog-typedef-regexp (a TYPE); the second word is the signal.
+
+    With no typedef regexp configured, fall back to the structural
+    shape check of :func:`is_udt_decl_line`."""
     from .inst import _TYPEDEF_REGEXP
 
-    if _TYPEDEF_REGEXP is None:
-        return False
-    m = re.match(r"^\s*(\w+)\s+\w+", line)
-    return bool(m and _TYPEDEF_REGEXP.search(m.group(1)))
+    if _TYPEDEF_REGEXP is not None:
+        m = re.match(r"^\s*(\w+)\s+\w+", line)
+        if m and _TYPEDEF_REGEXP.search(m.group(1)):
+            return True
+    return is_udt_decl_line(line)
 
 
 def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = None) -> list[str]:
@@ -2642,7 +2799,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
                     stmt += " "
                     continue
                 if (
-                    re.match(r"^\s*\)\s*;", nxt)
+                    re.match(r"^\s*\)", nxt)
                     or re.match(r"^\s*module\b", nxt)
                     or _BLOCK_BREAK.search(nxt)
                     or _AUTO_CMD.search(nxt)
@@ -2655,7 +2812,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             stmt = _strip_inline_comment(stmt)
             if _PORT_LINE.match(stmt):
                 io_seq = signals.extend_io_from_line(stmt, io_seq, complete=in_auto_region)
-            elif _DATA_LINE.match(stmt):
+            elif _DATA_LINE.match(stmt) or _is_typedef_decl(stmt):
                 if ";" in _strip_inline_comment(lines[k]):
                     usr_line = lines[k]  # the declaration ends on this line
                 else:

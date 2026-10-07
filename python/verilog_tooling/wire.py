@@ -508,13 +508,11 @@ def _inst_driven_nets(
 def _is_typedef_decl(line: str) -> bool:
     """A ``reqcmd_t BReq;``-style declaration: first word matches the
     buffer's verilog-typedef-regexp, so it is a TYPE, and the second word is
-    the declared signal name."""
-    from .inst import _TYPEDEF_REGEXP
+    the declared signal name.  With no regexp configured, falls back to
+    the structural check in :func:`verilog_tooling.autodef._is_typedef_decl`."""
+    from .autodef import _is_typedef_decl as _impl
 
-    if _TYPEDEF_REGEXP is None:
-        return False
-    m = re.match(r"^\s*(\w+)\s+\w+", line)
-    return bool(m and _TYPEDEF_REGEXP.search(m.group(1)))
+    return _impl(line)
 
 
 def _module_tables(lines: Sequence[str]) -> tuple[SignalTable, SignalTable, set[str]]:

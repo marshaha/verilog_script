@@ -148,3 +148,45 @@ def test_adf_keeps_declaration_initializers():
         "reg [7:0] q = 8'hFF; // reset",
     ]
     assert auto_define_format(lines) == lines
+
+
+def test_pulp_udt_declared_driver_not_duplicated(tmp_path):
+    """pulp-platform/axi (axi_demux.sv): UDT variables driven by typed
+    ports must keep their ORIGINAL declaration.  Before the fix the
+    declared-but-invisible UDT names were re-emitted as bare
+    `wire`-style declarations or flagged unresolved, duplicating the
+    user's declarations."""
+    (tmp_path / "cc_spill_register.v").write_text(
+        "module cc_spill_register\n"
+        "  #(parameter type data_t = logic, parameter bit Bypass = 1'b0)\n"
+        "  (\n"
+        "   input logic clk_i,\n"
+        "   output data_t data_o\n"
+        "  );\n"
+        "endmodule\n"
+    )
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top;\n"
+        "  select_t slv_aw_select;\n"
+        "  cc_spill_register #(\n"
+        "    .data_t ( select_t ),\n"
+        "    .Bypass ( 1'b0 )\n"
+        "  ) i_aw_spill (\n"
+        "    /*AUTOINST*/\n"
+        "    .clk_i  ( clk_i ),\n"
+        "    .data_o ( slv_aw_select )\n"
+        "  );\n"
+        "  /*AUTOWIRE*/\n"
+        "  /*autodef*/\n"
+        "endmodule\n"
+    )
+    from verilog_tooling import inst
+
+    out_file = tmp_path / "out.v"
+    inst.main(["aall", "-i", str(top), "-o", str(out_file),
+               "--ref_file", str(top), "-y", str(tmp_path)])
+    out = out_file.read_text()
+    assert "slv_aw_select;  \n" not in out        # no bare re-declaration
+    assert out.count("select_t slv_aw_select") == 1
+    assert "unresolved: slv_aw_select" not in out
