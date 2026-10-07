@@ -608,6 +608,7 @@ def parse_module_ports(
     portlist_closed = False
     _hdr_depth = 0
     _param_next = False
+    decl_open = False  # the previous declaration ended mid-list (trailing ,)
     mod_name = name
     in_block_comment = False
     n_lines = len(lines)
@@ -705,6 +706,36 @@ def parse_module_ports(
             if ports_here:
                 entries.extend(ports_here)
                 have_port = True
+                # a join (j > idx) already swallowed the following lines;
+                # only an in-place declaration can leave the list open
+                decl_open = j == idx and _strip_lc(joined).rstrip().endswith(",")
+            continue
+        if ");" in line:
+            decl_open = False  # the wrapped port list has closed
+        mcont = re.match(r"^\s*([A-Za-z_][\w$]*(?:\s*,\s*[A-Za-z_][\w$]*)*)\s*,?\s*$", line)
+        if (
+            mcont
+            and decl_open
+            and entries
+            and isinstance(entries[-1], Port)
+            and _PORT_KEYWORD.match(line) is None
+        ):
+            # names continuing a multi-name declaration wrapped across
+            # lines (`output wire a, b,` then a bare `c,` line): they
+            # share the declaration's direction and width
+            proto = entries[-1]
+            for nm in mcont.group(1).split(","):
+                nm = nm.strip()
+                if nm:
+                    entries.append(
+                        Port(
+                            name=nm,
+                            direction=proto.direction,
+                            width=proto.width,
+                            packed=proto.packed,
+                        )
+                    )
+            decl_open = _strip_lc(line).rstrip().endswith(",")
             continue
         if interfaces:
             im = _IFACE_PORT_DECL.match(line)

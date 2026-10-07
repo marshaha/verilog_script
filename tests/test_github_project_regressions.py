@@ -452,3 +452,21 @@ def test_aiu1_multi_connection_line_seen_not_duplicated(tmp_path):
     out = out_file.read_text()
     assert out.count(".b(") == 1
     assert "INST_NEW" not in out
+
+
+def test_parse_wrapped_multi_name_declaration(tmp_path):
+    """Issue found on zipcpu zipwb (2026-10-07): a multi-name declaration
+    wrapped across lines (`output wire a, b,` then a bare `c,` line) lost
+    the wrapped name, so the updater INST_DEL'd the live connection."""
+    modfile = tmp_path / "sub.v"
+    modfile.write_text(
+        "module sub (\n"
+        "  output wire a_out, b_out,\n"
+        "                c_out,\n"
+        "  input wire d_in\n"
+        ");\nendmodule\n"
+    )
+    from verilog_tooling import inst
+
+    md = inst.parse_module_ports(modfile.read_text().splitlines(), name="sub")
+    assert [p.name for p in md.ports] == ["a_out", "b_out", "c_out", "d_in"]
