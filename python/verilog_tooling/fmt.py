@@ -113,6 +113,23 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str, str] | None:
     cm = re.search(r"//.*", line)
     comment = cm.group(0) if cm else ""
     body = re.sub(r"//.*", "", line)
+    # A connection value that continues on following lines (net paren
+    # depth ends POSITIVE, e.g. a multi-line ?: in a #(...) parameter
+    # override) is not a complete pin connection: emitting
+    # `.NAME (value-so-far),` truncates it and strands the remaining
+    # lines as syntax errors.  Leave the line untouched.  Negative
+    # depth is fine: the line closes an enclosing group, as in the
+    # parameter override terminator `.W(16))`.
+    depth_src = re.sub(r'"(?:[^"\\]|\\.)*"', '""', body)
+    depth_src = re.sub(r"/\*.*?\*/", "", depth_src)
+    depth = 0
+    for ch in depth_src:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+    if depth > 0:
+        return None
     body = re.sub(r"(^\s*\.\w+)\(", r"\1 (", body)
     pm = re.match(r"^\s*\.\S*", body)
     port = re.sub(r"[\s.]", "", pm.group(0))

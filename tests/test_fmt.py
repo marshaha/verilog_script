@@ -83,6 +83,27 @@ def test_aif_keeps_double_paren_terminator():
     assert auto_inst_format(out) == out
 
 
+def test_aif_leaves_multiline_param_value_untouched():
+    # mor1kx (rtl/verilog/mor1kx_bus_if_wb32.v / mor1kx.v templates): a
+    # parameter override value spanning lines — `(FEATURE!= "NONE")?`
+    # with the branches on following lines — is not a complete pin
+    # connection on its first line.  Splitting there emitted
+    # `.BURST_LENGTH ((FEATURE...)... ),` and stranded the continuation
+    # lines, producing spurious verilator syntax errors.
+    lines = [
+        "sub #(",
+        '        .BURST_LENGTH ((FEATURE_CACHE != "NONE") ?',
+        "                       ((FEATURE_W == 4) ? 4 : 1)",
+        "                       : 1))",
+        "   ) u_sub (/*autoinst*/);",
+    ]
+    out = auto_inst_format(lines)
+    assert out[1] == '        .BURST_LENGTH ((FEATURE_CACHE != "NONE") ?'
+    assert out[2] == "                       ((FEATURE_W == 4) ? 4 : 1)"
+    assert out[3] == "                       : 1))"
+    assert auto_inst_format(out) == out
+
+
 def test_aif_verilog_buffer_method():
     buf = VerilogBuffer(["small u_s (/*autoinst*/ .clk(clk));"])
     assert buf.auto_inst_format().lines[1] == CLK_LAST
