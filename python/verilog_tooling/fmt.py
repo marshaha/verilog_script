@@ -346,8 +346,41 @@ def _auto_define_format(self: VerilogBuffer) -> VerilogBuffer:
         port_comment = cm.group(0) if cm else ""
         width = _extract_width(line)
         stripped = re.sub(r"^\s*", "", line)
-        nm = re.search(r"(?:\s+|\]\s*)[A-Za-z].*;", stripped)
-        name = nm.group(0) if nm else ""
+        # The name follows the keyword, an optional ``signed`` and the
+        # packed range groups.  Anchor there: the old
+        # ``(?:\s+|\]\s*)[A-Za-z].*;`` search matched the first identifier
+        # INSIDE a width expression (``[(CL_S_COUNT > 0? CL_S_COUNT-1:
+        # 0):0]`` from verilog-axi) and emitted it as the name.
+        rest = stripped[len(port_type):]
+        while True:
+            rest = rest.lstrip()
+            if re.match(r"signed\b", rest):
+                rest = rest[len("signed"):]
+                continue
+            if rest.startswith("["):
+                depth = 0
+                k = 0
+                closed = False
+                while k < len(rest):
+                    if rest[k] == "[":
+                        depth += 1
+                    elif rest[k] == "]":
+                        depth -= 1
+                        if depth == 0:
+                            closed = True
+                            k += 1
+                            break
+                    k += 1
+                if not closed:  # unbalanced range: not a plain decl
+                    rest = ""
+                    break
+                rest = rest[k:]
+                continue
+            break
+        if not re.match(r"[A-Za-z_]", rest):
+            out.append(line)
+            continue
+        name = rest.split(";", 1)[0]
         name = re.sub(r"//.*$", "", name)
         name = re.sub(r"\s", "", name)
         name = re.sub(r"^]", "", name)

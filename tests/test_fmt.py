@@ -174,6 +174,21 @@ def test_adf_verilog_buffer_method():
     assert buf.auto_define_format().lines == ["wire" + " " * 27 + "tmp;"]
 
 
+def test_adf_name_after_expression_width():
+    # verilog-axi axi_interconnect.v: the name search must be anchored
+    # after the packed range — an unanchored `(?:\s+|\]\s*)[A-Za-z]`
+    # search matched `CL_S_COUNT-1` INSIDE the ternary width expression
+    # and emitted it as the declared name, breaking the syntax.
+    line = "wire [(CL_S_COUNT > 0? CL_S_COUNT-1: 0):0] s_select;"
+    out = auto_define_format([line])
+    assert len(out) == 1
+    assert out[0].endswith("s_select;")
+    assert "CL_S_COUNT-1:0):0]s_select" not in out[0]
+    # multi-name declarations still keep every name
+    out = auto_define_format(["wire [3:0] a, b;"])
+    assert out[0].endswith("a,b;")
+
+
 # ---------------------------------------------------------------------------
 # auto_define_len
 
