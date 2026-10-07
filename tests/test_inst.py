@@ -1108,3 +1108,33 @@ endmodule
         "hold": ("inout", "3:0"),
         "w_or": ("inout", None),
     }
+
+
+def test_cli_aiu1_line_does_not_reformat_other_instances(tmp_path):
+    """--line targets one instance: another instance with an
+    emacs-style tail (.q(qb)); must stay BYTE-IDENTICAL — the head-move
+    and tail-split normalisations are gated to the target."""
+    sub = tmp_path / "sub.v"
+    sub.write_text(
+        "module sub (input clk, input rst_n, input [3:0] d, output [3:0] q);\nendmodule\n"
+    )
+    top = tmp_path / "top.v"
+    src = (
+        "module top;\n"
+        "  sub u_a (/*autoinst*/\n"
+        "           .clk (clk),\n"
+        "           .d   (da),\n"
+        "           .q   (qa));\n"
+        "  sub u_b (/*autoinst*/\n"
+        "           .clk (clk),\n"
+        "           .d   (db),\n"
+        "           .q   (qb));\n"
+        "endmodule\n"
+    )
+    top.write_text(src)
+    out_file = tmp_path / "out.v"
+    main(["aiu1", "-i", str(top), "-o", str(out_file), "-y", str(tmp_path), "--line", "9"])
+    out = out_file.read_text()
+    # u_a (lines 1-6) byte-identical; u_b gained the rst_n pin
+    assert out.splitlines()[:5] == src.splitlines()[:5]
+    assert "rst_n" in out

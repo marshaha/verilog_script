@@ -1010,7 +1010,9 @@ class VerilogBuffer:
             raise ValueError(f"cannot resolve module name, line: {marker_idx + 1}")
         return module, inst
 
-    def _markers_at_head(self) -> "VerilogBuffer":
+    def _markers_at_head(self, which: int | None = None) -> "VerilogBuffer":
+        # WHICH (a 0-based marker ordinal) limits the move to that instance:
+        # a targeted update must not reformat instances it was not asked to touch
         """Move /*autoinst*/ markers that ride the last connection line
         (``.p(s) /*AUTOINST*/);``) to the canonical position right after
         the instance's opening paren.  The update loops consume
@@ -1031,7 +1033,9 @@ class VerilogBuffer:
             starts.append(pos)
             pos += len(ln) + 1
         edits: list[tuple[int, int, str]] = []
-        for midx in self.markers():
+        for ordinal, midx in enumerate(self.markers()):
+            if which is not None and ordinal != which:
+                continue  # targeted update: other instances stay verbatim
             m = _AUTOINST_MARK.search(self._lines[midx])
             if not m:
                 continue
@@ -1169,7 +1173,7 @@ class VerilogBuffer:
         # forward drop below would leave the old connections standing
         # and the caller would append a second, duplicate list.  Move
         # such markers to the head first so the drop covers the span.
-        buf = self._markers_at_head()
+        buf = self._markers_at_head(which=which)
         lines = buf._lines
         target = set(buf._targets(which))
         template_required = _local_inst_template_required(lines)
@@ -1300,7 +1304,7 @@ class VerilogBuffer:
         date = date or _now()
         # A marker riding the last connection line belongs at the head;
         # canonicalize first (idempotent; ordinal `which` stays valid).
-        moved = self._markers_at_head()
+        moved = self._markers_at_head(which=which)
         if moved._lines != self._lines:
             return moved.auto_inst_update(
                 modules, which=which, date=date, templates=templates, sort=sort
@@ -1312,7 +1316,7 @@ class VerilogBuffer:
         # instance).  The normalization is idempotent, so recursing on the
         # normalized buffer cannot loop.  Ordinal `which` stays valid —
         # splitting inserts only non-marker lines.
-        normalized = self.modify_emacs_inst_format()
+        normalized = self.modify_emacs_inst_format(which=which)
         if normalized._lines != self._lines:
             return normalized.auto_inst_update(
                 modules, which=which, date=date, templates=templates, sort=sort
@@ -1449,7 +1453,9 @@ class VerilogBuffer:
     # ------------------------------------------------------------------
     # AutoInstUpdateOrder (AIU)
 
-    def modify_emacs_inst_format(self, *, skip_sections: bool = False) -> VerilogBuffer:
+    def modify_emacs_inst_format(
+        self, *, skip_sections: bool = False, which: int | None = None
+    ) -> VerilogBuffer:
         """Split verilog-mode's last-port ``.port(sig)); // comment`` into
         ``.port(sig)  // comment`` plus a standalone ``);`` line.  A bare
         ``.port(sig));`` (no trailing comment) is the target format itself
@@ -1461,6 +1467,20 @@ class VerilogBuffer:
         head = re.compile(r"^\s*.\w+.*\)\s*\)\s*;")
         section = re.compile(r"^\s*//\s*(Outputs|Inouts|Inputs|Interfaces|Parameters)\s*$")
         comment_mask = block_comment_mask(self._lines)
+        # WHICH (a 0-based marker ordinal) restricts the split to the
+        # targeted instance's statement: a cursor-scoped update must not
+        # reformat other instances' tails
+        span_lines: "tuple[int, int] | None" = None
+        if which is not None:
+            ml = self.markers()
+            if 0 <= which < len(ml):
+                mt = mask_comments("\n".join(self._lines))
+                moff = _marker_offsets(self._lines, ml)[which]
+                try:
+                    so, eo = _statement_span(mt, moff)
+                    span_lines = (mt.count("\n", 0, so), mt.count("\n", 0, eo))
+                except ValueError:
+                    span_lines = None
         out: list[str] = []
         in_section = False
         for li, line in enumerate(self._lines):
@@ -1475,6 +1495,9 @@ class VerilogBuffer:
                 out.append(line)
                 if re.search(r"\)\s*;?\s*$", line) and not re.match(r"^\s*\.", line):
                     in_section = False
+                continue
+            if span_lines is not None and not (span_lines[0] <= li <= span_lines[1]):
+                out.append(line)  # outside the targeted instance: verbatim
                 continue
             if pat.match(line) and not _LINE_COMMENT.match(line):
                 pre = head.match(line).group(0)
@@ -1510,7 +1533,7 @@ class VerilogBuffer:
         date = date or _now()
         # tail markers first: until a tail marker leaves its line, the
         # format splitter cannot see the `.pin(sig));` shape it splits
-        buf = self._markers_at_head().modify_emacs_inst_format()
+        buf = self._markers_at_head(which=which).modify_emacs_inst_format(which=which)
         while True:
             # expand ONE stub, then rescan: auto_inst rewrites the buffer,
             # so every other stub's line number from the previous scan is
