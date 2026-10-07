@@ -190,3 +190,265 @@ def test_pulp_udt_declared_driver_not_duplicated(tmp_path):
     assert "slv_aw_select;  \n" not in out        # no bare re-declaration
     assert out.count("select_t slv_aw_select") == 1
     assert "unresolved: slv_aw_select" not in out
+
+
+def test_aiu_tail_marker_instance_not_stub_no_crash(tmp_path):
+    """Issue found on mor1kx (2026-10-07): an instance whose last kept
+    connection line ends with `/*AUTOINST*/);` was misclassified as a
+    stub, and AIU then crashed (stale line numbers after the first stub
+    expansion).  The instance is fully connected; AIU must reorder-update
+    it without crashing.
+    """
+    (tmp_path / "sub.v").write_text(
+        "module sub(input wire a, input wire b, output wire y);\nendmodule\n"
+    )
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top;\n"
+        "wire a, b, y;\n"
+        "sub u1(.b(b),\n"
+        "       .a(a),\n"
+        "       .y(y) /*AUTOINST*/);\n"
+        "sub u2(.b(b),\n"
+        "       .a(a),\n"
+        "       .y(y) /*AUTOINST*/);\n"
+        "endmodule\n"
+    )
+    from verilog_tooling import inst
+
+    out_file = tmp_path / "out.v"
+    inst.main(["aiu", "-i", str(top), "-o", str(out_file),
+               "--ref_file", str(top), "-y", str(tmp_path)])
+    out = out_file.read_text()
+    assert out.count(".a(a)") == 2
+    assert out.count(".y(y)") == 2
+
+
+def test_aiu1_last_pin_with_close_paren_not_duplicated(tmp_path):
+    """Issue found on mor1kx (2026-10-07): `aiu1` met the emacs-style
+    last connection `.y(y)); // comment` and counted that pin as unseen,
+    emitting it again (INST_NEW) while leaving the instance unclosed.
+    """
+    (tmp_path / "sub.v").write_text(
+        "module sub(input wire a, output wire y);\nendmodule\n"
+    )
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top;\n"
+        "wire a, y;\n"
+        "sub u(/*AUTOINST*/\n"
+        "  .a(a),\n"
+        "  .y(y)); // last\n"
+        "endmodule\n"
+    )
+    from verilog_tooling import inst
+
+    out_file = tmp_path / "out.v"
+    inst.main(["aiu1", "-i", str(top), "-o", str(out_file),
+               "--ref_file", str(top), "-y", str(tmp_path)])
+    out = out_file.read_text()
+    assert out.count(".y") == 1
+    assert ".y(y)" in out
+
+
+def test_aiu1_shorthand_connections_not_reemitted_as_new(tmp_path):
+    """Issue found on pulp axi_xbar (2026-10-07): connections written in
+    the SystemVerilog shorthand form `.clk_i,` (no parentheses) with the
+    last kept pin comma-less were not recognised at all, so AIU1 appended
+    every shorthand pin again as INST_NEW behind a missing comma.
+    """
+    (tmp_path / "sub.v").write_text(
+        "module sub(input wire clk_i, input wire rst_ni,"
+        " output wire [7:0] q_o);\nendmodule\n"
+    )
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top;\n"
+        "wire clk_i, rst_ni;\n"
+        "wire [7:0] q;\n"
+        "sub u(/*AUTOINST*/\n"
+        "  .clk_i,\n"
+        "  .rst_ni,\n"
+        "  .q_o (q)\n"
+        ");\n"
+        "endmodule\n"
+    )
+    from verilog_tooling import inst
+
+    out_file = tmp_path / "out.v"
+    inst.main(["aiu1", "-i", str(top), "-o", str(out_file),
+               "--ref_file", str(top), "-y", str(tmp_path)])
+    out = out_file.read_text()
+    assert out.count(".clk_i") == 1
+    assert out.count(".rst_ni") == 1
+    assert "INST_NEW" not in out
+
+
+def test_aiu1_new_pin_gets_comma_after_comma_less_kept_pin(tmp_path):
+    """Issue found on pulp axi_mux (2026-10-07): when AIU1 appends pins
+    after a kept list whose final pin has no trailing comma, the first
+    appended pin needs a comma on the previously last line."""
+    (tmp_path / "sub.v").write_text(
+        "module sub(input wire a, input wire b, output wire y);\nendmodule\n"
+    )
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top;\n"
+        "wire a, b, y;\n"
+        "sub u(/*AUTOINST*/\n"
+        "  .a(a),\n"
+        "  .b (b)\n"
+        ");\n"
+        "endmodule\n"
+    )
+    from verilog_tooling import inst
+
+    out_file = tmp_path / "out.v"
+    inst.main(["aiu1", "-i", str(top), "-o", str(out_file),
+               "--ref_file", str(top), "-y", str(tmp_path)])
+    out = out_file.read_text()
+    assert out.count(".y") == 1
+    assert ".b (b)," in out
+
+
+def test_autoarg_strips_udt_from_port_name_list(tmp_path):
+    """Issue found on pulp axi_demux (2026-10-07): AUTOARG carried the
+    user-defined type text into the regenerated name list
+    (`axi_req_t [NoMstPorts-1:0] mst_reqs_o,`), which Verilator rejects
+    (ranges/types do not belong in a name list)."""
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top (/*AUTOARG*/\n"
+        "  input logic clk_i,\n"
+        "  input axi_req_t [3:0] reqs_i,\n"
+        "  output axi_resp_t resp_o\n"
+        ");\n"
+        "endmodule\n"
+    )
+    from verilog_tooling import inst
+
+    out_file = tmp_path / "out.v"
+    inst.main(["aall", "-i", str(top), "-o", str(out_file),
+               "--ref_file", str(top), "-y", str(tmp_path)])
+    out = out_file.read_text()
+    # the regenerated header is a name list: bare names only, no types
+    head = out.split("/*AUTOARG*/", 1)[1].split(");", 1)[0]
+    assert "reqs_i" in head and "axi_req_t" not in head and "resp_o" in head
+
+
+def test_aiu_positional_instance_marker_at_tail_not_overrun(tmp_path):
+    """Issue found on zipcpu zipsystem (2026-10-07): an instance with
+    positional connections and a tail marker was neither a stub nor
+    recognised, so the updater scanned past the instance end for a `);`
+    and emitted ports over following code.  The marker must be moved to
+    the instance head and the (unkeyable) positional lines regenerated."""
+    (tmp_path / "busdelay.v").write_text(
+        "module busdelay(input i_clk, input i_reset, output o_wb_ack);\nendmodule\n"
+    )
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top;\n"
+        "busdelay wbdelay(\n"
+        "  i_clk, i_reset,\n"
+        "  o_wb_ack\n"
+        " /*AUTOINST*/);\n"
+        "`ifdef FORMAL\n"
+        "`endif\n"
+        "endmodule\n"
+    )
+    from verilog_tooling import inst
+
+    out_file = tmp_path / "out.v"
+    inst.main(["aiu", "-i", str(top), "-o", str(out_file),
+               "--ref_file", str(top), "-y", str(tmp_path)])
+    out = out_file.read_text()
+    assert ".i_clk" in out
+    assert "`ifdef FORMAL" in out and "`endif" in out
+    # the positional connection lines must not survive next to the named
+    # ones (mixing positional and named connections is illegal)
+    assert "i_clk, i_reset," not in out
+    assert " o_wb_ack\n" not in out
+
+
+def test_ait_param_block_directives_not_in_connections(tmp_path):
+    """Issue found on zipcpu busdelay (2026-10-07): the submodule header
+    carries `ifdef FORMAL around a localparam *inside its #(...)
+    parameter block*; the port parser collected those directives as
+    port-list Keep lines, so regenerated instances contained
+    `ifdef/`endif` in the middle of the connection list."""
+    (tmp_path / "sub.v").write_text(
+        "module sub #(\n"
+        "  parameter AW = 32,\n"
+        "`ifdef FORMAL\n"
+        "  localparam F_LGDEPTH = 4,\n"
+        "`endif\n"
+        "  parameter DW = 32\n"
+        ") (\n"
+        "  input wire clk,\n"
+        "  output wire [DW-1:0] q\n"
+        ");\nendmodule\n"
+    )
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top;\nwire clk;\nwire [31:0] q;\n"
+        "sub u(/*AUTOINST*/);\nendmodule\n"
+    )
+    from verilog_tooling import inst
+
+    out_file = tmp_path / "out.v"
+    inst.main(["ait", "-i", str(top), "-o", str(out_file),
+               "--ref_file", str(top), "-y", str(tmp_path)])
+    out = out_file.read_text()
+    assert "`ifdef" not in out
+    assert ".clk" in out and ".q" in out
+
+
+def test_aiu_multi_connection_line_not_duplicated(tmp_path):
+    """Issue found on zipcpu zipsystem (2026-10-07): hand-written
+    instances packing several connections on one line
+    (`.a(x), .b(y),`) were only recognised by their first pin, so the
+    updater re-emitted the rest as INST_NEW duplicates."""
+    (tmp_path / "sub.v").write_text(
+        "module sub(input wire a, input wire b, output wire y);\nendmodule\n"
+    )
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top;\nwire a, b, y;\n"
+        "sub u(/*AUTOINST*/\n"
+        "     .a(a), .b(b),\n"
+        "     .y(y)\n"
+        "    );\nendmodule\n"
+    )
+    from verilog_tooling import inst
+
+    out_file = tmp_path / "out.v"
+    inst.main(["aiu", "-i", str(top), "-o", str(out_file),
+               "--ref_file", str(top), "-y", str(tmp_path)])
+    out = out_file.read_text()
+    assert out.count(".a(") == 1
+    assert out.count(".b(") == 1
+    assert out.count(".y(") == 1
+    assert "INST_NEW" not in out
+
+
+def test_aiu1_multi_connection_line_seen_not_duplicated(tmp_path):
+    """Same multi-connection-line hazard on the aiu1 update path."""
+    (tmp_path / "sub.v").write_text(
+        "module sub(input wire a, input wire b, output wire y);\nendmodule\n"
+    )
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top;\nwire a, b, y;\n"
+        "sub u(/*AUTOINST*/\n"
+        "     .a(a), .b(b),\n"
+        "     .y(y)\n"
+        "    );\nendmodule\n"
+    )
+    from verilog_tooling import inst
+
+    out_file = tmp_path / "out.v"
+    inst.main(["aiu1", "-i", str(top), "-o", str(out_file),
+               "--ref_file", str(top), "-y", str(tmp_path)])
+    out = out_file.read_text()
+    assert out.count(".b(") == 1
+    assert "INST_NEW" not in out
