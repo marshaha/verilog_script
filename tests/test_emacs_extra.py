@@ -35,6 +35,33 @@ def test_read_inst_param_values():
     assert read_inst_param_values(text, open_idx) == {"W": "16", "D": "W*2"}
 
 
+def test_read_inst_param_values_ignores_comment_parens():
+    # ZipCPU zipsystem.v wraps instance overrides in // {{{ ... // }}}
+    # fold comments.  Counting parens over the raw text (or splitting
+    # the block on raw commas) let the comment parens shift the block
+    # start / comma depth and produced a single entry with the garbage
+    # value '7),.DW(32' — width substitution then emitted the broken
+    # expression '((7),.DW(32)-1)'.
+    text = (
+        "busdelay #(\n"
+        "\t\t\t// {{{\n"
+        "\t\t\t.AW(7),.DW(32)\n"
+        "\t\t\t// }}}\n"
+        "\t\t) wbdelay("
+    )
+    open_idx = text.index("(", text.index("wbdelay"))
+    assert read_inst_param_values(text, open_idx) == {"AW": "7", "DW": "32"}
+
+
+def test_read_inst_param_values_paren_inside_comment():
+    # a ')' sitting inside a /* */ comment within the #(...) block must
+    # not terminate the raw backward paren scan early (which used to
+    # locate the group start at `.W(` and read no values at all).
+    text = "m #(/* ) */ .W(16)) u_m ("
+    open_idx = text.index("(", text.index("u_m"))
+    assert read_inst_param_values(text, open_idx) == {"W": "16"}
+
+
 def test_param_value_substitutes_width():
     buf = ["module top;", "m #(.W(16)) u_m (/*AUTOINST*/);", "endmodule"]
     out = auto_inst(buf, {"m": mod()}, param_value=True)

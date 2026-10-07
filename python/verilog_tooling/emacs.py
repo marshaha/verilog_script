@@ -289,15 +289,20 @@ def _skip_group_back(text: str, i: int) -> tuple[int, int] | None:
     """Skip backwards over a balanced ``( ... )`` group ending before I.
 
     Returns (open_idx, close_idx); None when the text before I does not end
-    in ')'. Raises ValueError when the group is unbalanced."""
+    in ')'. Raises ValueError when the group is unbalanced.  Parens inside
+    comments or strings do not count toward the balance: an unbalanced
+    paren in a comment (e.g. an unbalanced ``// }}`` fold) would otherwise
+    shift the located group start and silently corrupt the parameter
+    values read from the block."""
     j = _skip_back(text, i)
     if j == 0 or text[j - 1] != ")":
         return None
     close = j - 1
+    masked = mask_comments(text[: close + 1])
     depth = 0
     j = close
     while j >= 0:
-        c = text[j]
+        c = masked[j]
         if c == ")":
             depth += 1
         elif c == "(":
@@ -321,13 +326,29 @@ def read_inst_param_values(text: str, open_idx: int) -> dict[str, str]:
     """
     # skip the instance name, then the #( ... ) block must close the head
     _, j = _prev_word(text, open_idx)
+    # _skip_group_back scans parens over comment-masked text, so parens
+    # inside comments cannot shift the located group; the group it
+    # finds must also open with `#(`.  If it does not, the block cannot
+    # be read reliably — no parameter values are applied rather than
+    # garbage ones (a mangled read once produced the width expression
+    # `((7),.DW(32)-1)` on a real ZipCPU file).
     try:
         group = _skip_group_back(text, j)
     except ValueError:
         return {}
     if group is None:
         return {}
-    inner = text[group[0] + 1 : group[1]]
+    h = group[0]
+    while h > 0 and text[h - 1] in " \t\r\n":
+        h -= 1
+    if h == 0 or text[h - 1] != "#":
+        return {}
+    # split on the MASKED inner text: parens inside comments must not
+    # shift comma depth either (`// {{{` inside a #(...) block once made
+    # `.AW(7),.DW(32)` parse as a single entry with value `7),.DW(32`).
+    # Masking preserves length, so slices and the value regexp below
+    # still operate on the original characters.
+    inner = mask_comments(text)[group[0] + 1 : group[1]]
     values: dict[str, str] = {}
     for entry in _split_top_commas(inner):
         entry = _strip_comments(entry)  # drop comments + // Templated debris
