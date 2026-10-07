@@ -893,8 +893,15 @@ def _replace_region(
         head = text[: marker.end] + ","  # keep .*, expand after it
     pin_region = text[open_idx + 1 : marker.offset]
     stripped = pin_region.rstrip()
-    if re.search(r"\.\s*\w+\s*\(", pin_region) and stripped.endswith(")"):
-        insert_at = open_idx + 1 + len(stripped)
+    # Trailing comment lines between the last pin and the marker (e.g.
+    # ZipCPU's ``// }}}`` fold markers) hide the pin's closing paren from
+    # the endswith check; peel them off so the comma is still added --
+    # otherwise the generated pins fuse with the last kept pin into
+    # invalid syntax (emacs exhibits the same gap, but an invalid result
+    # is not worth replicating).
+    code_tail = re.sub(r"(\s*(//[^\n]*|/\*[\s\S]*?\*/)\s*)+$", "", pin_region).rstrip()
+    if re.search(r"\.\s*\w+\s*\(", pin_region) and code_tail.endswith(")"):
+        insert_at = open_idx + 1 + len(code_tail)
         head = head[:insert_at] + "," + head[insert_at:]
     return head + gen + tail
 
@@ -1225,7 +1232,10 @@ def _auto_inst_one(
     # comments (positions preserved) before collecting names
     pins = set(
         re.findall(
-            r"\.\s*(\w+)\s*\(",
+            # `.pin (` named, plus the SystemVerilog `.pin` shorthand
+            # (`.rst_ni,` or trailing) — both count as connected; missing
+            # the shorthand regenerates the pin and duplicates it.
+            r"\.\s*(\w+)\s*(?:\(|,|\Z)",
             mask_comments(text[open_idx + 1 : marker.offset], block=True),
         )
     )
@@ -1366,7 +1376,7 @@ def _auto_param_one(
     # comments (positions preserved) before collecting names
     pins = set(
         re.findall(
-            r"\.\s*(\w+)\s*\(",
+            r"\.\s*(\w+)\s*(?:\(|,|\Z)",
             mask_comments(text[open_idx + 1 : marker.offset], block=True),
         )
     )
