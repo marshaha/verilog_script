@@ -96,7 +96,7 @@ def _log(msg: str) -> None:
     _LOG_T0 = now
     print(f"[verilog_tooling] {msg} (+{dt:.1f}s)", file=sys.stderr)
 
-from .comments import strip_comments as _strip_c, strip_line_comments as _strip_lc
+from .comments import mask_comments, strip_comments as _strip_c, strip_line_comments as _strip_lc
 from .libdirs import resolve_libdirs
 from .template import (
     AutoTemplate,
@@ -604,6 +604,10 @@ def parse_module_ports(
     entries: list[Entry] = []
     seen_module = False
     have_port = False
+    portlist_opened = False
+    portlist_closed = False
+    _hdr_depth = 0
+    _param_next = False
     mod_name = name
     in_block_comment = False
     n_lines = len(lines)
@@ -637,9 +641,35 @@ def parse_module_ports(
             if "(" in line:
                 tail = line[line.rindex("(") + 1 :]
                 if _PORT_KEYWORD.match(tail):
+                    portlist_opened = True  # port list starts on this line
+                    _hdr_depth = line.count("(") - line.count(")")
                     line = tail
         if not seen_module:
             continue
+        # the port list opens at the first depth-0 '(' that does not open a
+        # #( ...) parameter block; Keeps (comments/directives) are port-list
+        # material only from there until it closes, so a `ifdef FORMAL
+        # guarding a localparam inside #(...) — or directives in the module
+        # body — never leak into the connection list
+        if not portlist_opened:
+            for ch in line:
+                if ch == "#" and _hdr_depth == 0:
+                    _param_next = True
+                elif ch == "(":
+                    if _hdr_depth == 0 and not _param_next:
+                        portlist_opened = True
+                    _param_next = False
+                    _hdr_depth += 1
+                elif ch == ")":
+                    _hdr_depth = max(0, _hdr_depth - 1)
+        elif not portlist_closed:
+            for ch in line:
+                if ch == "(":
+                    _hdr_depth += 1
+                elif ch == ")":
+                    _hdr_depth -= 1
+                    if _hdr_depth <= 0:
+                        portlist_closed = True
         if ");" in line and entries and not have_port:
             entries.clear()  # drop keep lines collected inside #( ... )
         if (
@@ -647,6 +677,8 @@ def parse_module_ports(
             or (_LINE_COMMENT.match(line) and not re.match(r"^\s*//\s*\{\{\{", line))
             or _BLANK.match(line)
         ):
+            if portlist_closed or not (portlist_opened or have_port):
+                continue  # outside the module's port list
             if (
                 _BLANK.match(line)
                 and entries
@@ -779,6 +811,25 @@ def default_connection(port: Port, inst_vector: str = "t") -> str:
         or (inst_vector == "unsigned" and not port.signed)
     )
     return port.name + (f"[{port.width}]" if (port.width and use_vector) else "")
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    """Split TEXT at commas that sit at parenthesis/bracket depth 0 (a
+    connection list like '.a(x), .b(y),'; commas inside .p({...}) or .p(f(a,b))
+    stay with their fragment)."""
+    frags, depth, cur = [], 0, []
+    for ch in text:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            frags.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    frags.append("".join(cur))
+    return frags
 
 
 def format_connection(
@@ -926,9 +977,81 @@ class VerilogBuffer:
             raise ValueError(f"cannot resolve module name, line: {marker_idx + 1}")
         return module, inst
 
+    def _markers_at_head(self) -> "VerilogBuffer":
+        """Move /*autoinst*/ markers that ride the last connection line
+        (``.p(s) /*AUTOINST*/);``) to the canonical position right after
+        the instance's opening paren.  The update loops consume
+        connections only AFTER their marker, so a tail marker made them
+        scan past the instance end (or crash on stale line numbers).
+        Marker count and order are unchanged, keeping ordinal ``which``
+        selection valid.  Buffers whose markers already sit at a head
+        (only whitespace between the paren and the marker) are returned
+        unchanged.
+        """
+        from . import emacs
+
+        text = "\n".join(self._lines)
+        mt = mask_comments(text)
+        starts = []
+        pos = 0
+        for ln in self._lines:
+            starts.append(pos)
+            pos += len(ln) + 1
+        edits: list[tuple[int, int, str]] = []
+        for midx in self.markers():
+            m = _AUTOINST_MARK.search(self._lines[midx])
+            if not m:
+                continue
+            marker_off = starts[midx] + m.start()
+            head_mt = mt[:marker_off]
+            stacks = emacs._scan_parens_at(head_mt + "\n", [len(head_mt)])
+            st = stacks[len(head_mt)]
+            if not st:
+                continue
+            open_off = st[-1]
+            if not mt[open_off + 1 : marker_off].strip():
+                continue  # already head-positioned
+            if not re.search(r"\w|\(", mt[open_off + 1 : marker_off]):
+                continue  # instance body is empty between ( and the marker
+            # _AUTOINST_MARK stops at the keyword; take the whole comment
+            close = self._lines[midx].find("*/", m.start())
+            if close < 0:
+                continue
+            mlen = close + 2 - m.start()
+            marker_text = text[marker_off : marker_off + mlen]
+            # if connection text shares the line after the marker's new
+            # head position (``u(.a(a), ...``), split the line there so
+            # each connection starts on its own line, as the loops expect
+            line_end = text.find("\n", open_off)
+            after = text[open_off + 1 : line_end if line_end >= 0 else len(text)]
+            sep = "\n" if after.strip() else ""
+            edits.append((open_off + 1, open_off + 1, marker_text + sep))
+            edits.append((marker_off, marker_off + mlen, ""))
+        if not edits:
+            return self
+        for s, e, rep in sorted(edits, reverse=True):
+            text = text[:s] + rep + text[e:]
+        return VerilogBuffer(text.split("\n"))
+
     def stub(self, marker_idx: int) -> bool:
-        """Whether line MARKER_IDX holds a ``(/*autoinst*/);`` stub."""
-        return _STUB_LINE.search(self._lines[marker_idx]) is not None
+        """Whether line MARKER_IDX holds a ``(/*autoinst*/);`` stub: the
+        marker directly follows the instance's opening paren.  A marker
+        riding the last connection line (``.p(s) /*AUTOINST*/);``) is a
+        full instance, NOT a stub — regenerating it as one duplcates the
+        whole connection list (and a hung stub scan walks past its end).
+        """
+        line = self._lines[marker_idx]
+        if not _STUB_LINE.search(line):
+            return False
+        lines = self._stripped_lines()
+        m = _AUTOINST_MARK.search(lines[marker_idx])
+        if not m:
+            return False
+        head = "\n".join(lines[:marker_idx] + [lines[marker_idx][: m.start()]])
+        j = len(head)
+        while j > 0 and head[j - 1] in " \t\n":
+            j -= 1
+        return j > 0 and head[j - 1] == "("
 
     # ------------------------------------------------------------------
     # internal helpers
@@ -972,6 +1095,13 @@ class VerilogBuffer:
 
     @staticmethod
     def _get_port_name(line: str) -> str:
+        # a leading .name covers both .name(...) and the SystemVerilog
+        # shorthand .name, / .name) forms (pulp connects whole structs
+        # that way); without it shorthand pins read as "no port" and the
+        # updater re-emitted them as INST_NEW duplicates
+        m = re.match(r"\s*\.(\w+)", line)
+        if m:
+            return m.group(1)
         m = _PORT_NAME.search(line)
         return m.group(1) if m else ""
 
@@ -1001,8 +1131,14 @@ class VerilogBuffer:
 
         WHICH selects a 0-based marker index; None processes every instance.
         """
-        lines = self._lines
-        target = set(self._targets(which))
+        # A marker riding the last connection line (or alone on a line
+        # after the connections) points BACKWARD at its instance: the
+        # forward drop below would leave the old connections standing
+        # and the caller would append a second, duplicate list.  Move
+        # such markers to the head first so the drop covers the span.
+        buf = self._markers_at_head()
+        lines = buf._lines
+        target = set(buf._targets(which))
         template_required = _local_inst_template_required(lines)
         inst_vector = _local_inst_vector(lines)
         out: list[str] = []
@@ -1129,6 +1265,25 @@ class VerilogBuffer:
         rather than leaving a dangling comma before ``);``.
         """
         date = date or _now()
+        # A marker riding the last connection line belongs at the head;
+        # canonicalize first (idempotent; ordinal `which` stays valid).
+        moved = self._markers_at_head()
+        if moved._lines != self._lines:
+            return moved.auto_inst_update(
+                modules, which=which, date=date, templates=templates, sort=sort
+            )
+        # Normalize emacs-style last pins (.p(sig)); // comment) into a pin
+        # line + standalone `);` first, like auto_inst_update_order does:
+        # otherwise the update loop meets `);` on the last connection line,
+        # treats that pin as unseen, and re-emits it (dup pin, unclosed
+        # instance).  The normalization is idempotent, so recursing on the
+        # normalized buffer cannot loop.  Ordinal `which` stays valid —
+        # splitting inserts only non-marker lines.
+        normalized = self.modify_emacs_inst_format()
+        if normalized._lines != self._lines:
+            return normalized.auto_inst_update(
+                modules, which=which, date=date, templates=templates, sort=sort
+            )
         lines = self._lines
         target = set(self._targets(which))
         template_required = _local_inst_template_required(lines)
@@ -1179,6 +1334,7 @@ class VerilogBuffer:
                     raise ValueError(f"instance at line {i + 1} not terminated by ');'")
                 line = lines[i]
                 if _INST_END.search(line):
+                    new_lines = []
                     for port in moddef.ports:
                         if port.name in seen:
                             continue
@@ -1187,20 +1343,48 @@ class VerilogBuffer:
                         )
                         if conn is None:
                             continue
-                        out.append(
+                        new_lines.append(
                             format_connection(
                                 port, conn, prefix_max_len, suffix_max_len, port.name == last_name
                             )
                             + f" // INST_NEW {date}"
                         )
+                    if (
+                        new_lines
+                        and out
+                        and out[-1].lstrip().startswith(".")
+                        and not out[-1].rstrip().endswith(",")
+                    ):
+                        # the last kept connection needs its comma before
+                        # the first appended pin (shorthand-kept lists end
+                        # `.default_mst_port_i` with no trailing comma)
+                        prev = out[-1].rstrip()
+                        if "//" in prev:
+                            head, tail = prev.split("//", 1)
+                            out[-1] = head.rstrip() + ", //" + tail
+                        else:
+                            out[-1] = prev + ","
+                    out.extend(new_lines)
                     out.append(line)
                     i += 1
                     break
                 if _DIRECTIVE.match(line) or _LINE_COMMENT.match(line) or _BLANK.match(line):
                     out.append(line)
                 else:
+                    frags = [
+                        f for f in _split_top_level_commas(_strip_lc(line)) if f.strip()
+                    ]
                     port = self._get_port_name(line)
-                    if port and port in current:
+                    if port and port in current and len(frags) > 1:
+                        # several connections share the line: register them
+                        # all (the updater never rewrites kept lines, so a
+                        # miss would re-emit them as duplicated INST_NEW)
+                        for frag in frags:
+                            fp = self._get_port_name(frag)
+                            if fp and fp in current:
+                                seen.add(fp)
+                        out.append(line)
+                    elif port and port in current:
                         seen.add(port)
                         # the template is authoritative for ports it declares;
                         # other manual connections are kept verbatim
@@ -1291,14 +1475,18 @@ class VerilogBuffer:
         path).
         """
         date = date or _now()
-        buf = self.modify_emacs_inst_format()
+        # tail markers first: until a tail marker leaves its line, the
+        # format splitter cannot see the `.pin(sig));` shape it splits
+        buf = self._markers_at_head().modify_emacs_inst_format()
         while True:
+            # expand ONE stub, then rescan: auto_inst rewrites the buffer,
+            # so every other stub's line number from the previous scan is
+            # stale (the old loop crashed on `markers().index(stale)`)
             stubs = [idx for idx in buf._targets(which) if buf.stub(idx)]
             if not stubs:
                 break
-            for stub_idx in stubs:
-                marker_pos = buf.markers().index(stub_idx)
-                buf = buf.auto_inst(modules, which=marker_pos, templates=templates, sort=sort)
+            marker_pos = buf.markers().index(stubs[0])
+            buf = buf.auto_inst(modules, which=marker_pos, templates=templates, sort=sort)
         lines = buf.lines
         target = set(buf._targets(which))
         template_required = _local_inst_template_required(lines)
@@ -1332,10 +1520,23 @@ class VerilogBuffer:
                 if _DIRECTIVE.match(line) or _LINE_COMMENT.match(line) or _BLANK.match(line):
                     i += 1
                     continue
-                port = self._get_port_name(line)
-                if port:
-                    body = _strip_lc(line)
-                    old[port] = (line, re.search(r"\)\s*,", body) is None)
+                # a hand-written line may pack several connections
+                # (`.a(x), .b(y),`); record each, or the updater re-emits
+                # every later one as a duplicated INST_NEW
+                frags = [f for f in _split_top_level_commas(_strip_lc(line)) if f.strip()]
+                if len(frags) > 1:
+                    for fi, frag in enumerate(frags):
+                        port = self._get_port_name(frag)
+                        if port:
+                            old[port] = (
+                                frag.strip() + ("," if fi < len(frags) - 1 else ""),
+                                fi == len(frags) - 1,
+                            )
+                else:
+                    port = self._get_port_name(line)
+                    if port:
+                        body = _strip_lc(line)
+                        old[port] = (line, re.search(r"\)\s*,", body) is None)
                 i += 1
             last_name = moddef.last_port_name()
             for entry in moddef.entries:
