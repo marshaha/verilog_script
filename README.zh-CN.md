@@ -127,9 +127,10 @@ endmodule
 | `BPN` `BP` `BA` | always 块片段 | `<leader>bpn` `bp` `ba` |
 
 在 EAI/AIT/AIU/AIU1 前加 `{count}` 可只处理第 N 个 `/*autoinst*/`
-实例（`:1AIT` → 只处理第一个）。不加 count 时处理光标下的实例
-（前端以 `--line` 传入光标行）。命令行侧用 `--which N`（0 基标记
-序号）或 `--line N`（1 基编辑器行）同样可只选一个实例。
+实例（`:1AIT` → 只处理第一个）。不加 count 时 AIT/AIU/AIU1 处理
+光标下的实例（前端以 `--line` 传入光标行），EAI/EAP/KI 仍处理
+全部实例。命令行侧用 `--which N`（0 基标记序号）或 `--line N`
+（1 基编辑器行，仅 AIT/AIU/AIU1）同样可只选一个实例。
 
 每个命令都会报告做了什么，例如
 `[verilog_tooling] eai: line 515: 1005 -> 937 line(s)`（或 `no changes`）。

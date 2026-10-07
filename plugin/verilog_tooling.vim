@@ -242,16 +242,20 @@ function! s:Run(mod, cmd, extra, which) abort
     endif
 endfunction
 
-function! s:InstCmd(cmd, extra, count) abort
+function! s:InstCmd(cmd, extra, count, cursor) abort
     " {count} selects the Nth /*autoinst*/ instance (--which); the count
     " arrives as <count> because v:count is not visible inside functions.
-    " With no count the instance under the cursor is processed (--line),
-    " matching automatic.vim's cursor-scoped AIU/AIU1.
+    " AIT/AIU/AIU1 (a:cursor) with no count process the instance under
+    " the cursor (--line), matching automatic.vim's cursor-scoped
+    " originals; EAI/EAP/KI process every instance when no count is
+    " given.
     if a:count > 0
         call s:Run('verilog_tooling.inst', a:cmd, a:extra, a:count - 1)
-    else
+    elseif a:cursor
         call s:Run('verilog_tooling.inst', a:cmd,
               \ a:extra + ['--line', string(line('.'))], -1)
+    else
+        call s:Run('verilog_tooling.inst', a:cmd, a:extra, -1)
     endif
 endfunction
 
@@ -329,12 +333,12 @@ endfunction
 
 command! -nargs=0 AALL call s:AutoAll()
 
-command! -count=0 AIT  call s:InstCmd('ait', s:InterfaceArgs(), <count>)
-command! -count=0 AIU  call s:InstCmd('aiu', s:InterfaceArgs(), <count>)
-command! -count=0 AIU1 call s:InstCmd('aiu1', s:InterfaceArgs(), <count>)
-command! -count=0 KI   call s:InstCmd('kill', [], <count>)
-command! -count=0 EAI  call s:InstCmd('eai', get(g:, 'verilog_tooling_eai_flags', []) + s:InterfaceArgs(), <count>)
-command! -count=0 EAP  call s:InstCmd('eap', s:InterfaceArgs(), <count>)
+command! -count=0 AIT  call s:InstCmd('ait', s:InterfaceArgs(), <count>, 1)
+command! -count=0 AIU  call s:InstCmd('aiu', s:InterfaceArgs(), <count>, 1)
+command! -count=0 AIU1 call s:InstCmd('aiu1', s:InterfaceArgs(), <count>, 1)
+command! -count=0 KI   call s:InstCmd('kill', [], <count>, 0)
+command! -count=0 EAI  call s:InstCmd('eai', get(g:, 'verilog_tooling_eai_flags', []) + s:InterfaceArgs(), <count>, 0)
+command! -count=0 EAP  call s:InstCmd('eap', s:InterfaceArgs(), <count>, 0)
 
 command! -nargs=0 AIF  call s:Run('verilog_tooling.inst', 'aif', [], -1)
 command! -nargs=0 APF  call s:Run('verilog_tooling.inst', 'apf', [], -1)

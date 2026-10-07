@@ -577,7 +577,34 @@ def test_cli_line_rejected_for_all_run_verbs(tmp_path):
         )
 
 
-def test_cli_eai_line_expands_only_that_instance(tmp_path):
+def test_cli_line_rejected_for_non_aiu_family(tmp_path):
+    # --line is AIU-family only (ait/aiu/aiu1); every other command
+    # stays whole-file even though it accepts --which.
+    (tmp_path / "small.v").write_text(SMALL)
+    buf = tmp_path / "top.v"
+    buf.write_text(
+        "small u_a (/*autoinst*/);\n"
+        "small u_b (/*autoinst*/);\n"
+    )
+    for cmd in ("eai", "eap", "kill"):
+        with pytest.raises(SystemExit, match="--line applies only to"):
+            main(
+                [
+                    cmd,
+                    "-i",
+                    str(buf),
+                    "-o",
+                    str(tmp_path / "out.v"),
+                    "-y",
+                    str(tmp_path),
+                    "--line",
+                    "2",
+                ]
+            )
+
+
+def test_cli_ait_line_expands_only_that_instance(tmp_path):
+    # ait delegates to eai but keeps the AIU-family --line behaviour.
     (tmp_path / "small.v").write_text(SMALL)
     buf = tmp_path / "top.v"
     buf.write_text(
@@ -587,7 +614,7 @@ def test_cli_eai_line_expands_only_that_instance(tmp_path):
     out_file = tmp_path / "out.v"
     main(
         [
-            "eai",
+            "ait",
             "-i",
             str(buf),
             "-o",
@@ -602,43 +629,6 @@ def test_cli_eai_line_expands_only_that_instance(tmp_path):
     assert out[0] == "small u_a (/*autoinst*/);"  # untouched
     joined = "\n".join(out[1:])
     assert ".clk" in joined and ".vld" in joined
-
-
-def test_cli_eap_line_expands_only_that_param_instance(tmp_path):
-    subp = (
-        "module subp #(parameter W = 8) (\n"
-        "    input wire clk,\n"
-        "    output wire [W-1:0] q\n"
-        ");\n"
-        "endmodule\n"
-    )
-    (tmp_path / "subp.v").write_text(subp)
-    text = (
-        "subp #(/*autoinstparam*/\n"
-        ") u_a (/*autoinst*/);\n"
-        "subp #(/*autoinstparam*/\n"
-        ") u_b (/*autoinst*/);\n"
-    )
-    buf = tmp_path / "top.v"
-    buf.write_text(text)
-    out_file = tmp_path / "out.v"
-    main(
-        [
-            "eap",
-            "-i",
-            str(buf),
-            "-o",
-            str(out_file),
-            "-y",
-            str(tmp_path),
-            "--line",
-            "3",
-        ]
-    )
-    out = out_file.read_text().splitlines()
-    assert out[0] == "subp #(/*autoinstparam*/"  # u_a untouched
-    assert out[1] == ") u_a (/*autoinst*/);"
-    assert ".W" in "\n".join(out[2:])  # u_b params expanded
 
 
 def test_cli_missing_module_file_fails(tmp_path):

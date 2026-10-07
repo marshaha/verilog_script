@@ -2399,7 +2399,7 @@ def main(argv=None) -> None:
     args = create_by_args(argv)
     text = Path(args.in_file).read_text()
     lines = text.splitlines()
-    _LINE_CMDS = ("ait", "aiu", "aiu1", "kill", "eai", "eap")
+    _LINE_CMDS = ("ait", "aiu", "aiu1")
     if args.line is not None and args.which is not None:
         raise SystemExit("--line and --which are mutually exclusive")
     if args.line is not None and args.command not in _LINE_CMDS:
@@ -2425,16 +2425,6 @@ def main(argv=None) -> None:
         out = _main_aall(text, lines, args)
         _log(f"ainj: done, {time.monotonic() - _t0:.1f}s total")
     elif args.command == "kill":
-        if args.line is not None:
-            ml = VerilogBuffer(lines).markers()
-            ordinal = _line_to_ordinal(
-                lines, _marker_offsets(lines, ml), args.line
-            )
-            if ordinal < 0:
-                raise SystemExit(
-                    f"no /*autoinst*/ instance contains line {args.line}"
-                )
-            args.which = ordinal
         out = kill_auto_inst(lines, args.which)
     elif args.command in ("aif", "apf", "adf", "af"):
         from . import fmt
@@ -2447,19 +2437,16 @@ def main(argv=None) -> None:
         }[args.command](lines)
     elif args.command in ("eai", "eap", "ait"):
         if args.line is not None:
+            # --line is gated to ait/aiu/aiu1; ait is the only carrier here
             from . import emacs
 
-            keyword = (
-                "AUTOINSTPARAM" if args.command == "eap" else "AUTOINST"
-            )
-            markers = emacs.find_auto_markers(lines, keyword)
+            markers = emacs.find_auto_markers(lines, "AUTOINST")
             ordinal = _line_to_ordinal(
                 lines, [mk.offset for mk in markers], args.line
             )
             if ordinal < 0:
                 raise SystemExit(
-                    f"no /*{keyword.lower()}*/ instance contains "
-                    f"line {args.line}"
+                    f"no /*autoinst*/ instance contains line {args.line}"
                 )
             args.which = ordinal
         if args.command == "ait":

@@ -133,10 +133,11 @@ marker.
 | `BPN` `BP` `BA` | always-block snippets | `<leader>bpn` `bp` `ba` |
 
 `{count}` before EAI/AIT/AIU/AIU1 selects the Nth `/*autoinst*/` instance
-(`:1AIT` → the first one only). With no count, the instance under the
-cursor is processed — the front-end passes `--line` with the cursor
-line. From the command line, `--which N` (0-based marker index) or
-`--line N` (1-based editor line) selects a single instance.
+(`:1AIT` → the first one only). With no count, AIT/AIU/AIU1 process
+the instance under the cursor — the front-end passes `--line` with
+the cursor line — while EAI/EAP/KI process every instance. From the
+command line, `--which N` (0-based marker index) or `--line N`
+(1-based editor line, AIT/AIU/AIU1 only) selects a single instance.
 
 Every command reports what it did, e.g.
 `[verilog_tooling] eai: line 515: 1005 -> 937 line(s)` (or `no changes`).
