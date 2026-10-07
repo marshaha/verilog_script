@@ -1324,6 +1324,33 @@ endmodule
     assert "wire [7:0] scalar_w;" in out
 
 
+def test_usrdef_decl_with_initializer_is_not_rewritten():
+    # verilog-ethernet eth_mac_10g.v: `reg r = 1'b0;` declarations whose
+    # linked group grows to [7:0] were rewritten by _rewrite_usrdef_range
+    # into phantom declarations of a signal named `b0` (the based literal's
+    # text after `1'`), destroying the user's declaration and duplicating
+    # `b0` once per such line.  A declaration carrying an initializer is
+    # not a "simple decl" and must stay verbatim.
+    text = """\
+module top (
+    output wire [7:0] o_sig,
+    input wire clk
+);
+    reg r_sig = 1'b0;
+    always @(posedge clk) begin
+            r_sig <= i_sig;
+    end
+    assign i_sig = 0;
+    assign o_sig = 0;
+    /*autodef*/
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    assert "reg r_sig = 1'b0;" in out
+    assert "reg [7:0] b0;" not in out
+    assert " b0;" not in out
+
+
 def test_const_index_between_loop_indices_becomes_dim():
     # val3[i][3][j*2+k][k]: the constant [3] sits between loop indices, so it
     # is an unpacked dim [0:3]; a trailing constant [3] alone stays a bit-select.

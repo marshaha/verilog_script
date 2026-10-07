@@ -1821,9 +1821,15 @@ def _usrdef_wider(new_msb: str, old_msb: str) -> bool:
 def _rewrite_usrdef_range(line: str, new_msb: str) -> str | None:
     """Rewrite ONLY the range of a one-line ``wire``/``reg`` declaration to
     ``[new_msb:0]``, preserving keyword, name, ``;`` and trailing comment.
-    Returns the rewritten line, or None if the line is not a simple decl."""
+    Returns the rewritten line, or None if the line is not a simple decl.
+    The name must be the first identifier after the keyword, an optional
+    ``signed`` and any packed ranges — a lazy ``.*?`` between keyword and
+    name once slid across ``= 1'`` in ``reg r = 1'b0;`` declarations and
+    rewrote them as declarations of a phantom signal named ``b0``."""
     m = re.match(
-        r"^(?P<indent>\s*)(?P<kw>wire|reg|logic)\b(?P<bw>.*?)(?P<name>[A-Za-z_]\w*)"
+        r"^(?P<indent>\s*)(?P<kw>wire|reg|logic)\b"
+        r"(?P<bw>(?:\s*signed\b)?(?:\s*\[[^\]]*\])*)\s*"
+        r"(?P<name>[A-Za-z_]\w*)"
         r"(?P<tail>\s*(?:\[[^\]]*\]\s*)*;.*)$",
         line,
     )
