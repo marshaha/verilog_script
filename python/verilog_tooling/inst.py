@@ -343,6 +343,12 @@ def _port_continues(line: str) -> bool:
 
 
 _TYPEDEF_REGEXP: "re.Pattern[str] | None" = None
+_UDT_HEAD_RE = re.compile(
+    r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)"
+    r"((?:\s*\[[^\]]*\])*)"
+    r"(?:\s+(?:signed|unsigned))?"
+    r"\s+([A-Za-z_]\w*)"
+)
 
 
 def set_typedef_regexp(regexp: str | None) -> None:
@@ -416,7 +422,21 @@ def _parse_port_line_multi(line: str) -> list[Port]:
         name = nm.group(0)
         after = part[nm.end() :]
         data_type = ""
-        if _TYPEDEF_REGEXP is not None and _TYPEDEF_REGEXP.search(name):
+        # A user data type may precede the port name (``output
+        # crash_dump_t crash_dump_o``, ``input pkg::foo_t x``), possibly
+        # with a packed dimension between them (``input foo_t [3:0] x``):
+        # the name is the last word and any ``[...]`` group is a packed
+        # dimension of the port.  verilog-mode reads them this way even
+        # without a verilog-typedef-regexp local; the explicit regexp
+        # (when set) still applies below for cases it describes.  Inline
+        # enum/struct/union heads keep the previous behaviour.
+        um = _UDT_HEAD_RE.match(part)
+        if um and um.group(1) not in ("enum", "struct", "union"):
+            data_type, name = um.group(1), um.group(3)
+            after = part[um.end() :]
+            for dm in re.finditer(r"\[([^\]]*)\]", um.group(2) or ""):
+                packed.append(re.sub(r"\s+", "", dm.group(1)))
+        elif _TYPEDEF_REGEXP is not None and _TYPEDEF_REGEXP.search(name):
             # a user type (reqcmd_t): the port name is the next word, the
             # first word is its data type
             nm2 = re.match(r"\s*(\w+)", after)
