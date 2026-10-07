@@ -421,6 +421,226 @@ def test_cli_ait_keeps_hand_renamed_connection(tmp_path, capsys):
     assert "rx_clk" in out_file.read_text()
 
 
+TWO_INST = """\
+small u_a (/*autoinst*/
+    .clk (clk),
+    .din (d0),
+    .vld (v0)
+);
+small u_b (/*autoinst*/
+    .clk (clk),
+    .din (d1),
+    .gone (gone_net),
+    .vld (v1)
+);
+"""
+
+
+def _line_of(text: str, needle: str) -> int:
+    return text.splitlines().index(
+        next(ln for ln in text.splitlines() if needle in ln)
+    ) + 1
+
+
+def test_cli_aiu1_line_selects_instance_with_stale_pin(tmp_path):
+    # --line is the editor-cursor selector (Vim :AIU without a count):
+    # the stale .gone inside u_b is flagged; u_a stays byte-identical.
+    (tmp_path / "small.v").write_text(SMALL)
+    buf = tmp_path / "top.v"
+    buf.write_text(TWO_INST)
+    out_file = tmp_path / "out.v"
+    main(
+        [
+            "aiu1",
+            "-i",
+            str(buf),
+            "-o",
+            str(out_file),
+            "-y",
+            str(tmp_path),
+            "--date",
+            "[D]",
+            "--line",
+            str(_line_of(TWO_INST, ".gone")),
+        ]
+    )
+    out = out_file.read_text().splitlines()
+    a_part, b_part = out[:6], out[6:]
+    assert a_part == TWO_INST.splitlines()[:6]  # u_a untouched
+    assert b_part == [
+        "    .clk (clk),",
+        "    .din (d1),",
+        "//    .gone (gone_net), // INST_DEL: port gone have deleted [D]",
+        "    .vld (v1)",
+        ");",
+    ]
+
+
+def test_cli_aiu1_line_on_header_and_closer_selects_same_instance(tmp_path):
+    (tmp_path / "small.v").write_text(SMALL)
+    buf = tmp_path / "top.v"
+    buf.write_text(TWO_INST)
+    # 11 = the ');' line closing u_b (TWO_INST has 11 lines)
+    for line_no in (_line_of(TWO_INST, "small u_b"), 11):
+        out_file = tmp_path / "out.v"
+        main(
+            [
+                "aiu1",
+                "-i",
+                str(buf),
+                "-o",
+                str(out_file),
+                "-y",
+                str(tmp_path),
+                "--date",
+                "[D]",
+                "--line",
+                str(line_no),
+            ]
+        )
+        assert "INST_DEL" in out_file.read_text()
+
+
+def test_cli_aiu1_line_outside_instance_fails(tmp_path):
+    (tmp_path / "small.v").write_text(SMALL)
+    buf = tmp_path / "top.v"
+    buf.write_text("// top note\n" + TWO_INST)  # line 1 is outside any instance
+    with pytest.raises(SystemExit, match="contains line 1"):
+        main(
+            [
+                "aiu1",
+                "-i",
+                str(buf),
+                "-o",
+                str(tmp_path / "out.v"),
+                "-y",
+                str(tmp_path),
+                "--line",
+                "1",
+            ]
+        )
+
+
+def test_cli_aiu1_line_in_markerless_instance_fails(tmp_path):
+    buf = tmp_path / "top.v"
+    plain = "small u_p (\n    .clk (clk)\n);\n"
+    buf.write_text(plain)
+    with pytest.raises(SystemExit, match="contains line 2"):
+        main(
+            [
+                "aiu1",
+                "-i",
+                str(buf),
+                "-o",
+                str(tmp_path / "out.v"),
+                "-y",
+                str(tmp_path),
+                "--line",
+                "2",
+            ]
+        )
+
+
+def test_cli_line_conflicts_with_which(tmp_path):
+    buf = tmp_path / "top.v"
+    buf.write_text(TWO_INST)
+    with pytest.raises(SystemExit, match="mutually exclusive"):
+        main(
+            [
+                "aiu1",
+                "-i",
+                str(buf),
+                "-o",
+                str(tmp_path / "out.v"),
+                "--line",
+                "3",
+                "--which",
+                "0",
+            ]
+        )
+
+
+def test_cli_line_rejected_for_all_run_verbs(tmp_path):
+    buf = tmp_path / "top.v"
+    buf.write_text(TWO_INST)
+    with pytest.raises(SystemExit, match="--line applies only to"):
+        main(
+            [
+                "af",
+                "-i",
+                str(buf),
+                "-o",
+                str(tmp_path / "out.v"),
+                "--line",
+                "3",
+            ]
+        )
+
+
+def test_cli_eai_line_expands_only_that_instance(tmp_path):
+    (tmp_path / "small.v").write_text(SMALL)
+    buf = tmp_path / "top.v"
+    buf.write_text(
+        "small u_a (/*autoinst*/);\n"
+        "small u_b (/*autoinst*/);\n"
+    )
+    out_file = tmp_path / "out.v"
+    main(
+        [
+            "eai",
+            "-i",
+            str(buf),
+            "-o",
+            str(out_file),
+            "-y",
+            str(tmp_path),
+            "--line",
+            "2",
+        ]
+    )
+    out = out_file.read_text().splitlines()
+    assert out[0] == "small u_a (/*autoinst*/);"  # untouched
+    joined = "\n".join(out[1:])
+    assert ".clk" in joined and ".vld" in joined
+
+
+def test_cli_eap_line_expands_only_that_param_instance(tmp_path):
+    subp = (
+        "module subp #(parameter W = 8) (\n"
+        "    input wire clk,\n"
+        "    output wire [W-1:0] q\n"
+        ");\n"
+        "endmodule\n"
+    )
+    (tmp_path / "subp.v").write_text(subp)
+    text = (
+        "subp #(/*autoinstparam*/\n"
+        ") u_a (/*autoinst*/);\n"
+        "subp #(/*autoinstparam*/\n"
+        ") u_b (/*autoinst*/);\n"
+    )
+    buf = tmp_path / "top.v"
+    buf.write_text(text)
+    out_file = tmp_path / "out.v"
+    main(
+        [
+            "eap",
+            "-i",
+            str(buf),
+            "-o",
+            str(out_file),
+            "-y",
+            str(tmp_path),
+            "--line",
+            "3",
+        ]
+    )
+    out = out_file.read_text().splitlines()
+    assert out[0] == "subp #(/*autoinstparam*/"  # u_a untouched
+    assert out[1] == ") u_a (/*autoinst*/);"
+    assert ".W" in "\n".join(out[2:])  # u_b params expanded
+
+
 def test_cli_missing_module_file_fails(tmp_path):
     buf = tmp_path / "top.v"
     buf.write_text("nope u_s (/*autoinst*/);\n")

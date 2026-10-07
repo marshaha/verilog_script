@@ -37,6 +37,7 @@ Intentional deviations from the Vim originals (all documented in README):
 from __future__ import annotations
 
 import argparse
+import bisect
 import datetime
 import os
 import sys
@@ -1625,6 +1626,82 @@ def resolve_instance(lines: Sequence[str], marker_idx: int) -> tuple[str, str]:
     return VerilogBuffer(lines).resolve_instance(marker_idx)
 
 
+def _statement_span(mt: str, marker_off: int) -> tuple[int, int]:
+    """(start, end) offsets of the instance statement containing the
+    AUTO marker at MARKER_OFF in MASK_COMMENTS()-ed text: the module
+    name through the ')' closing the port list.  Raises ValueError when
+    the marker is not inside a resolvable instance statement."""
+    from . import emacs
+
+    st = emacs._scan_parens_at(mt + "\n", [marker_off])[marker_off]
+    if not st:
+        raise ValueError("marker outside any parenthesis group")
+    inner = st[-1]
+    # #( ... ) parameter-override group: '(' directly preceded by '#'
+    k = inner
+    while k > 0 and mt[k - 1] in " \t\n":
+        k -= 1
+    if k > 0 and mt[k - 1] == "#":
+        start = emacs._prev_word(mt, k - 1)[1]
+        close = emacs._matching_paren(mt, inner)
+        nxt = mt.find("(", close + 1)
+        end = emacs._matching_paren(mt, nxt) if nxt >= 0 else close
+        return start, end
+    # port list: the instance name precedes it, a #(...) group may
+    # precede the instance name (mirrors VerilogBuffer.resolve_instance)
+    _, kw = emacs._prev_word(mt, inner)
+    group = emacs._skip_group_back(mt, kw)
+    if group is not None:
+        kk = group[0]
+        while kk > 0 and mt[kk - 1] in " \t\n":
+            kk -= 1
+        if kk > 0 and mt[kk - 1] == "#":
+            kk -= 1
+        kw = kk
+    start = emacs._prev_word(mt, kw)[1]
+    return start, emacs._matching_paren(mt, inner)
+
+
+def _line_to_ordinal(
+    lines: Sequence[str], marker_offsets: Sequence[int], line_no: int
+) -> int:
+    """Ordinal (same numbering as --which) of the marker whose instance
+    statement contains 1-based LINE_NO; -1 when no statement does.
+    Marker-offsets that fail to resolve are skipped."""
+    if line_no < 1 or line_no > len(lines):
+        return -1
+    mt = mask_comments("\n".join(lines))
+    starts: list[int] = []
+    pos = 0
+    for ln in lines:
+        starts.append(pos)
+        pos += len(ln) + 1
+    lo = starts[line_no - 1]
+    hi = lo + len(lines[line_no - 1])
+    for ordinal, moff in enumerate(marker_offsets):
+        try:
+            s, e = _statement_span(mt, moff)
+        except ValueError:
+            continue
+        if s <= hi and e >= lo:
+            return ordinal
+    return -1
+
+
+def _marker_offsets(lines: Sequence[str], marker_lines: Sequence[int]) -> list[int]:
+    """Character offsets of the /*autoinst*/ markers on MARKER_LINES."""
+    starts: list[int] = []
+    pos = 0
+    for ln in lines:
+        starts.append(pos)
+        pos += len(ln) + 1
+    out = []
+    for ml in marker_lines:
+        m = _AUTOINST_MARK.search(lines[ml])
+        out.append(starts[ml] + (m.start() if m else 0))
+    return out
+
+
 def kill_auto_inst(lines: Sequence[str], which: int | None = None) -> list[str]:
     """Collapse expanded instances back to ``... inst(/*autoinst*/);`` stubs.
 
@@ -1936,7 +2013,15 @@ def create_by_args(args_l=None):
         "--which",
         type=int,
         default=None,
-        help="0-based instance index to process (default: all)",
+        help="0-based index among /*AUTOINST*/ markers (default: all)",
+    )
+    parser.add_argument(
+        "--line",
+        type=int,
+        default=None,
+        help="1-based line number (editor cursor position): process only "
+        "the instance whose statement contains that line; conflicts "
+        "with --which",
     )
     parser.add_argument("--date", default=None, help="override the INST_NEW/INST_DEL timestamp")
     parser.add_argument(
@@ -2314,6 +2399,13 @@ def main(argv=None) -> None:
     args = create_by_args(argv)
     text = Path(args.in_file).read_text()
     lines = text.splitlines()
+    _LINE_CMDS = ("ait", "aiu", "aiu1", "kill", "eai", "eap")
+    if args.line is not None and args.which is not None:
+        raise SystemExit("--line and --which are mutually exclusive")
+    if args.line is not None and args.command not in _LINE_CMDS:
+        raise SystemExit(
+            "--line applies only to: " + "/".join(_LINE_CMDS)
+        )
     if args.command in ("eai", "ait", "aall", "ainj") and not args.param_value:
         # the buffer's own Local Variables can switch param-value
         # substitution on, like emacs file-local variables
@@ -2333,6 +2425,16 @@ def main(argv=None) -> None:
         out = _main_aall(text, lines, args)
         _log(f"ainj: done, {time.monotonic() - _t0:.1f}s total")
     elif args.command == "kill":
+        if args.line is not None:
+            ml = VerilogBuffer(lines).markers()
+            ordinal = _line_to_ordinal(
+                lines, _marker_offsets(lines, ml), args.line
+            )
+            if ordinal < 0:
+                raise SystemExit(
+                    f"no /*autoinst*/ instance contains line {args.line}"
+                )
+            args.which = ordinal
         out = kill_auto_inst(lines, args.which)
     elif args.command in ("aif", "apf", "adf", "af"):
         from . import fmt
@@ -2344,6 +2446,22 @@ def main(argv=None) -> None:
             "af": fmt.all_format,
         }[args.command](lines)
     elif args.command in ("eai", "eap", "ait"):
+        if args.line is not None:
+            from . import emacs
+
+            keyword = (
+                "AUTOINSTPARAM" if args.command == "eap" else "AUTOINST"
+            )
+            markers = emacs.find_auto_markers(lines, keyword)
+            ordinal = _line_to_ordinal(
+                lines, [mk.offset for mk in markers], args.line
+            )
+            if ordinal < 0:
+                raise SystemExit(
+                    f"no /*{keyword.lower()}*/ instance contains "
+                    f"line {args.line}"
+                )
+            args.which = ordinal
         if args.command == "ait":
             # deprecated: the Vim (automatic.vim) full regeneration used to
             # discard hand-written connections (.clk(rx_clk) -> .clk(clk));
@@ -2359,6 +2477,16 @@ def main(argv=None) -> None:
             "eai" if args.command == "ait" else args.command, text, lines, args
         )
     else:
+        if args.line is not None:
+            ml = VerilogBuffer(lines).markers()
+            ordinal = _line_to_ordinal(
+                lines, _marker_offsets(lines, ml), args.line
+            )
+            if ordinal < 0:
+                raise SystemExit(
+                    f"no /*autoinst*/ instance contains line {args.line}"
+                )
+            args.which = ordinal
         try:
             target_lines = VerilogBuffer(lines)._targets(args.which)
         except ValueError as exc:
