@@ -167,7 +167,9 @@ def test_resolve_module_files_via_resolve_libdirs(tmp_path):
     assert files == {"small": lib / "small.v"}
 
 
-def test_cli_ait_uses_local_variables(tmp_path):
+def test_cli_ait_uses_local_variables(tmp_path, capsys):
+    # `ait` delegates to the emacs (eai) expansion and warns; the buffer's
+    # Local Variables still locate the module file with no -y at all.
     lib = tmp_path / "lib"
     lib.mkdir()
     (lib / "small.v").write_text(SMALL)
@@ -183,16 +185,10 @@ def test_cli_ait_uses_local_variables(tmp_path):
     out_file = tmp_path / "out.v"
     # no -y at all: only the buffer's Local Variables can locate small.v
     main(["ait", "-i", str(buf), "-o", str(out_file)])
-    assert out_file.read_text().splitlines() == [
-        "small u_s (/*autoinst*/",
-        CLK_LINE,
-        DIN_LINE,
-        VLD_LINE_LAST,
-        ");",
-        "",
-        "// Local Variables:",
-        '// verilog-library-directories:("../lib" )',
-    ]
+    text = out_file.read_text()
+    assert ".clk" in text and ".din" in text and ".vld" in text
+    assert "// Local Variables:" in text  # buffer tail preserved
+    assert "deprecated" in capsys.readouterr().err
 
 
 def test_cli_eai_uses_local_variables(tmp_path):

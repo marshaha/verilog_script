@@ -3,7 +3,8 @@
 Covers the instance-handling family bound in ~/.vimrc:
 
 - ``kill_auto_inst``          <- KillAutoInst  (collapse instance to a stub)
-- ``auto_inst``               <- AutoInst      (AIT: full regenerate)
+- ``auto_inst``               <- AutoInst      (engine for AIU stub expansion;
+  the ``ait`` CLI verb is deprecated and delegates to ``eai``)
 - ``auto_inst_update``        <- AutoInstUpdate      (AIU1: minimal diff update)
 - ``auto_inst_update_order``  <- AutoInstUpdateOrder (AIU:  update + reorder)
 
@@ -1897,12 +1898,13 @@ def _module_lines(
 def create_by_args(args_l=None):
     parser = argparse.ArgumentParser(
         prog="verilog_tooling.inst",
-        description="automatic.vim AIT/AIU/AIU1/kill rewrite + verilog-mode AUTOINST/AUTOINSTPARAM",
+        description="automatic.vim AIU/AIU1/kill rewrite + verilog-mode AUTOINST/AUTOINSTPARAM (ait deprecated, delegates to eai)",
     )
     parser.add_argument(
         "command",
         choices=["ait", "aiu", "aiu1", "kill", "eai", "eap", "aif", "apf", "adf", "af", "aall", "ainj"],
-        help="ait/aiu/aiu1/kill: automatic.vim commands; "
+        help="aiu/aiu1/kill: automatic.vim commands; "
+        "ait: DEPRECATED, delegates to eai; "
         "eai: verilog-mode AUTOINST; eap: verilog-mode AUTOINSTPARAM; "
         "aif/apf/adf/af: automatic.vim format commands (buffer-local); "
         "aall: eap+eai+aio+aw+areg+adt+arg+af in one pass (shared module table)",
@@ -2312,7 +2314,7 @@ def main(argv=None) -> None:
     args = create_by_args(argv)
     text = Path(args.in_file).read_text()
     lines = text.splitlines()
-    if args.command in ("eai", "aall", "ainj") and not args.param_value:
+    if args.command in ("eai", "ait", "aall", "ainj") and not args.param_value:
         # the buffer's own Local Variables can switch param-value
         # substitution on, like emacs file-local variables
         if re.search(r"^\s*//\s*verilog-auto-inst-param-value\s*:\s*t\b", text, re.M):
@@ -2341,8 +2343,21 @@ def main(argv=None) -> None:
             "adf": fmt.auto_define_format,
             "af": fmt.all_format,
         }[args.command](lines)
-    elif args.command in ("eai", "eap"):
-        out = _main_emacs(args.command, text, lines, args)
+    elif args.command in ("eai", "eap", "ait"):
+        if args.command == "ait":
+            # deprecated: the Vim (automatic.vim) full regeneration used to
+            # discard hand-written connections (.clk(rx_clk) -> .clk(clk));
+            # ait now delegates to the emacs expansion, which keeps them.
+            # The Vim engine (VerilogBuffer.auto_inst) stays for AIU's stub
+            # expansion, but is no longer exposed as a verb of its own.
+            print(
+                "warning: ait is deprecated; delegating to eai "
+                "(emacs-style AUTOINST expansion)",
+                file=sys.stderr,
+            )
+        out = _main_emacs(
+            "eai" if args.command == "ait" else args.command, text, lines, args
+        )
     else:
         try:
             target_lines = VerilogBuffer(lines)._targets(args.which)
@@ -2383,9 +2398,7 @@ def main(argv=None) -> None:
             for name, path in files.items()
         }
         templates = find_auto_templates(text)
-        if args.command == "ait":
-            out = auto_inst(lines, modules, which=which, templates=templates)
-        elif args.command == "aiu":
+        if args.command == "aiu":
             out = auto_inst_update_order(
                 lines, modules, which=which, date=args.date, templates=templates
             )

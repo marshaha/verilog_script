@@ -97,7 +97,7 @@ endmodule
 |---|---|---|
 | `AALL` | 一次跑完整套 AUTO（emacs verilog-auto 顺序，26 步） | `<leader>a` |
 | `EAI` / `EAP` | verilog-mode 的 AUTOINST / AUTOINSTPARAM | `<leader>eai` `eap` |
-| `AIT` | 按模块定义（重）建实例连接 | `<leader>ait` |
+| `AIT` | 已废弃：委托给 `EAI`（verilog-mode 的 AUTOINST 展开；stderr 警告） | `<leader>ait` |
 | `AIU` / `AIU1` | 最小差异的实例更新（保留手动连接） | `<leader>aiu` `aiu1` |
 | `KI` | 把实例折叠回 `/*autoinst*/` 空壳 | `<leader>d` |
 | `AD` / `ADT` | 重新生成 `/*autodef*/` 的 wire/reg/integer/genvar 声明 | `<leader>ad` `adt` |
@@ -194,12 +194,13 @@ EAP → EAI → AIO → AW → AREG → AD → AR → AF。输出与依次执行
 新建实例时）。优先级规则见下文
 [AUTOINSTPARAM (EAP)](#autoinstparam-eap)。
 
-### AIT —— （重）建实例
+### AIT —— 已废弃，委托给 EAI
 
-automatic.vim 的 AutoInst：先删除当前连接，再按模块定义重新生成
-（默认同名连接；有 AUTO_TEMPLATE 声明的按模板）。在空壳
-`fifo u0_fifo (/*autoinst*/);` 上执行可生成完整引脚表，也可用于
-强制干净重建。实例行上写 `--oneline` 注释可把所有连接压到一行。
+`AIT` 原是 automatic.vim 的 AutoInst：先删除当前连接，再按恒等式
+重新生成。那会冲掉手写连接（`.clk (rx_clk)` 被改成 `.clk (clk)`），
+故动词废弃：现在打印一条废弃警告，转委托 emacs（EAI）展开——已有
+连接原样保留、只补缺脚。Vim 再生引擎保留为内部件（AIU 用它展开
+`/*autoinst*/` 空壳）。请改用 `EAI`。
 
 ### AIU / AIU1 —— 最小差异更新
 

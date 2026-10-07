@@ -386,19 +386,39 @@ def test_modify_emacs_inst_format():
 # CLI
 
 
-def test_cli_ait_end_to_end(tmp_path):
+def test_cli_ait_end_to_end(tmp_path, capsys):
+    # `ait` is deprecated: it delegates to the emacs (eai) AUTOINST
+    # expansion.  Existing connections are kept (no kill+regenerate) and
+    # the deprecation warning goes to stderr; output bytes equal eai's.
     (tmp_path / "small.v").write_text(SMALL)
     buf = tmp_path / "top.v"
     buf.write_text("small u_s (/*autoinst*/);\n")
     out_file = tmp_path / "out.v"
     main(["ait", "-i", str(buf), "-o", str(out_file), "-y", str(tmp_path)])
-    assert out_file.read_text().splitlines() == [
-        "small u_s (/*autoinst*/",
-        CLK_LINE,
-        DIN_LINE,
-        VLD_LINE_LAST,
-        ");",
-    ]
+    eai_file = tmp_path / "eai.v"
+    main(["eai", "-i", str(buf), "-o", str(eai_file), "-y", str(tmp_path)])
+    assert out_file.read_text() == eai_file.read_text()
+    # the emacs expansion reached the full pin list (sanity: not a stub)
+    text = out_file.read_text()
+    assert ".clk" in text and ".din" in text and ".vld" in text
+    assert "deprecated" in capsys.readouterr().err
+
+
+def test_cli_ait_keeps_hand_renamed_connection(tmp_path, capsys):
+    # the motivating case for the deprecation: a hand-renamed connection
+    # (.clk(rx_clk)) used to be rewritten to the identity .clk(clk) by
+    # ait's kill+regenerate; the eai delegation keeps it verbatim.
+    (tmp_path / "small.v").write_text(SMALL)
+    buf = tmp_path / "top.v"
+    buf.write_text('small u_s (\n    .clk (rx_clk),\n    /*autoinst*/\n);\n')
+    out_file = tmp_path / "out.v"
+    main(["ait", "-i", str(buf), "-o", str(out_file), "-y", str(tmp_path)])
+    text = out_file.read_text()
+    assert "rx_clk" in text and ".clk" in text
+    assert "deprecated" in capsys.readouterr().err
+    # idempotent re-run keeps the rename
+    main(["ait", "-i", str(out_file), "-o", str(out_file), "-y", str(tmp_path)])
+    assert "rx_clk" in out_file.read_text()
 
 
 def test_cli_missing_module_file_fails(tmp_path):

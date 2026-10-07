@@ -100,7 +100,7 @@ marker.
 |---|---|---|
 | `AALL` | full AUTO set in one pass, emacs `verilog-batch-auto` order (see below) | `<leader>a` |
 | `EAI` / `EAP` | verilog-mode AUTOINST / AUTOINSTPARAM | `<leader>eai` `eap` |
-| `AIT` | (re)build instance connections from the module definition | `<leader>ait` |
+| `AIT` | deprecated: delegates to `EAI` (verilog-mode AUTOINST expansion; warns on stderr) | `<leader>ait` |
 | `AIU` / `AIU1` | minimal-diff instance updates (keep manual connections) | `<leader>aiu` `aiu1` |
 | `KI` | collapse an instance back to the `/*autoinst*/` stub | `<leader>d` |
 | `AD` / `ADT` | regenerate `/*autodef*/` wire/reg/integer/genvar declarations | `<leader>ad` `adt` |
@@ -214,13 +214,15 @@ Fills the `#(...)` parameter list (`/*AUTOINSTPARAM*/`, or new instances
 created by AIT/EAI). See the priority rules in
 [AUTOINSTPARAM (EAP)](#autoinstparam-eap) below.
 
-### AIT — (re)build an instance
+### AIT — deprecated, delegates to EAI
 
-automatic.vim AutoInst: kills the current connections and regenerates
-them from the module definition (identity connections, or AUTO_TEMPLATE
-where declared). Use it on a stub `fifo u0_fifo (/*autoinst*/);` to
-build the full pin list, or to force a clean rebuild. An `--oneline`
-comment on the instance line packs everything onto one line.
+`AIT` used to be automatic.vim AutoInst (kill the current connections
+and regenerate identity connections). That lost hand-written connections
+(`.clk (rx_clk)` became `.clk (clk)`), so the verb is deprecated: it now
+prints a warning and delegates to the emacs (EAI) expansion, which keeps
+every existing connection and only adds what is missing. The Vim
+regeneration engine stays internal (AIU uses it to expand
+`/*autoinst*/` stubs). Use `EAI` instead.
 
 ### AIU / AIU1 — minimal-diff updates
 
