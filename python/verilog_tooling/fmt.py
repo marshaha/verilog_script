@@ -43,6 +43,21 @@ _DEFINE_DECL = re.compile(r"^\s*(wire|reg|logic|integer|genvar)\b")
 _WIDTH = re.compile(r"\[.*\]\s*[A-Za-z]")
 
 _DEFINE_BONUS = {"wire": 3, "reg": 4, "integer": 0, "genvar": 1}
+_INIT_ASSIGN_RE = re.compile(r"(?<![<>=!])=(?![=])")
+
+
+def _top_level_comma(text: str) -> bool:
+    """True when `text` holds a comma outside any []/() nesting (a
+    multi-name declaration such as ``input clk, wen,``)."""
+    depth = 0
+    for c in text:
+        if c in "[(":
+            depth += 1
+        elif c in "])":
+            depth -= 1
+        elif c == "," and depth == 0:
+            return True
+    return False
 
 
 def _extract_width(text: str) -> str:
@@ -244,7 +259,7 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
                 comment = bcm.group(0).strip()
         body = re.sub(r"//.*", "", line)
         body = re.sub(r"/\*.*?\*/", " ", body)
-        if re.search(r"\)\s*$", body):
+        if re.search(r"\)\s*;?\s*$", body):
             terminator = ");"
         else:
             tm = re.search(r"\w+\s*([;|,])\s*$", body)
@@ -253,21 +268,37 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         body_ns = re.sub(r"\s*$", "", body)
         body_ns = re.sub(r"\)\s*;$", "", body_ns)
         body_ns = re.sub(r"[;|,]$", "", body_ns)
+        # A multi-name declaration (``input clk, wen,``) names several
+        # ports on one line; the single-name rebuild below would keep
+        # only the last one.  Leave such lines untouched.
+        if _top_level_comma(body_ns):
+            out.append(line)
+            continue
         # an optional reg/wire/logic after the direction must be kept
         # (output reg [DW-1:0] Q — dropping it turns the port into a wire)
         dir_m = re.match(r"\s*(?:input|output|inout)\s*", body_ns)
         rest_dir = body_ns[dir_m.end() :] if dir_m else body_ns
         reg_m = re.match(r"(reg|wire|logic)\s+", rest_dir)
-        reg_kw = (reg_m.group(1) + " ") if reg_m else ""
+        kw = (reg_m.group(1) + " ") if reg_m else ""
+        if not kw:
+            # a user data type (or signed/unsigned) may sit where the net
+            # type would: ``input ibex_mubi_t fetch_enable_i``.  Dropping
+            # it silently turns the port into an implicit 1-bit net.
+            tm = re.match(
+                r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)\s+(?:\[[^\]]*\]\s+)*\w+\s*$",
+                rest_dir,
+            )
+            if tm:
+                kw = tm.group(1) + " "
         nm = re.search(r"\w+\s*$", body_ns)
         port_name = nm.group(0).strip() if nm else ""
         space_max = 20 + max_len + (1 if m.group(1) == "output" else 2)
         out.append(
             m.group(1)
-            + (" " if reg_kw else "")
-            + reg_kw
+            + (" " if kw else "")
+            + kw
             + width
-            + _cal_margin(space_max, len(reg_kw) + len(width) + (1 if reg_kw else 0))
+            + _cal_margin(space_max, len(kw) + len(width) + (1 if kw else 0))
             + port_name
             + terminator
             + comment
@@ -283,6 +314,14 @@ def _auto_define_format(self: VerilogBuffer) -> VerilogBuffer:
     for li, line in enumerate(self._lines):
         m = None if comment_mask[li] else _DEFINE_DECL.match(line)
         if not m:
+            out.append(line)
+            continue
+        # A declaration carrying an initializer (net declaration
+        # assignment, e.g. ``wire x = a && b;``) or one whose statement
+        # continues on a following line (no ';' here) is not a plain
+        # declaration: the name extraction below assumes ``name;`` and
+        # would silently drop the rest of the statement.  Leave it.
+        if ";" not in line or _INIT_ASSIGN_RE.search(line.split(";", 1)[0]):
             out.append(line)
             continue
         port_type = m.group(1)
