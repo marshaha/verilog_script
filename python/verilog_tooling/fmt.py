@@ -302,7 +302,7 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
             # type would: ``input ibex_mubi_t fetch_enable_i``.  Dropping
             # it silently turns the port into an implicit 1-bit net.
             tm = re.match(
-                r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)\s+(?:\[[^\]]*\]\s+)*\w+\s*$",
+                r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)\s+(?:\[[^\]]*\]\s*)*\w+\s*$",
                 rest_dir,
             )
             if tm:

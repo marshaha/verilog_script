@@ -127,6 +127,15 @@ APF_BUF = [
 ]
 
 
+def test_apf_keeps_udt_when_name_glued_to_range():
+    # pulp axi: first-pass output is `output axi_req_t [W-1:0]mst_o,`
+    # (name glued to the range); formatting it again must not drop
+    # the user-defined type word.
+    out = auto_port_format(["output axi_req_t [NoMstPorts-1:0]mst_reqs_o,"])
+    assert out[0].startswith("output axi_req_t"), out
+    assert out[0].rstrip().endswith("mst_reqs_o,"), out
+
+
 def test_apf_aligns_ports_and_preserves_terminator_and_comment():
     out = auto_port_format(APF_BUF)
     assert out == [
