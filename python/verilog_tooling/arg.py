@@ -59,6 +59,17 @@ _PORT_PREFIX = re.compile(
     r"(?:\b(?:wire|reg|parameter|localparam|genvar|integer)\b)*\s*"
     r"(?:\[[^\]]*:[^\]]*\]\s*)*"
 )
+# a user-defined type word (optionally pkg::-scoped or an interface modport)
+# plus its packed dims, ahead of the port name: `output axi_req_t [3:0] x`.
+# logic/signed deliberately NOT stripped: the Vim original keeps them
+# (tests/test_arg.py locks that).  Keyword-like first words are excluded.
+_UDT_PREFIX = re.compile(
+    r"^[A-Za-z_][\w$]*(?:::[A-Za-z_][\w$]*)*(?:\.[A-Za-z_][\w$]*)?"
+    r"(?:\s*\[[^\]]*\])*\s+(?=[A-Za-z_])"
+)
+_UDT_STRIP_EXEMPT = frozenset(
+    {"logic", "bit", "signed", "unsigned", "var", "int", "time", "tri", "supply0", "supply1"}
+)
 _AIO_MARK = re.compile(r"/\*\s*\b(?:autoinput|autooutput)\b", re.IGNORECASE)
 _PORT_TAIL = re.compile(r"\s*;.*$")
 _PORT_TRAIL_COMMA = re.compile(r"\s*,\s*$")  # header-style decl: `input clk,`
@@ -221,6 +232,9 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
             segs = segs[:-1] + _dir_segments(merged)
         for direction, seg in segs:
             name = _PORT_PREFIX.sub("", seg)
+            first = re.match(r"[A-Za-z_][\w$]*", name.strip())
+            if first and first.group(0) not in _UDT_STRIP_EXEMPT:
+                name = _UDT_PREFIX.sub("", name, count=1)
             name = _PORT_TAIL.sub("", name)  # body style: `input [7:0] a, b; // c`
             name = _PORT_TRAIL_COMMA.sub("", name)  # header style: `input clk,`
             name = _PORT_TRAIL_PAREN.sub("", name)  # single-line header: `input b)`
