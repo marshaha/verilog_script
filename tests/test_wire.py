@@ -692,3 +692,70 @@ def test_kill_auto_wire_keeps_autologic_region():
     out = kill_auto_wire(lines)
     assert "logic signed [15:0] par [0:7];" in out  # AUTOLOGIC kept
     assert not any(ln.strip() == "wire a;" for ln in out)  # AUTOWIRE killed
+
+
+# ---------------------------------------------------------------------------
+# submodule parameter defaults supply the instance-effective width
+
+_PMODA = """\
+module moda #(parameter W = 8) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+
+_PTOP = """\
+module top (
+    input wire clk
+);
+/*AUTOWIRE*/
+moda u_a (/*autoinst*/
+    .clk  (clk),
+    .dout (mid)
+);
+endmodule
+"""
+
+
+def test_auto_wire_uses_submodule_param_default():
+    mods = {"moda": parse_module_ports(_PMODA.splitlines(), with_params=True)}
+    out = auto_wire(_PTOP.splitlines(), mods)
+    region = out[out.index(HEADER_W) : out.index(CLOSER)]
+    # no #(...) override: width from moda's own default (W=8 -> [7:0]),
+    # not the unresolved symbolic 'W-1'
+    assert region == [
+        HEADER_W,
+        decl("wire ", "7", "mid", "// From u_a of moda.v"),
+    ]
+
+
+_PMODC = """\
+module modc #(parameter W = D*K, parameter D = 4) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+
+_PTOP_C = """\
+module top (
+    input wire clk
+);
+/*AUTOWIRE*/
+modc u_a (/*autoinst*/
+    .clk  (clk),
+    .dout (mid)
+);
+endmodule
+"""
+
+
+def test_auto_wire_symbolic_driver_dimension_declared():
+    mods = {"modc": parse_module_ports(_PMODC.splitlines(), with_params=True)}
+    out = auto_wire(_PTOP_C.splitlines(), mods)
+    region = out[out.index(HEADER_W) : out.index(CLOSER)]
+    # D folds to 4 but K stays symbolic: declare at the driver's
+    # dimension instead of dropping the net entirely
+    assert len(region) == 2
+    assert "mid;" in region[1] and "K" in region[1]

@@ -78,7 +78,7 @@ endmodule
     assert moddef.entries == (
         Port("clk", "input", None),
         Keep("`ifdef HAS_CFG"),
-        Port("cfg", "input", "3:0"),
+        Port("cfg", "input", "3:0", guard=(("HAS_CFG", True),)),
         Keep("`endif"),
         Keep(""),
         Keep("    // data path"),
@@ -1226,3 +1226,126 @@ def test_cli_aiu1_line_does_not_reformat_other_instances(tmp_path):
     # u_a (lines 1-6) byte-identical; u_b gained the rst_n pin
     assert out.splitlines()[:5] == src.splitlines()[:5]
     assert "rst_n" in out
+
+
+# ---------------------------------------------------------------------------
+# preprocessor-guarded ports (`ifdef families)
+
+_GSUB_LINES = [
+    "module gsub (",
+    "    input  wire       clk,",
+    "`ifdef HAS_EXTRA",
+    "    input  wire       extra,",
+    "`endif",
+    "    input  wire [7:0] din,",
+    "    output wire [7:0] dout",
+    ");",
+    "endmodule",
+]
+
+
+def _gsub_mod():
+    return parse_module_ports(_GSUB_LINES)
+
+
+def test_parse_ports_records_guard_conditions():
+    moddef = _gsub_mod()
+    guards = {p.name: p.guard for p in moddef.ports}
+    assert guards["clk"] == ()
+    assert guards["extra"] == (("HAS_EXTRA", True),)
+    assert guards["din"] == ()
+    sub = parse_module_ports(
+        [
+            "module g2 (",
+            "`ifdef MODE_A",
+            "    output wire oa,",
+            "`elsif MODE_B",
+            "    output wire ob,",
+            "`else",
+            "    output wire oc,",
+            "`endif",
+            "    output wire dout",
+            ");",
+            "endmodule",
+        ]
+    )
+    g2 = {p.name: p.guard for p in sub.ports}
+    assert g2["oa"] == (("MODE_A", True),)
+    assert g2["ob"] == (("MODE_A", False), ("MODE_B", True))
+    assert g2["oc"] == (("MODE_A", False), ("MODE_B", False))
+    assert g2["dout"] == ()
+
+
+def test_aiu_new_guarded_pin_is_wrapped():
+    lines = [
+        "module top;",
+        "gsub u_g (/*autoinst*/",
+        "    .clk (clk)",
+        ");",
+        "endmodule",
+    ]
+    out = auto_inst_update(lines, {"gsub": _gsub_mod()}, date=DATE)
+    joined = "\n".join(out)
+    gi = joined.index("`ifdef HAS_EXTRA")
+    ei = joined.index("`endif")
+    xi = joined.index(".extra")
+    assert gi < xi < ei
+    # kept pin keeps its comma (a later unguarded pin always follows)
+    assert "    .clk (clk)," in out
+
+
+def test_aiu_stub_wraps_guarded_ports():
+    lines = ["gsub u_g (/*autoinst*/);"]
+    out = auto_inst_update(lines, {"gsub": _gsub_mod()}, date=DATE)
+    joined = "\n".join(out)
+    assert "`ifdef HAS_EXTRA" in joined
+    assert "`endif" in joined
+    assert joined.index("`ifdef HAS_EXTRA") < joined.index(".extra")
+    # the last pin (dout) is unguarded: no separator comma on it
+    (dout_line,) = [ln for ln in out if ".dout" in ln]
+    assert "), //" not in dout_line.split("// INST_NEW")[0].rstrip(",")[-12:]
+
+
+def test_aiu_keeps_user_written_guard_lines():
+    lines = [
+        "module top;",
+        "gsub u_g (/*autoinst*/",
+        "    .clk (clk),",
+        "`ifdef HAS_EXTRA",
+        "    .extra (extra),",
+        "`endif",
+        "    .din (din)",
+        ");",
+        "endmodule",
+    ]
+    out = auto_inst_update(lines, {"gsub": _gsub_mod()}, date=DATE)
+    # user directives ride through verbatim, pins are not duplicated
+    assert "`ifdef HAS_EXTRA" in out
+    assert "`endif" in out
+    assert sum(".extra" in ln for ln in out) == 1
+    assert sum(".dout" in ln for ln in out) == 1  # only the new pin
+    assert "    .din (din)," in out  # comma added for the appended pin
+
+
+def test_auto_inst_regen_guarded_last_port():
+    sub = parse_module_ports(
+        [
+            "module g3 (",
+            "    input wire clk,",
+            "    input wire din,",
+            "`ifdef TAIL_G",
+            "    output wire tail",
+            "`endif",
+            ");",
+            "endmodule",
+        ]
+    )
+    out = auto_inst(["g3 u_g (/*autoinst*/);"], {"g3": sub})
+    stripped = [ln.strip() for ln in out]
+    (din_line,) = [ln for ln in stripped if ln.startswith(".din")]
+    (tail_line,) = [ln for ln in stripped if "tail" in ln and ln.startswith(",")]
+    # previous pin lost its trailing comma; the separator moved inside
+    # the guard as a leading comma on the guarded pin
+    assert not din_line.split("//")[0].rstrip().endswith(",")
+    assert stripped[-2] == "`endif"
+    assert stripped[-1] == ");"

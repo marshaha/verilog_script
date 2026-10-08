@@ -355,6 +355,7 @@ def _inst_driven_nets(
     modules: Mapping[str, ModuleDef],
     directions: "tuple[str, ...] | None" = None,
     simple_only: bool = False,
+    concat_ok: bool = False,
 ) -> dict[str, InstNet]:
     """net -> InstNet for every net connected to an output/inout port of an
     /*autoinst*/ instance whose module is in MODULES (first driver wins).
@@ -420,7 +421,9 @@ def _inst_driven_nets(
             }
         else:
             inst_io = {p.name: p for p in moddef.ports if p.direction in directions}
-        param_values = emacs.read_inst_param_values(text, open_idx)
+        param_values = emacs.effective_param_values(
+            moddef, emacs.read_inst_param_values(text, open_idx)
+        )
         for pin, expr in emacs.inst_pin_connections(text, open_idx):
             if pin not in inst_io:
                 continue
@@ -434,8 +437,12 @@ def _inst_driven_nets(
             ):
                 continue
             if stripped.startswith(("(", "{")):
-                # verilog-auto-ignore-concat: skip (default) or extract
-                if not _IGNORE_CONCAT:
+                # verilog-auto-ignore-concat: skip (default) or extract.
+                # CONCAT_OK is exclusion bookkeeping (AIO "is this net
+                # wired internally anywhere"): there the identifiers in
+                # a {...}/(...) expression always count as connected,
+                # regardless of the candidacy exemption.
+                if not _IGNORE_CONCAT or concat_ok:
                     for net, ewidth in _expr_nets(stripped):
                         if param_values:
                             ewidth = emacs._apply_param_values(ewidth, param_values)
@@ -646,10 +653,11 @@ def _auto_wire_single(
             for name, net in driven.items()
             if net.direction == "inout" and name in port_names
         }
-    # widths must name LOCAL symbols; a still-foreign width (a submodule
-    # parameter the instance map does not cover) would not compile — skip it
-    # here and let autodef flag the net as unresolved instead
-    from .autodef import _const_symbols, _width_syms_known
+    # every net here is instance-driven, so a width still naming foreign
+    # symbols (a submodule parameter the constants do not cover) is the
+    # DRIVER's dimension: declare with it, matching autodef's rule,
+    # instead of skipping the net
+    from .autodef import _const_symbols
 
     local_syms = set(get_all_paras(lines)) | set(_const_symbols(lines))
     from .autodef import _merge_unpacked_indexes
@@ -662,15 +670,6 @@ def _auto_wire_single(
         if typedef_re and re.search(typedef_re, name):
             continue  # a typedef, not a net (verilog-typedef-regexp)
         net = driven[name]
-        if net.packed_dims:
-            # multi-dim declaration compiles only when every dim's symbols
-            # are visible here (the EAI note / #(...) map usually provides them)
-            if any(
-                not _width_syms_known(d, local_syms) for d in net.packed_dims
-            ):
-                continue
-        elif net.width not in ("", "c0") and not _width_syms_known(net.width, local_syms):
-            continue
         # unpacked array: merge the element indexes from all instances into
         # one range (abc[0]+abc[2] -> [0:2]); a whole-array connection of an
         # unpacked port keeps the port's own dims
@@ -681,10 +680,7 @@ def _auto_wire_single(
                 continue
             dims = (merged,)
         elif net.unpacked_dims:
-            if any(
-                not _width_syms_known(d, local_syms) for d in net.unpacked_dims
-            ):
-                continue
+            # driver-owned dims, same rule as the packed width above
             dims = tuple(net.unpacked_dims)
         sigs.append(
             Signal(
@@ -837,7 +833,7 @@ def main(argv=None) -> None:
                 src = _module_lines(name, files, buffer_mods)
                 if src is not None:
                     modules[name] = parse_module_ports(
-                        src, typedef_regexp=td_re, interfaces=interfaces
+                        src, with_params=True, typedef_regexp=td_re, interfaces=interfaces
                     )
         out = auto_wire(lines, modules) if args.command == "aw" else auto_reg(lines, modules)
     Path(args.out_file).write_text("\n".join(out) + "\n")

@@ -1329,6 +1329,37 @@ def _always_regions(lines: Sequence[str]) -> list[tuple[int, int]]:
     return regions
 
 
+_FN_HEADER = re.compile(
+    r"\b(?:function|task)\s+(?:automatic\s+)?(?:\[[^\]]*\]\s*)?(?:signed\s+)?([A-Za-z_]\w*)"
+)
+
+
+def _function_names(lines: Sequence[str]) -> set[str]:
+    """Names of the buffer's function/task definitions themselves."""
+    names: set[str] = set()
+    for raw in lines:
+        m = _FN_HEADER.search(re.sub(r"//.*$", "", raw))
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+def _only_in_regions(
+    name: str, lines: Sequence[str], regions: Sequence[tuple[int, int]]
+) -> bool:
+    """True when every whole-word occurrence of NAME sits inside REGIONS
+    (1-based line ranges) — a function/task-local identifier by usage."""
+    pat = re.compile(r"\b" + re.escape(name) + r"\b")
+    hits = [
+        ln
+        for ln, raw in enumerate(lines, start=1)
+        if pat.search(re.sub(r"//.*$", "", raw))
+    ]
+    return bool(hits) and all(
+        any(s <= ln <= e for s, e in regions) for ln in hits
+    )
+
+
 def _loop_var_decls(lines: Sequence[str]) -> list[tuple[str, str]]:
     """(name, kind) for each for-loop variable that needs a declaration:
     kind is ``genvar`` only for a PURE generate-for (header inside a
@@ -1340,10 +1371,12 @@ def _loop_var_decls(lines: Sequence[str]) -> list[tuple[str, str]]:
     always_regions = _always_regions(lines)
     function_regions = _function_regions(lines)
     declared = _declared_loop_vars(lines)
+    loops = discover_for_scopes(list(lines))
+    inline = {lp.var for lp in loops if lp.inline_type}
     kinds: dict[str, str] = {}
     order: list[str] = []
-    for lp in discover_for_scopes(list(lines)):
-        if lp.var in declared:
+    for lp in loops:
+        if lp.var in declared or lp.var in inline:
             continue
         if any(s <= lp.scope[0] <= e for s, e in function_regions):
             continue  # function/task-local: no module-level declaration
@@ -1364,7 +1397,7 @@ def _loop_var_decls(lines: Sequence[str]) -> list[tuple[str, str]]:
             continue
         for vm in re.finditer(r"([A-Za-z_]\w*)\s*=", fm.group(1)):
             v = vm.group(1)
-            if v not in kinds and v not in declared:
+            if v not in kinds and v not in declared and v not in inline:
                 kinds[v] = "integer"
                 order.append(v)
     return [(v, kinds[v]) for v in order]
@@ -1413,6 +1446,12 @@ def _loop_ranges(lines: Sequence[str]) -> dict[str, str]:
         is_numeric = not any(
             re.search(r"\b" + re.escape(nm) + r"\b", rhs_clean) for nm in symbolic_names
         )
+        # a bound naming another loop variable (j <= i) inherits that
+        # variable's range edge: a sound over-approximation for a
+        # declaration bound (loops are visited outer-first)
+        dep = None
+        if re.fullmatch(r"[A-Za-z_]\w*", rhs_clean) and rhs_clean in ranges:
+            dep = ranges[rhs_clean].split(":", 1)
         if op in ("<", "<="):
             lo = str(init)
             b = _eval_bound(rhs, consts)
@@ -1421,6 +1460,8 @@ def _loop_ranges(lines: Sequence[str]) -> dict[str, str]:
             elif not is_numeric:
                 sym = _eval_bound(rhs, consts, symbolic=True)
                 hi = f"{sym}-1" if op == "<" else sym
+            elif dep is not None:
+                hi = dep[1]
             else:
                 continue  # bound references a non-constant (e.g. an input)
         else:  # descending: var > E / var >= E
@@ -1431,13 +1472,29 @@ def _loop_ranges(lines: Sequence[str]) -> dict[str, str]:
             elif not is_numeric:
                 sym = _eval_bound(rhs, consts, symbolic=True)
                 lo = f"{sym}+1" if op == ">" else sym
+            elif dep is not None:
+                lo = dep[0]
             else:
                 continue
         # sanity: for purely numeric ranges, require hi >= lo
         if re.fullmatch(r"-?\d+", lo) and re.fullmatch(r"-?\d+", hi):
             if int(hi) < int(lo):
                 continue
-        ranges[lp.var] = f"{lo}:{hi}"
+        new = f"{lo}:{hi}"
+        old = ranges.get(lp.var)
+        if old is not None and old != new:
+            # the same variable heading several loops at different
+            # bounds: the declaration must cover the widest extent
+            on = re.fullmatch(r"(-?\d+):(-?\d+)", old)
+            nn = re.fullmatch(r"(-?\d+):(-?\d+)", new)
+            if on and nn:
+                new = (
+                    f"{min(int(on.group(1)), int(nn.group(1)))}"
+                    f":{max(int(on.group(2)), int(nn.group(2)))}"
+                )
+            else:
+                new = old  # symbolic extents do not merge; keep the first
+        ranges[lp.var] = new
     return ranges
 
 
@@ -1465,7 +1522,17 @@ def _loop_bounds(lines: Sequence[str]) -> dict[str, tuple[int, int]]:
             continue
         bound = _eval_bound(m.group(2), consts)
         if bound is None:
-            continue
+            # bound naming another loop variable (j <= i): that
+            # variable's range edge stands in for the bound
+            rhs_name = m.group(2).strip()
+            donor = (
+                bounds.get(rhs_name)
+                if re.fullmatch(r"[A-Za-z_]\w*", rhs_name)
+                else None
+            )
+            if donor is None:
+                continue
+            bound = donor[1] if op in ("<", "<=") else donor[0]
         op = m.group(1)
         if op == "<":
             hi = bound - 1
@@ -1480,7 +1547,11 @@ def _loop_bounds(lines: Sequence[str]) -> dict[str, tuple[int, int]]:
         else:
             lo, hi = hi, init
         if hi >= lo:
-            bounds[lp.var] = (lo, hi)
+            if lp.var in bounds:
+                olo, ohi = bounds[lp.var]
+                bounds[lp.var] = (min(olo, lo), max(ohi, hi))
+            else:
+                bounds[lp.var] = (lo, hi)
     return bounds
 
 
@@ -1520,6 +1591,8 @@ def _eval_index(
             var, coef_txt = a, ""
         elif b.isdigit():
             var, coef_txt = a, b  # j*2
+        elif a in bounds or a in sym_bounds:
+            var, coef_txt = a, b  # j*DW: loop var times a symbolic coef
         else:
             var, coef_txt = b, a  # 32*gv_i / BITS*gv_i
         if var in sym_bounds:
@@ -1537,6 +1610,19 @@ def _eval_index(
             lo, hi = bounds[var]
             coef = int(coef_txt) if coef_txt else 1
             const_total += sign * coef * (hi if sign * coef > 0 else lo)
+        elif var in bounds and coef_txt:
+            # numeric loop bound times a symbolic coefficient (i*DW with
+            # i in 0..3): the product stays symbolic (DW*3)
+            lo, hi = bounds[var]
+            v = hi if sign > 0 else lo
+            if v == 0:
+                pass
+            elif v > 0:
+                sym_parts.append(
+                    f"{coef_txt}*{v}" if sign > 0 else f"-{coef_txt}*{v}"
+                )
+            else:
+                return None
         else:
             return None
     if not sym_parts:
@@ -2506,6 +2592,61 @@ def _scan_always_block(
     return i
 
 
+def _scan_inst_body_text(
+    lines: Sequence[str],
+    start: int,
+    inst_io: Mapping[str, Port],
+    signals: SignalTable,
+    loop_bounds: Mapping[str, tuple[int, int]] | None = None,
+    sym_hi: Mapping[str, str] | None = None,
+    param_values: Mapping[str, str] | None = None,
+) -> int:
+    """Consume an instance whose pin list opens on the header line
+    (``sub u_sub (.clk(clk), .dout(w));``), possibly spanning lines.
+
+    The pin list is located by paren balance from the header's pin
+    ``(``, split at top-level commas, and each named pin is recorded
+    exactly like a line of the line-oriented body scan.  Positional
+    connections stay unrecorded, as in the line-oriented path.
+    Returns the line index after the instance's closing line.
+    """
+    from .inst import _split_top_commas
+
+    loop_bounds = loop_bounds or {}
+    sym_hi = sym_hi or {}
+    m = re.match(
+        r"^\s*\w+\s+(?:#\s*\(.*?\)\s*)?(\w+)\s*\(", re.sub(r"//.*$", "", lines[start])
+    )
+    if not m:
+        return start + 1
+    text = "\n".join(lines[start:])
+    open_idx = m.end() - 1
+    depth = 0
+    close_idx = -1
+    for k in range(open_idx, len(text)):
+        if text[k] == "(":
+            depth += 1
+        elif text[k] == ")":
+            depth -= 1
+            if depth == 0:
+                close_idx = k
+                break
+    if close_idx < 0:
+        return start + 1
+    inner = text[open_idx + 1 : close_idx]
+    for part in _split_top_commas(inner):
+        pm = re.match(r"\s*\.(\w+)\s*\((.*)\)\s*$", part, re.S)
+        if pm:
+            signals.extend_inst_wire_from_line(
+                pm.group(1) + " " + pm.group(2) + ")",
+                inst_io,
+                loop_bounds,
+                sym_hi,
+                param_values,
+            )
+    return start + text[:close_idx].count("\n") + 1
+
+
 def _scan_inst_body(
     lines: Sequence[str],
     start: int,
@@ -2598,7 +2739,7 @@ def _candidate_module_names(lines: Sequence[str]) -> set[str]:
     names: set[str] = set()
     for line in lines:
         raw = re.sub(r"//.*$", "", line)
-        m = re.match(r"^\s*(\w+)\s+(#\s*\(.*\)\s*)?(\w+)\s*\(\s*$", raw)
+        m = re.match(r"^\s*(\w+)\s+(#\s*\(.*\)\s*)?(\w+)\s*\(", raw)
         if m and m.group(1) not in _KEYWORDS:
             names.add(m.group(1))
             continue
@@ -2649,6 +2790,13 @@ def _instance_headers(
         m = re.match(r"^\s*(\w+)\s+(#\s*\(.*\)\s*)?(\w+)\s*\(\s*$", raw)
         if m and m.group(1) in modules and m.group(3) not in _KEYWORDS:
             out[i] = (m.group(1), m.group(3), -1)
+            i += 1
+            continue
+        # body opens on the header line itself: `mod inst (.clk(clk), ...);`
+        # (header_end -2 marks "scan the header line's own text")
+        m = re.match(r"^\s*(\w+)\s+(#\s*\(.*?\)\s*)?(\w+)\s*\((?!\s*$)", raw)
+        if m and m.group(1) in modules and m.group(3) not in _KEYWORDS:
+            out[i] = (m.group(1), m.group(3), -2)
         i += 1
     return out
 
@@ -2743,6 +2891,77 @@ def _is_typedef_decl(line: str) -> bool:
     return is_udt_decl_line(line)
 
 
+def _comma_separated_header(expanded: list[str], original: Sequence[str]) -> list[str]:
+    """Re-comma the ANSI header _expand_ansi_header split apart.
+
+    _expand_ansi_header rewrites a single-line ANSI port list into one
+    comma-less port per line so the header parses like a multi-line
+    one.  autoarg rebuilds the header afterwards, but autodef passes
+    the expanded form through to its output, emitting
+
+        module top (
+        input clk
+        input [7:0] din
+        );
+
+    -- a syntax error.  When (and only when) the original header was
+    the single-line form the expansion fires on, put the commas back:
+    every expanded port line but the last gets its trailing comma,
+    yielding the ordinary multi-line header.  Headers the user
+    already wrote across lines are returned untouched (the expansion
+    passes them through, and their commas are already present).
+    """
+    from .inst import _balanced_close
+
+    text = "\n".join(original)
+    m = re.search(r"\bmodule\s+\w+", text)
+    if not m:
+        return expanded
+    pos = m.end()
+    if re.match(r"\s*#\s*\(", text[pos:]):
+        j = _balanced_close(text, text.index("(", pos))
+        if j < 0:
+            return expanded
+        pos = j + 1
+    if not re.match(r"\s*\(", text[pos:]):
+        return expanded
+    open_paren = pos + text[pos:].index("(")
+    close_paren = _balanced_close(text, open_paren)
+    if close_paren < 0:
+        return expanded
+    inner = text[open_paren + 1 : close_paren]
+    if "\n" in inner.strip():
+        return expanded  # no single-line port list: expansion did not fire
+    # _expand_ansi_header (called without interfaces) only fires when the
+    # single-line list holds real port declarations.  A marker-only list
+    # (`module a(/*autoarg*/);`) is also "single-line": without this gate
+    # the walk below never meets a `)`-led line and commas every line to
+    # end of file (comments, body declarations, even `reg ack;` -> `; ,`).
+    if not re.search(r"\b(?:input|output|inout)\b", inner):
+        return expanded
+    head_lines = text[: open_paren + 1].count("\n") + 1
+    out = list(expanded)
+    i = head_lines
+    ports = []
+    closed = False
+    while i < len(out):
+        if out[i].lstrip().startswith(")"):
+            closed = True
+            break
+        if out[i].strip():
+            ports.append(i)
+        i += 1
+    if not closed:
+        return expanded  # expanded header lost its close: touch nothing
+    for k in ports[:-1]:
+        head, sep, tail = out[k].partition("//")
+        if head.strip() and not head.rstrip().endswith(","):
+            # a port line with a trailing // comment gets its comma
+            # before the comment; a pure comment line is left alone
+            out[k] = head.rstrip() + "," + (" " + sep + tail if sep else "")
+    return out
+
+
 def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = None) -> list[str]:
     """Regenerate the /*autodef*/ declarations of a module.
 
@@ -2761,7 +2980,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     lines = kill_auto_def_t(lines)
     from .inst import _expand_ansi_header
 
-    lines = _expand_ansi_header(list(lines))
+    lines = _comma_separated_header(_expand_ansi_header(list(lines)), lines)
     alldefs = get_all_defs(lines)
     allparas = get_all_paras(lines)
     loop_ranges = _loop_ranges(lines)
@@ -2782,6 +3001,16 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     ):
         for name in excluded:
             unresolved.pop(name, None)
+    fn_regions = _function_regions(lines)
+    if fn_regions:
+        # function/task scope: the callable's own name, plus every
+        # identifier whose occurrences all live inside a function/task
+        # body (its ports, locals and loop variables), are not module
+        # signals and never unresolved at module level
+        fn_names = _function_names(lines)
+        for name in list(unresolved):
+            if name in fn_names or _only_in_regions(name, lines, fn_regions):
+                unresolved.pop(name, None)
     inst_headers = _instance_headers(lines, modules)
     orphan_idxs = _waived_orphan_lines(lines)
 
@@ -2855,6 +3084,11 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             if region_start is not None:
                 in_auto_region = True
         i = j
+        if any(s <= i + 1 <= e for s, e in fn_regions):
+            # function/task bodies are a separate scope: their ports,
+            # locals and loop variables are not module signals
+            i += 1
+            continue
         line = _strip_line(lines[i])
         if _PORT_LINE.match(line) or _DATA_LINE.match(line) or _is_typedef_decl(line):
             # a declaration may span lines (name on the next line, etc.) and
@@ -2979,7 +3213,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
                 inst_io = {p.name: p for p in moddef.ports}
                 i = _scan_inst_body(
                     lines, i + 1, inst_io, signals, loop_bounds, sym_hi,
-                    param_by_line.get(i),
+                    _emacs.effective_param_values(moddef, param_by_line.get(i)),
                 )
                 continue
         elif i in inst_headers:
@@ -2988,11 +3222,32 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             module, _inst, hdr_end = inst_headers[i]
             moddef = modules[module]
             inst_io = {p.name: p for p in moddef.ports}
+            if hdr_end == -2:
+                # pins begin on the header line itself (single-line
+                # instance): scan the balanced pin-list text, with the
+                # same default+override parameter bindings as the
+                # line-oriented path
+                try:
+                    pin_off = _line_off[i] + lines[i].index(
+                        "(", lines[i].index(_inst) + len(_inst)
+                    )
+                    pvals = _emacs.effective_param_values(
+                        moddef, _emacs.read_inst_param_values(_text, pin_off)
+                    )
+                except ValueError:
+                    pvals = _emacs.param_default_values(moddef)
+                i = _scan_inst_body_text(
+                    lines, i, inst_io, signals, loop_bounds, sym_hi, pvals
+                )
+                continue
             start = (hdr_end + 1) if hdr_end >= 0 else (i + 1)
             # the pin-list open paren: last '(' of the header's final line
             hl = hdr_end if hdr_end >= 0 else i
             pin_off = _line_off[hl] + lines[hl].rfind("(")
-            pvals = _emacs.read_inst_param_values(_text, pin_off) if pin_off >= 0 else {}
+            pvals = _emacs.effective_param_values(
+                moddef,
+                _emacs.read_inst_param_values(_text, pin_off) if pin_off >= 0 else {},
+            )
             i = _scan_inst_body(lines, start, inst_io, signals, loop_bounds, sym_hi, pvals)
             continue
         elif _ENDMODULE.match(line):
@@ -3012,6 +3267,14 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     known_syms = set(allparas) | set(_const_symbols(lines))
     for name, sig in list(signals.signals.items()):
         if sig.type == "usrdef":
+            continue
+        if sig.type == "inst_wire":
+            # driven by an instance output/inout pin: its width IS the
+            # driver's dimension (submodule parameters/`defines already
+            # substituted as far as they resolve).  Declare with that
+            # dimension even when the remainder still names symbols the
+            # parent does not define — dropping the net would lose the
+            # one authoritative width it has.
             continue
         if sig.packed_dims:
             dims_text = "".join(f"[{d}]" for d in sig.packed_dims)
@@ -3121,7 +3384,7 @@ def main(argv=None) -> None:
                 src = _module_lines(name, files, buffer_mods)
                 if src is not None:
                     modules[name] = parse_module_ports(
-                        src, typedef_regexp=td_re, interfaces=interfaces
+                        src, with_params=True, typedef_regexp=td_re, interfaces=interfaces
                     )
         out = auto_def_t(lines, modules)
     Path(args.out_file).write_text("\n".join(out) + "\n")

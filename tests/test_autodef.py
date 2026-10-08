@@ -3,6 +3,8 @@
 import re
 
 from verilog_tooling.autodef import (
+    _candidate_module_names,
+    _comma_separated_header,
     auto_def_t,
     get_all_defs,
     get_all_paras,
@@ -1734,9 +1736,12 @@ endmodule
     assert any(re.search(r"reg\s+cur_sta;", line) for line in out)
 
 
-def test_inst_wire_nonlocal_symbolic_width_is_unresolved():
+def test_inst_wire_nonlocal_symbolic_width_declared_at_driver_dimension():
     """An inst_wire whose port width uses the SUBMODULE's parameter names
-    (not visible here) must be flagged unresolved, not declared broken."""
+    is declared at the driver's dimension anyway (user rule: when the
+    width does not fold to a constant, declare by the instance
+    output's dimension instead of dropping the net as unresolved).
+    Supersedes the older unresolved policy for driven nets."""
     SUB_P = """\
 module subp (
     input  wire                         clk,
@@ -1755,8 +1760,8 @@ subp u_subp (/*autoinst*/
 endmodule
 """
     out = "\n".join(auto_def_t(text.splitlines(), mods))
-    assert "wire [SUBW-1:0]" not in out
-    assert "// unresolved: dout_w //" in out
+    assert re.search(r"(?m)^wire\s+\[SUBW-1:0\]\s+dout_w;", out)
+    assert "// unresolved: dout_w" not in out
 
 
 def test_multi_packed_dim_declaration_preserved():
@@ -2071,10 +2076,10 @@ endmodule
     assert (
         "// unresolved: d_unresolved // no driver or declaration found" in text
     )
-    assert (
-        "// unresolved: foreign_w // width 'SUBW-1' references symbol(s) "
-        "not visible in this module: SUBW" in text
-    )
+    # foreign_w is instance-driven: declared at the driver's dimension
+    # (SUBW-1) under the driver-dimension rule, not left unresolved
+    assert "// unresolved: foreign_w" not in text
+    assert "[SUBW-1:0]" in text and "foreign_w" in text
 
 
 def test_multidim_packed_port_declared_with_dims():
@@ -2335,6 +2340,24 @@ endmodule
     assert decl("reg", "31", "fifo") in out
 
 
+def test_indexed_part_select_lhs_parameter_width():
+    text = """\
+module top (input clk, input [7:0] din);
+parameter NCH = 4;
+parameter DW = 8;
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < NCH; i = i + 1) begin
+        fifo[i*DW +: DW] <= din;
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # width and slope both parameterised: [DW*NCH-1:0] (was: bare reg)
+    assert "[DW*NCH-1:0]" in out and "fifo;" in out
+
+
 def test_indexed_part_select_lhs_symbolic_bound():
     text = """\
 module top (input clk, input [7:0] din);
@@ -2365,3 +2388,548 @@ endmodule
     fifo_lines = [l for l in out.splitlines() if "fifo" in l and "assign" not in l]
     assert fifo_lines and all("[" not in l.split("fifo")[0] or True for l in fifo_lines)
     assert decl("reg", "", "fifo") in out
+
+
+# ---------------------------------------------------------------------------
+# marker-less instances whose pins open on the header line (single-line)
+
+SUB_DONE = """\
+module sub (
+    input  wire       clk,
+    input  wire [7:0] din,
+    output wire [7:0] dout,
+    output wire       done
+);
+endmodule
+"""
+
+
+def done_mods():
+    return {"sub": parse_module_ports(SUB_DONE.splitlines())}
+
+
+def test_single_line_instance_nets_declared():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+sub u_sub (.clk(clk), .din(din), .dout(w0), .done());
+endmodule
+"""
+    out = "\n".join(_adt(text, done_mods()))
+    assert decl("wire", "7", "w0") in out
+    assert "unresolved" not in out
+
+
+def test_single_line_instance_pins_span_lines():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+sub u_sub (.clk(clk),
+           .din(din), .dout(w0), .done(done_w));
+endmodule
+"""
+    out = "\n".join(_adt(text, done_mods()))
+    assert re.search(r"(?m)^wire\s+\[7:0\]\s+w0;", out)
+    assert re.search(r"(?m)^wire\s+done_w;", out)
+    assert "unresolved" not in out
+
+
+def test_single_line_instance_in_generate_array():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+generate
+    for (a = 0; a < 2; a = a + 1) begin: ga
+        sub u_sub (.clk(clk), .din(din), .dout(w[a]), .done());
+    end
+endgenerate
+endmodule
+"""
+    out = "\n".join(_adt(text, done_mods()))
+    # instance connections declare the net with the port's width; the
+    # generate-loop index adds no unpacked dimension (that derivation
+    # belongs to always-block LHS classification, on every inst path)
+    assert re.search(r"(?m)^wire\s+\[7:0\]\s+w;", out)
+    assert "unresolved" not in out
+
+
+def test_single_line_instance_param_default_width():
+    text = """\
+module top (input wire clk);
+/*autodef*/
+moda u_a (.clk(clk), .dout(mid));
+modb u_b (.clk(clk), .din(mid));
+endmodule
+"""
+    moda = """\
+module moda #(parameter W = 8) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+    modb = """\
+module modb #(parameter BW = 16) (
+    input wire          clk,
+    input wire [BW-1:0] din
+);
+endmodule
+"""
+    defs = {}
+    for t in (moda, modb):
+        d = parse_module_ports(t.splitlines(), with_params=True)
+        defs[d.name] = d
+    out = "\n".join(_adt(text, defs))
+    # the single-line instance path resolves widths with the same
+    # default+override bindings as the line-oriented path
+    assert re.search(r"(?m)^wire\s+\[7:0\]\s+mid;", out)
+    assert "unresolved" not in out
+
+
+def test_candidate_names_cover_single_line_instances():
+    # the CLI gathers module files from these candidates before the
+    # real scan: a header whose pins open AND close on the same line
+    # must still name its module, or the file never loads and the
+    # (already supported) single-line scan sees an unknown module
+    lines = [
+        "module top (input wire clk);",
+        "moda u_a (.clk(clk), .dout(mid));",
+        "modb u_b (.clk(clk));",
+        "always @(posedge clk) begin end",
+        "endmodule",
+    ]
+    assert _candidate_module_names(lines) == {"moda", "modb"}
+
+
+# ---------------------------------------------------------------------------
+# for-header forms: ++/-- steps, inline typed init, reused variables
+
+
+def test_for_step_plusplus_keeps_dimension():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < 4; i++) begin
+        mem[i][7:0] <= din;
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    assert "reg          [7:0]                      mem [0:3];" in out
+    assert decl("integer", "", "i") in out
+    assert "unresolved: i" not in out
+
+
+def test_for_sv_inline_int_declares_nothing_twice():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    for (int i = 0; i < 4; i++) begin
+        q4[i] <= din;
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # i is declared by the header itself: no module-level integer, and
+    # q4 still gets its dimension from the loop bound
+    assert not re.search(r"(?m)^integer\s", out)
+    assert "unresolved" not in out
+    assert "[0:3]" in out and "q4" in out
+
+
+def test_for_genvar_inline_in_generate():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+generate
+    for (genvar g = 0; g < 4; g = g + 1) begin: gg
+        always @(posedge clk) begin
+            dd[g] <= din;
+        end
+    end
+endgenerate
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    assert not re.search(r"(?m)^genvar\s", out)  # declared inline
+    assert "unresolved" not in out
+    assert "[0:3]" in out and "dd" in out
+
+
+def test_same_loop_var_two_loops_widest_range():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < 4; i = i + 1) begin
+        aa[i] <= din;
+    end
+end
+always @(posedge clk) begin
+    for (i = 0; i < 2; i = i + 1) begin
+        bb[i] <= din;
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # the shared variable's range is the union, so the first block's
+    # wider extent is not lost (was: both declared [0:1])
+    assert "aa [0:3];" in out
+    assert sum(1 for l in out.splitlines() if l.startswith("integer")) == 1
+
+
+def test_inner_loop_bound_from_outer_variable():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < 4; i = i + 1) begin
+        for (j = 0; j <= i; j = j + 1) begin
+            trim[i][j] <= din;
+        end
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # j's extent follows i's range edge (was: only [0:3], one dim)
+    assert "trim [0:3] [0:3];" in out
+
+
+def test_index_times_symbolic_coefficient():
+    text = """\
+module top (input clk, input [7:0] din);
+parameter DW = 8;
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < 4; i = i + 1) begin
+        val[i*DW] <= din[0];
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # loop variable times a parameter coefficient: DW*3 (was: bare reg)
+    assert "[DW*3:0]" in out and "val;" in out
+
+
+# ---------------------------------------------------------------------------
+# instance parameter defaults: driver-side width declares the net
+
+_MODA_P = """\
+module moda #(parameter W = 8) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+
+_MODB_P = """\
+module modb #(parameter BW = 16) (
+    input wire          clk,
+    input wire [BW-1:0] din
+);
+endmodule
+"""
+
+
+def _pmods():
+    out = {}
+    for t in (_MODA_P, _MODB_P):
+        d = parse_module_ports(t.splitlines(), with_params=True)
+        out[d.name] = d
+    return out
+
+
+def test_inst_param_default_width_declares_from_driver():
+    text = """\
+module top (input wire clk);
+/*autodef*/
+moda u_a (
+    .clk  (clk),
+    .dout (mid)
+);
+modb u_b (
+    .clk (clk),
+    .din (mid)
+);
+endmodule
+"""
+    out = "\n".join(_adt(text, _pmods()))
+    # no #(...) override: the net takes the DRIVER's default width
+    # (moda W=8) — not modb's BW=16, and not "unresolved" (was:
+    # width 'W-1' references symbol(s) not visible in this module)
+    assert re.search(r"(?m)^wire\s+\[7:0\]\s+mid;", out)
+    assert "unresolved" not in out
+
+
+def test_inst_param_override_still_wins_over_default():
+    text = """\
+module top (input wire clk);
+/*autodef*/
+moda #(.W(16)) u_a (
+    .clk  (clk),
+    .dout (mid)
+);
+modb u_b (
+    .clk (clk),
+    .din (mid)
+);
+endmodule
+"""
+    out = "\n".join(_adt(text, _pmods()))
+    assert re.search(r"(?m)^wire\s+\[15:0\]\s+mid;", out)
+    assert "unresolved" not in out
+
+
+# ---------------------------------------------------------------------------
+# driver dimension is declared even when not constant-foldable
+
+_MODA_LOCALPARAM = """\
+module modl (
+    input  wire          clk,
+    output wire [LW-1:0] dout
+);
+    localparam LW = 12;
+endmodule
+"""
+
+_MODA_NODEF = """\
+module modn #(parameter W) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+
+_MODA_CHAIN = """\
+module modc #(parameter W = D*K, parameter D = 4) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+
+
+def _one_mod(text):
+    d = parse_module_ports(text.splitlines(), with_params=True)
+    return d
+
+
+def _drive_out(driver_text, driver_name, inst_head=None, extra_mods=()):
+    inst_head = inst_head or driver_name
+    mods = {driver_name: _one_mod(driver_text)}
+    for t in extra_mods:
+        d = _one_mod(t)
+        mods[d.name] = d
+    text = f"""\
+module top (input wire clk);
+/*autodef*/
+{inst_head} u_a (
+    .clk  (clk),
+    .dout (mid)
+);
+modb u_b (
+    .clk (clk),
+    .din (mid)
+);
+endmodule
+"""
+    mods["modb"] = _one_mod(_MODB_P)
+    return "\n".join(_adt(text, mods))
+
+
+def test_localparam_driver_dimension_declared():
+    out = _drive_out(_MODA_LOCALPARAM, "modl")
+    assert re.search(r"(?m)^wire\s+\[LW-1:0\]\s+mid;", out)
+    assert "unresolved" not in out
+
+
+def test_param_without_default_declared_at_driver_dimension():
+    out = _drive_out(_MODA_NODEF, "modn")
+    assert re.search(r"(?m)^wire\s+\[W-1:0\]\s+mid;", out)
+    assert "unresolved" not in out
+
+
+def test_partial_default_chain_declared_at_driver_dimension():
+    out = _drive_out(_MODA_CHAIN, "modc")
+    # D folds (4), K stays symbolic: the declaration keeps the
+    # driver's dimension expression instead of going unresolved
+    assert re.search(r"(?m)^wire\s+\[.*K.*\]\s+mid;", out)
+    assert "unresolved" not in out
+
+
+def test_sink_only_net_still_unresolved_when_symbolic():
+    text = """\
+module top (input wire clk);
+/*autodef*/
+modb u_b (
+    .clk (clk),
+    .din (mid)
+);
+endmodule
+"""
+    # modb's BW bottoms out at Q, which nothing defines: mid is only
+    # a sink-width hint (inst_in_wire), never driven, so the
+    # driver-dimension rule must not rescue it
+    mods = {"modb": _one_mod(_MODB_P.replace("parameter BW = 16", "parameter BW = Q"))}
+    out = "\n".join(_adt(text, mods))
+    assert "unresolved: mid" in out
+    assert not re.search(r"(?m)^wire\s+\[.*\]\s+mid;", out)
+# function/task bodies are their own scope, not module signals
+
+
+def test_function_locals_not_module_signals():
+    text = """\
+module top (input clk, input [7:0] din, output [7:0] dout);
+/*autodef*/
+function [7:0] f;
+    input [7:0] x;
+    begin
+        for (i = 0; i < 8; i = i + 1) begin
+            acc[i] = x;
+        end
+        f = acc[0];
+    end
+endfunction
+assign dout = f(din);
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # no module-level wire for the function's input port, no unresolved
+    # noise for its loop variable, accumulator or the function itself
+    assert "unresolved" not in out
+    assert not re.search(r"(?m)^(wire|reg|integer)\s+(\[7:0\]\s+)?(x|acc|f|i);", out)
+
+
+def test_module_signal_used_in_function_stays():
+    text = """\
+module top (input clk, output [7:0] dout);
+/*autodef*/
+function [7:0] f;
+    input [7:0] x;
+    begin
+        f = x + cfg;
+    end
+endfunction
+assign dout = f(cfg);
+assign cfg = 8'd3;
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # cfg is driven at module level (and only read inside the function):
+    # it must still be declared; the function's own input must not be
+    assert re.search(r"(?m)^wire\s+(\[7:0\]\s+)?cfg;", out)
+    assert not re.search(r"(?m)^wire\s+(\[7:0\]\s+)?x;", out)
+    assert "unresolved" not in out
+# single-line ANSI header must survive autodef with its commas
+
+
+def test_single_line_ansi_header_keeps_commas():
+    text = """\
+module top (input clk, input [7:0] din, output [7:0] dout);
+/*autodef*/
+always @(posedge clk) begin
+    cnt <= cnt + 1;
+end
+assign dout = cnt;
+endmodule
+"""
+    out = _adt(text)
+    head = out[: out.index(");") + 1]
+    assert head == [
+        "module top (",
+        "input clk,",
+        "input [7:0] din,",
+        "output [7:0] dout",
+        ");",
+    ]
+
+
+def test_comma_separated_header_comma_before_line_comment():
+    # defense: a port line carrying a trailing // comment must get its
+    # comma BEFORE the comment, not after it
+    expanded = [
+        "module top (",
+        "input clk // clock",
+        "input [7:0] din",
+        ");",
+    ]
+    original = ["module top (input clk, input [7:0] din);"]
+    out = _comma_separated_header(expanded, original)
+    assert out[1] == "input clk, // clock"
+    assert out[2] == "input [7:0] din"
+
+
+def test_multi_line_header_untouched():
+    text = """\
+module top (
+    input  wire       clk,
+    input  wire [7:0] din
+);
+/*autodef*/
+always @(posedge clk) begin
+    cnt <= cnt + 1;
+end
+endmodule
+"""
+    out = _adt(text)
+    assert out[1] == "    input  wire       clk,"
+    assert out[2] == "    input  wire [7:0] din"
+    assert out[3] == ");"
+
+
+def test_header_with_parameter_block_keeps_commas():
+    text = """\
+module top #(parameter W = 8) (input clk, input [W-1:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    cnt <= cnt + 1;
+end
+endmodule
+"""
+    out = _adt(text)
+    assert out[0] == "module top #(parameter W = 8) ("
+    assert out[1] == "input clk,"
+    assert out[2] == "input [W-1:0] din"
+    assert out[3] == ");"
+
+
+def test_portless_module_passes_through():
+    text = """\
+module top;
+/*autodef*/
+always @(posedge clk) begin
+    cnt <= cnt + 1;
+end
+endmodule
+"""
+    out = _adt(text)
+    assert out[0] == "module top;"
+
+
+def test_comma_header_ignores_marker_only_single_line_header():
+    # regression: `module a(/*autoarg*/);` has a single-line "port list"
+    # holding only comments/markers.  _comma_separated_header must not
+    # fire — it used to walk for a `)`-led line that never comes and
+    # appended commas to every line down to end of file
+    # (`/*autoDISABLEinput*/,`, `/*autodef*/,`, `reg ack;,`).
+    from verilog_tooling.autodef import auto_def_t
+
+    lines = [
+        "module a(/*autoarg*/);",
+        "/*autoDISABLEinput*/",
+        "input clk;",
+        "/*autodef*/",
+        "reg ack;",
+        "endmodule",
+    ]
+    out = auto_def_t(lines)
+    for ln in out:
+        assert not ln.rstrip().endswith(";,") and not ln.rstrip().endswith("*/,"), ln
+    assert "input clk;" in out and "reg ack;" in out

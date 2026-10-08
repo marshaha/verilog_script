@@ -153,20 +153,17 @@ def _local_syms(lines: Sequence[str]) -> set[str]:
     return set(get_all_paras(lines)) | set(_const_symbols(lines))
 
 
-def _widths_ok(net, local_syms: set[str]) -> bool:
-    """A declaration compiles only when every width/dim names local symbols
-    (same rule as AUTOWIRE).  Unpacked dims are declarable when their
-    symbols are local (whole-array port) or the connected element indexes
-    merge into a range."""
-    from .autodef import _merge_unpacked_indexes, _width_syms_known
+def _declarable(net, local_syms: set[str]) -> bool:
+    """A candidate can be declared unless its unpacked element indexes
+    do not merge into a range (then no array form exists).  Widths are
+    NOT visibility-checked: an instance-derived width (an output's
+    driver dimension, or the dimension of the pin a net feeds) is
+    declared as written when it does not fold to local constants."""
+    from .autodef import _merge_unpacked_indexes
 
     if net.unpacked_idx:
         return _merge_unpacked_indexes(net.unpacked_idx, local_syms) is not None
-    if net.unpacked_dims:
-        return all(_width_syms_known(d, local_syms) for d in net.unpacked_dims)
-    if net.packed_dims:
-        return all(_width_syms_known(d, local_syms) for d in net.packed_dims)
-    return net.width in ("", "c0") or _width_syms_known(net.width, local_syms)
+    return True
 
 
 def _sig_dims(net, local_syms: set[str]) -> tuple:
@@ -194,6 +191,22 @@ def _declared_port_names(lines: Sequence[str]) -> set[str]:
     return names
 
 
+def _connected_names(
+    lines: Sequence[str], modules: Mapping[str, ModuleDef],
+    directions: "tuple[str, ...] | None",
+) -> set[str]:
+    """Names appearing in pin expressions of /*autoinst*/ instances in
+    DIRECTIONS, identifiers inside {...}/(...) expressions included.
+
+    Exclusion bookkeeping ("is this net already wired somewhere inside
+    the module") is a fact about the text, independent of the
+    verilog-auto-ignore-concat candidacy exemption: a net inside
+    ``.din ({2'b0, val})`` IS connected to that input, so val must never
+    be promoted to a module input/output/inout over it.
+    """
+    return set(_inst_driven_nets(lines, modules, directions, concat_ok=True))
+
+
 def _input_sigs(
     lines: Sequence[str], modules: Mapping[str, ModuleDef],
     full: "Sequence[str] | None" = None,
@@ -203,7 +216,7 @@ def _input_sigs(
     assign-driven net IS a candidate (verilog-mode parity — promote it to a
     port and drop the assign yourself)."""
     in_nets = _inst_driven_nets(lines, modules, ("input",), simple_only=True)
-    driven = set(_inst_driven_nets(lines, modules))
+    driven = _connected_names(lines, modules, None)
     ports, usrdef, _ = _module_tables(lines)
     declared = set(ports.signals) | _declared_port_names(lines)
     declared |= set(usrdef.signals) | driven
@@ -222,7 +235,7 @@ def _input_sigs(
         if typedef_re and re.search(typedef_re, name):
             continue
         net = in_nets[name]
-        if not _widths_ok(net, local_syms):
+        if not _declarable(net, local_syms):
             continue
         sigs.append(
             Signal(
@@ -248,11 +261,11 @@ def _output_sigs(
     internal — /*AUTOWIRE*/ territory).  Declared wires/params are NOT
     excluded, exactly as verilog-mode."""
     out_nets = _inst_driven_nets(lines, modules, ("output",), simple_only=True)
-    in_nets = _inst_driven_nets(lines, modules, ("input",), simple_only=True)
-    inout_nets = _inst_driven_nets(lines, modules, ("inout",), simple_only=True)
     ports, _, _ = _module_tables(lines)
     excluded = set(ports.signals) | _declared_port_names(lines)
-    excluded |= set(in_nets) | set(inout_nets)
+    excluded |= _connected_names(lines, modules, ("input",)) | _connected_names(
+        lines, modules, ("inout",)
+    )
     from .libdirs import parse_typedef_regexp
     from .inst import set_typedef_regexp
 
@@ -267,7 +280,7 @@ def _output_sigs(
         if typedef_re and re.search(typedef_re, name):
             continue
         net = out_nets[name]
-        if not _widths_ok(net, local_syms):
+        if not _declarable(net, local_syms):
             continue
         sigs.append(
             Signal(
@@ -292,11 +305,11 @@ def _inout_sigs(
     module's ports and nets seen on instance input/output ports (verilog-mode
     exclusion set exactly — declared wires/params are NOT excluded)."""
     inout_nets = _inst_driven_nets(lines, modules, ("inout",), simple_only=True)
-    in_nets = _inst_driven_nets(lines, modules, ("input",), simple_only=True)
-    out_nets = _inst_driven_nets(lines, modules, ("output",), simple_only=True)
     ports, _, _ = _module_tables(lines)
     excluded = set(ports.signals) | _declared_port_names(lines)
-    excluded |= set(in_nets) | set(out_nets)
+    excluded |= _connected_names(lines, modules, ("input",)) | _connected_names(
+        lines, modules, ("output",)
+    )
     from .libdirs import parse_typedef_regexp
     from .inst import set_typedef_regexp
 
@@ -311,7 +324,7 @@ def _inout_sigs(
         if typedef_re and re.search(typedef_re, name):
             continue
         net = inout_nets[name]
-        if not _widths_ok(net, local_syms):
+        if not _declarable(net, local_syms):
             continue
         sigs.append(
             Signal(
@@ -705,7 +718,7 @@ def main(argv=None) -> None:
                 src = _module_lines(name, files, buffer_mods)
                 if src is not None:
                     modules[name] = parse_module_ports(
-                        src, typedef_regexp=td_re, interfaces=interfaces
+                        src, with_params=True, typedef_regexp=td_re, interfaces=interfaces
                     )
         out = lines
         if args.command in ("aio", "aout"):

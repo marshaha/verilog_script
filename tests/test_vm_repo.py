@@ -92,7 +92,9 @@ EXCLUDE_PREFIXES = (
 KNOWN_FAILURES = frozenset(
     # autowire_topv.v: golden predates current emacs (drops 'logic' from
     # logic-typed ports); remaining diff is alignment/version drift
-    ['autowire_topv.v', 'autoinout_lovell.v', 'autoinput_2d_gaspar.v', 'autoinput_array_bug294.v', 'autoinput_concat_ignore.v', 'autoinput_concat_lau.v', 'autoinput_concat_lau2.v', 'autoinput_nohookup.v', 'autoinput_none.v', 'autoinst_array.v', 'autoinst_array_braket.v', 'autoinst_attr.v', 'autoinst_autonohookup.v', 'autoinst_belkind_concat.v', 'autoinst_cmtparen_tennant.sv', 'autoinst_dedefine.v', 'autoinst_ding.v', 'autoinst_for_myers.v', 'autoinst_func.v', 'autoinst_iface_noparam.v', 'autoinst_import2012.v', 'autoinst_interface.v', 'autoinst_interface_star.v', 'autoinst_lopaz.v', 'autoinst_ma_io_prefix.v', 'autoinst_mccoy.v', 'autoinst_moddefine.v', 'autoinst_modport_param.v', 'autoinst_mplist.sv', 'autoinst_mul.v', 'autoinst_name_bug245.v', 'autoinst_nicholl.v', 'autoinst_param_2d.v', 'autoinst_param_cmt.v', 'autoinst_param_structsel.v', 'autoinst_param_type.v', 'autoinst_param_value.v', 'autoinst_paramvalue.v', 'autoinst_regexp_match.v', 'autoinst_rogoff.v', 'autoinst_star.v', 'autoinst_sv_kulkarni.v', 'autoinst_sv_kulkarni_wire.v', 'autoinst_swapped_vec.v', 'autoinst_tennant.v', 'autoinst_tieoff_vec.v', 'autoinst_unsigned_bug302.v', 'autoinst_vertrees.v', 'autoinst_wildcard.v', 'autoinst_wildcell.v', 'autoinstparam_iface_bruce.v', 'autoinstparam_local.v', 'autolisp_order_bug356.v', 'autooutput_cast.v', 'autooutput_simplify.v', 'autoreg_smith_multiassign.v', 'autotemplate_lisp_eq.v', 'autowire_apostrophe.sv', 'autowire_import_bug317.v', 'autowire_isaacson.v', 'autowire_long_yaohung.v', 'autowire_merge_bug303.v', 'autowire_merge_pm.v', 'autowire_paramvec_bug302.v', 'autowire_pkg_bug195.v', 'autowire_real.v', 'autowire_red_bracket.v', 'autowire_shifts_bug1346.v', 'autowire_thon_selects.v']
+    # autoinst_ifdef_fredrickson_200503_top.v: intentional emacs divergence:
+    # `ifdef guards preserved in expansions (emacs drops them)
+    ['autowire_topv.v', 'autoinst_ifdef_fredrickson_200503_top.v', 'autoinout_lovell.v', 'autoinput_2d_gaspar.v', 'autoinput_array_bug294.v', 'autoinput_concat_ignore.v', 'autoinput_concat_lau.v', 'autoinput_concat_lau2.v', 'autoinput_nohookup.v', 'autoinput_none.v', 'autoinst_array.v', 'autoinst_array_braket.v', 'autoinst_attr.v', 'autoinst_autonohookup.v', 'autoinst_belkind_concat.v', 'autoinst_cmtparen_tennant.sv', 'autoinst_dedefine.v', 'autoinst_ding.v', 'autoinst_for_myers.v', 'autoinst_func.v', 'autoinst_iface_noparam.v', 'autoinst_import2012.v', 'autoinst_interface.v', 'autoinst_interface_star.v', 'autoinst_lopaz.v', 'autoinst_ma_io_prefix.v', 'autoinst_mccoy.v', 'autoinst_moddefine.v', 'autoinst_modport_param.v', 'autoinst_mplist.sv', 'autoinst_mul.v', 'autoinst_name_bug245.v', 'autoinst_nicholl.v', 'autoinst_param_2d.v', 'autoinst_param_cmt.v', 'autoinst_param_structsel.v', 'autoinst_param_type.v', 'autoinst_param_value.v', 'autoinst_paramvalue.v', 'autoinst_regexp_match.v', 'autoinst_rogoff.v', 'autoinst_star.v', 'autoinst_sv_kulkarni.v', 'autoinst_sv_kulkarni_wire.v', 'autoinst_swapped_vec.v', 'autoinst_tennant.v', 'autoinst_tieoff_vec.v', 'autoinst_unsigned_bug302.v', 'autoinst_vertrees.v', 'autoinst_wildcard.v', 'autoinst_wildcell.v', 'autoinstparam_iface_bruce.v', 'autoinstparam_local.v', 'autolisp_order_bug356.v', 'autooutput_cast.v', 'autooutput_simplify.v', 'autoreg_smith_multiassign.v', 'autotemplate_lisp_eq.v', 'autowire_apostrophe.sv', 'autowire_import_bug317.v', 'autowire_long_yaohung.v', 'autowire_merge_bug303.v', 'autowire_merge_pm.v', 'autowire_paramvec_bug302.v', 'autowire_pkg_bug195.v', 'autowire_real.v', 'autowire_red_bracket.v', 'autowire_shifts_bug1346.v', 'autowire_thon_selects.v']
 )
 
 SKIP_TABLE = {
@@ -247,7 +249,7 @@ def run_pipeline(text: str, ref_file: str) -> list[str]:
     which, resolvable, _ = _eai_like_step(lines, "AUTOINSTPARAM", resolved)
     if which is None or resolvable:
         module_params = {
-            n: emacs.parse_module_params(s) for n in names_emacs if (s := src_of(n))
+            n: emacs.parse_module_params(src_of(n)) for n in names_emacs if src_of(n)
         }
         lines = emacs.auto_param(lines, module_params, which=which, templates=templates)
 
@@ -255,9 +257,9 @@ def run_pipeline(text: str, ref_file: str) -> list[str]:
     which, resolvable, _ = _eai_like_step(lines, "AUTOINST", resolved)
     if which is None or resolvable:
         modules = {
-            n: parse_module_ports(s, with_params=True, interfaces=interfaces, typedef_regexp=td_re)
+            n: parse_module_ports(src_of(n), with_params=True, interfaces=interfaces, typedef_regexp=td_re)
             for n in names_emacs
-            if (s := src_of(n))
+            if src_of(n)
         }
         lines = emacs.auto_inst(
             lines,
@@ -273,9 +275,9 @@ def run_pipeline(text: str, ref_file: str) -> list[str]:
     lines = misc.auto_ascii_enum(lines)
     lines = xfer.auto_inoutmodport(lines, ifaces)
     modules_w = {
-        n: parse_module_ports(s, typedef_regexp=td_re, interfaces=interfaces)
+        n: parse_module_ports(src_of(n), typedef_regexp=td_re, interfaces=interfaces)
         for n in names_wire
-        if (s := src_of(n))
+        if src_of(n)
     }
     lines = xfer.auto_inoutmodule(lines, modules_w)
     lines = xfer.auto_inoutcomp(lines, modules_w)
@@ -283,9 +285,9 @@ def run_pipeline(text: str, ref_file: str) -> list[str]:
     # AUTOINOUTPARAM copies the submodule's parameters: needs with_params
     if xfer._find_markers("\n".join(lines), "AUTOINOUTPARAM"):
         modules_p = {
-            n: parse_module_ports(s, with_params=True, typedef_regexp=td_re, interfaces=interfaces)
+            n: parse_module_ports(src_of(n), with_params=True, typedef_regexp=td_re, interfaces=interfaces)
             for n in names_wire
-            if (s := src_of(n))
+            if src_of(n)
         }
     else:
         modules_p = modules_w

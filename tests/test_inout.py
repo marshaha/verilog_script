@@ -454,9 +454,10 @@ endmodule
     assert "q2_net;" in out_lines[0]
 
 
-def test_foreign_width_symbols_skipped():
-    """A width naming submodule-local symbols not mapped by #(...) cannot
-    compile here — skipped, same rule as AUTOWIRE."""
+def test_foreign_width_promoted_at_pin_dimension():
+    """A width naming symbols the parent does not define is declared as
+    written (the pin's dimension), per the driver-dimension rule —
+    supersedes the older skip-it policy."""
     sub = """\
 module subf (
     input  wire [SUBW-1:0] din,
@@ -476,8 +477,10 @@ subf u_f (/*autoinst*/
 endmodule
 """
     out = auto_io(top.splitlines(), m)
-    assert _INPUT_HEADER not in out
-    assert _OUTPUT_HEADER not in out
+    text = "\n".join(out)
+    assert _INPUT_HEADER in out
+    assert _OUTPUT_HEADER in out
+    assert "din" in text and "[SUBW-1:0]" in text
 
 
 # ---------------------------------------------------------------------------
@@ -677,3 +680,116 @@ endmodule
 def test_kill_auto_inout():
     lines = ["/*AUTOINOUT*/", _INOUT_HEADER, "inout a;", CLOSER]
     assert kill_auto_inout(lines) == ["/*AUTOINOUT*/"]
+
+
+def test_output_promoted_with_symbolic_driver_dimension():
+    modc = """\
+module modc #(parameter W = D*K, parameter D = 4) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+    m = {"modc": parse_module_ports(modc.splitlines(), with_params=True)}
+    top = """\
+module top;
+/*AUTOOUTPUT*/
+modc u_a (/*autoinst*/
+    .clk  (clk),
+    .dout (mid)
+);
+endmodule
+"""
+    out = auto_output(top.splitlines(), m)
+    text = "\n".join(out)
+    # D folds to 4, K stays symbolic: the net is promoted at the
+    # driver's dimension instead of being silently skipped
+    (line,) = [ln for ln in out if ln.startswith("output") and "mid" in ln]
+    assert "K" in line
+# ---------------------------------------------------------------------------
+# a net inside a {...} connection is connected internally (AIO exclusions)
+
+_MODA = """\
+module moda (
+    input  wire       clk,
+    output wire       val,
+    output wire [7:0] dat
+);
+endmodule
+"""
+
+_MODB = """\
+module modb (
+    input wire       clk,
+    input wire [2:0] din,
+    input wire [7:0] dat2
+);
+endmodule
+"""
+
+_SRC2 = """\
+module src2 (
+    input  wire       clk,
+    output wire [1:0] pair
+);
+endmodule
+"""
+
+_SNK = """\
+module snk (
+    input wire clk,
+    input wire sig
+);
+endmodule
+"""
+
+
+def _ab_mods():
+    out = {}
+    for text in (_MODA, _MODB, _SRC2, _SNK):
+        d = parse_module_ports(text.splitlines())
+        out[d.name] = d
+    return out
+
+
+def test_concat_wrapped_net_not_promoted_to_output():
+    top = """\
+module top;
+/*AUTOOUTPUT*/
+moda u_a (/*autoinst*/
+    .clk (clk),
+    .val (val),
+    .dat (dat)
+);
+modb u_b (/*autoinst*/
+    .clk  (clk),
+    .din  ({2'b0, val}),
+    .dat2 (dat)
+);
+endmodule
+"""
+    out = auto_output(top.splitlines(), _ab_mods())
+    # val feeds u_b.din inside a concatenation: it is an internal net,
+    # not a dangling output of this module (was: `output val;`)
+    assert not any(ln.startswith("output") for ln in out)
+
+
+def test_concat_driven_net_not_promoted_to_input():
+    top = """\
+module top;
+/*AUTOINPUT*/
+src2 u_a (/*autoinst*/
+    .clk  (clk),
+    .pair ({val, 1'b0})
+);
+snk u_b (/*autoinst*/
+    .clk (clk),
+    .sig (val)
+);
+endmodule
+"""
+    out = auto_input(top.splitlines(), _ab_mods())
+    # val is driven (through the concat on u_a.pair): it must not be
+    # re-declared as a module input (was: `input val;`)
+    assert not any(ln.startswith("input") and "val" in ln for ln in out)
+    assert any(ln.startswith("input") and "clk" in ln for ln in out)
