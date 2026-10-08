@@ -194,6 +194,22 @@ def _declared_port_names(lines: Sequence[str]) -> set[str]:
     return names
 
 
+def _connected_names(
+    lines: Sequence[str], modules: Mapping[str, ModuleDef],
+    directions: "tuple[str, ...] | None",
+) -> set[str]:
+    """Names appearing in pin expressions of /*autoinst*/ instances in
+    DIRECTIONS, identifiers inside {...}/(...) expressions included.
+
+    Exclusion bookkeeping ("is this net already wired somewhere inside
+    the module") is a fact about the text, independent of the
+    verilog-auto-ignore-concat candidacy exemption: a net inside
+    ``.din ({2'b0, val})`` IS connected to that input, so val must never
+    be promoted to a module input/output/inout over it.
+    """
+    return set(_inst_driven_nets(lines, modules, directions, concat_ok=True))
+
+
 def _input_sigs(
     lines: Sequence[str], modules: Mapping[str, ModuleDef],
     full: "Sequence[str] | None" = None,
@@ -203,7 +219,7 @@ def _input_sigs(
     assign-driven net IS a candidate (verilog-mode parity — promote it to a
     port and drop the assign yourself)."""
     in_nets = _inst_driven_nets(lines, modules, ("input",), simple_only=True)
-    driven = set(_inst_driven_nets(lines, modules))
+    driven = _connected_names(lines, modules, None)
     ports, usrdef, _ = _module_tables(lines)
     declared = set(ports.signals) | _declared_port_names(lines)
     declared |= set(usrdef.signals) | driven
@@ -248,11 +264,11 @@ def _output_sigs(
     internal — /*AUTOWIRE*/ territory).  Declared wires/params are NOT
     excluded, exactly as verilog-mode."""
     out_nets = _inst_driven_nets(lines, modules, ("output",), simple_only=True)
-    in_nets = _inst_driven_nets(lines, modules, ("input",), simple_only=True)
-    inout_nets = _inst_driven_nets(lines, modules, ("inout",), simple_only=True)
     ports, _, _ = _module_tables(lines)
     excluded = set(ports.signals) | _declared_port_names(lines)
-    excluded |= set(in_nets) | set(inout_nets)
+    excluded |= _connected_names(lines, modules, ("input",)) | _connected_names(
+        lines, modules, ("inout",)
+    )
     from .libdirs import parse_typedef_regexp
     from .inst import set_typedef_regexp
 
@@ -292,11 +308,11 @@ def _inout_sigs(
     module's ports and nets seen on instance input/output ports (verilog-mode
     exclusion set exactly — declared wires/params are NOT excluded)."""
     inout_nets = _inst_driven_nets(lines, modules, ("inout",), simple_only=True)
-    in_nets = _inst_driven_nets(lines, modules, ("input",), simple_only=True)
-    out_nets = _inst_driven_nets(lines, modules, ("output",), simple_only=True)
     ports, _, _ = _module_tables(lines)
     excluded = set(ports.signals) | _declared_port_names(lines)
-    excluded |= set(in_nets) | set(out_nets)
+    excluded |= _connected_names(lines, modules, ("input",)) | _connected_names(
+        lines, modules, ("output",)
+    )
     from .libdirs import parse_typedef_regexp
     from .inst import set_typedef_regexp
 

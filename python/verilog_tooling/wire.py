@@ -355,6 +355,7 @@ def _inst_driven_nets(
     modules: Mapping[str, ModuleDef],
     directions: "tuple[str, ...] | None" = None,
     simple_only: bool = False,
+    concat_ok: bool = False,
 ) -> dict[str, InstNet]:
     """net -> InstNet for every net connected to an output/inout port of an
     /*autoinst*/ instance whose module is in MODULES (first driver wins).
@@ -434,8 +435,12 @@ def _inst_driven_nets(
             ):
                 continue
             if stripped.startswith(("(", "{")):
-                # verilog-auto-ignore-concat: skip (default) or extract
-                if not _IGNORE_CONCAT:
+                # verilog-auto-ignore-concat: skip (default) or extract.
+                # CONCAT_OK is exclusion bookkeeping (AIO "is this net
+                # wired internally anywhere"): there the identifiers in
+                # a {...}/(...) expression always count as connected,
+                # regardless of the candidacy exemption.
+                if not _IGNORE_CONCAT or concat_ok:
                     for net, ewidth in _expr_nets(stripped):
                         if param_values:
                             ewidth = emacs._apply_param_values(ewidth, param_values)

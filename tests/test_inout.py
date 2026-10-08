@@ -677,3 +677,92 @@ endmodule
 def test_kill_auto_inout():
     lines = ["/*AUTOINOUT*/", _INOUT_HEADER, "inout a;", CLOSER]
     assert kill_auto_inout(lines) == ["/*AUTOINOUT*/"]
+
+
+# ---------------------------------------------------------------------------
+# a net inside a {...} connection is connected internally (AIO exclusions)
+
+_MODA = """\
+module moda (
+    input  wire       clk,
+    output wire       val,
+    output wire [7:0] dat
+);
+endmodule
+"""
+
+_MODB = """\
+module modb (
+    input wire       clk,
+    input wire [2:0] din,
+    input wire [7:0] dat2
+);
+endmodule
+"""
+
+_SRC2 = """\
+module src2 (
+    input  wire       clk,
+    output wire [1:0] pair
+);
+endmodule
+"""
+
+_SNK = """\
+module snk (
+    input wire clk,
+    input wire sig
+);
+endmodule
+"""
+
+
+def _ab_mods():
+    out = {}
+    for text in (_MODA, _MODB, _SRC2, _SNK):
+        d = parse_module_ports(text.splitlines())
+        out[d.name] = d
+    return out
+
+
+def test_concat_wrapped_net_not_promoted_to_output():
+    top = """\
+module top;
+/*AUTOOUTPUT*/
+moda u_a (/*autoinst*/
+    .clk (clk),
+    .val (val),
+    .dat (dat)
+);
+modb u_b (/*autoinst*/
+    .clk  (clk),
+    .din  ({2'b0, val}),
+    .dat2 (dat)
+);
+endmodule
+"""
+    out = auto_output(top.splitlines(), _ab_mods())
+    # val feeds u_b.din inside a concatenation: it is an internal net,
+    # not a dangling output of this module (was: `output val;`)
+    assert not any(ln.startswith("output") for ln in out)
+
+
+def test_concat_driven_net_not_promoted_to_input():
+    top = """\
+module top;
+/*AUTOINPUT*/
+src2 u_a (/*autoinst*/
+    .clk  (clk),
+    .pair ({val, 1'b0})
+);
+snk u_b (/*autoinst*/
+    .clk (clk),
+    .sig (val)
+);
+endmodule
+"""
+    out = auto_input(top.splitlines(), _ab_mods())
+    # val is driven (through the concat on u_a.pair): it must not be
+    # re-declared as a module input (was: `input val;`)
+    assert not any(ln.startswith("input") and "val" in ln for ln in out)
+    assert any(ln.startswith("input") and "clk" in ln for ln in out)
