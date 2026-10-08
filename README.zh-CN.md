@@ -169,10 +169,20 @@ AUTOINST/AUTOINSTPARAM、AUTOWIRE、autodef）都会透视 `` `include "x"``—�
 
 ### AALL —— 按正确顺序跑全部
 
-在单个 Python 进程中按 emacs `verilog-batch-auto` 的顺序执行
-EAP → EAI → AIO → AW → AREG → AD → AR → AF。输出与依次执行八个命令
-逐字节一致，但模块文件只解析和读取一次。
-支持 `g:verilog_tooling_eai_flags`（如 `--sort`）。
+在单个 Python 进程中按 emacs `verilog-batch-auto` 的顺序执行全套
+26 步：
+
+AIL → EAP → EAI → AASC → AIMP → AIM → AIC → AII → AIP → AIO → ATIE →
+AUND → AAMP → ALGC → AW → AREG → ARI → AOE → ASEN → ARST → AUNU → AD →
+AR → AILL → AF
+
+(AUTOINSERTLISP、AUTOINSTPARAM、AUTOINST、AUTOASCIIENUM、AUTOINOUTMODPORT、
+AUTOINOUTMODULE/COMP/IN、AUTOINOUTPARAM、AUTOOUTPUT/AUTOINPUT/AUTOINOUT、
+AUTOTIEOFF、AUTOUNDEF、AUTOASSIGNMODPORT、AUTOLOGIC、AUTOWIRE、AUTOREG、
+AUTOREGINPUT、AUTOOUTPUTEVERY、AUTOSENSE、AUTORESET、AUTOUNUSED、
+AUTOARG、AUTOINSERTLAST、对齐）。输出与依次执行这些命令逐字节一致，
+但模块表只建一次、模块文件只读取一次。支持
+`g:verilog_tooling_eai_flags`（如 `--sort`）。
 
 ### EAI —— verilog-mode 的 AUTOINST
 
@@ -193,9 +203,39 @@ EAP → EAI → AIO → AW → AREG → AD → AR → AF。输出与依次执行
 
 ### EAP —— AUTOINSTPARAM
 
-填充实例的 `#(...)` 参数表（`/*AUTOINSTPARAM*/` 标记，或 AIT/EAI
-新建实例时）。优先级规则见下文
-[AUTOINSTPARAM (EAP)](#autoinstparam-eap)。
+按子模块的参数声明填充实例的 `#(...)` 参数表。设有 `subp`：
+
+```verilog
+module subp #(
+    parameter DW = 8,
+    parameter DEPTH = 4
+) (
+    input  wire          clk,
+    output wire [DW-1:0] dout
+);
+endmodule
+```
+
+则：
+
+```verilog
+module top;
+    subp #(/*AUTOINSTPARAM*/) u_subp (/*autoinst*/);
+endmodule
+```
+
+变为：
+
+```verilog
+module top;
+    subp #(/*AUTOINSTPARAM*/
+           // Parameters
+           .DW                          (DW),
+           .DEPTH                       (DEPTH)) u_subp (/*autoinst*/);
+endmodule
+```
+
+优先级规则见下文 [AUTOINSTPARAM (EAP)](#autoinstparam-eap)。
 
 ### AIT —— 已废弃，委托给 EAI
 
@@ -215,9 +255,57 @@ EAP → EAI → AIO → AW → AREG → AD → AR → AF。输出与依次执行
   行的原文——手写的 `.port (custom_sig)` 连接原样保留。
   `AUTO_TEMPLATE` 声明过的端口仍按模板连接。
 
+例子：子模块改版——`done` 被删、`dout`/`cnt` 新增。起始文本：
+
+```verilog
+module top;
+    sub u_sub (/*autoinst*/
+        .clk (rx_clk),
+        .din (din),
+        .done(done)
+    );
+endmodule
+```
+
+`AIU1`（原地保留所有行）：
+
+```verilog
+module top;
+    sub u_sub (/*autoinst*/
+        .clk (rx_clk),
+        .din (din),
+//        .done(done) // INST_DEL: port done have deleted 2026-10-08 18:49
+    .dout                       (dout[7:0]                                  ), // output // INST_NEW 2026-10-08 18:49
+    .cnt                        (cnt[3:0]                                   )  // output // INST_NEW 2026-10-08 18:49
+    );
+endmodule
+```
+
+`AIU`（同样的更新，按模块端口顺序重写）：
+
+```verilog
+module top;
+    sub u_sub (/*autoinst*/
+        .clk (rx_clk),
+        .din (din),
+    .dout                       (dout[7:0]                                  ), // output // INST_NEW 2026-10-08 18:49
+    .cnt                        (cnt[3:0]                                   )  // output // INST_NEW 2026-10-08 18:49
+//        .done(done) // INST_DEL: port done have deleted 2026-10-08 18:49
+);
+endmodule
+```
+
+两种方式下手写的 `.clk (rx_clk)` 连接都保留；时间戳是运行时刻
+（命令行可用 `--date` 覆盖）。
+
 ### KI —— 折叠实例
 
-删除生成的引脚表，只留 `mod inst (/*autoinst*/);` 空壳。
+删除生成的引脚表，只留 `mod inst (/*autoinst*/);` 空壳：
+
+```verilog
+    sub u_sub (/*autoinst*/);
+```
+
 下次 EAI/AIT 从零重建。
 
 ### AD / ADT —— 声明所有未声明的信号
@@ -228,6 +316,35 @@ assign 线网、实例输出驱动的线网，以及 for 循环变量
 `reg`。完整规则见下文 [/*autodef*/ (AD/ADT)](#autodef-adadt)。
 `KADT` 把区域折叠回标记。
 
+```verilog
+module top (
+    input  wire       clk,
+    input  wire [7:0] din,
+    output wire [7:0] dout
+);
+    /*autodef*/
+    always @(posedge clk) begin
+        q <= din;
+    end
+    assign dout = q;
+endmodule
+```
+
+变为（未声明的 `q` 进触发器分节；空分节保留为注释头）：
+
+```verilog
+    /*autodef*/
+// Define io wire here
+// Define flip-flop registers here
+reg          [7:0]                      q;
+// Define combination registers here
+// Define wires here
+// Define inst wires here
+// Define integer here
+// Unresolved define signals here
+// End of automatic define
+```
+
 ### AR —— 模块头端口表
 
 根据端口声明重新生成模块头里的 `/*autoarg*/`：
@@ -236,6 +353,32 @@ assign 线网、实例输出驱动的线网，以及 for 循环变量
 （`input a, input b`）、跨行声明、unpacked 维度（`val[3:0]`）。
 放错位置的标记（不在模块头内）会原样保留不动。
 `KAR` 把端口表折叠回标记。
+
+```verilog
+module top (/*AUTOARG*/);
+    input  wire       clk;
+    input  wire [7:0] din;
+    output wire [7:0] dout;
+endmodule
+```
+
+变为：
+
+```verilog
+module top (/*AUTOARG*/
+    //Outputs
+    dout,
+
+    //Inputs
+    clk, din
+);
+    input  wire       clk;
+    input  wire [7:0] din;
+    output wire [7:0] dout;
+endmodule
+```
+
+（分节顺序是 Outputs、Inouts、Inputs——与 emacs 一致。）
 
 **inout 推断**：端口表里的名字若只有 `wire` 或没有任何方向声明
 （在 Verilog 里不是合法端口），本应从表中丢弃并逐名告警；但如果它
@@ -251,6 +394,448 @@ AR 会把它保留在 `//Inouts` 节，并在模块体内补一行
 驱动的模块 output 声明 `reg`。见下文
 [AUTOWIRE / AUTOREG](#autowire--autoreg-awareg)。
 
+### ASEN / ARST —— AUTOSENSE / AUTORESET
+
+`always @(/*AUTOSENSE*/)`（或 `/*AS*/`）按块内实际读取的信号重写
+敏感列表——块内被赋值的信号排除，`/*AUTO_CONSTANT(`x) */` 排除宏，
+存储器会加 `/*memory or*/` 备注：
+
+```verilog
+    always @(/*AUTOSENSE*/) begin
+        q = a & b;
+    end
+```
+
+变为：
+
+```verilog
+    always @(/*AUTOSENSE*/a or b) begin
+        q = a & b;
+    end
+```
+
+`/*AUTORESET*/` 放在复位分支里，为该 always 块其他地方驱动、但标记
+前没有手动复位的每个信号生成 `sig <= 位宽'h0;`（`<=`/`=` 跟随块的
+风格；`verilog-active-low-regexp` 命中的低有效信号复位为 1）：
+
+```verilog
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            /*AUTORESET*/
+        end else begin
+            q   <= din;
+            vld <= 1'b1;
+        end
+    end
+```
+
+变为：
+
+```verilog
+        if (!rst_n) begin
+            /*AUTORESET*/
+            // Beginning of autoreset for uninitialized flops
+            q <= 8'h0;
+            vld <= 1'h0;
+            // End of automatics
+        end else begin
+```
+
+### AIM / AIC / AII / AIMP / AIP —— 从别处复制 I/O
+
+- `/*AUTOINOUTMODULE("Mod"[,"re"])*/`(AIM)：从另一个模块复制
+  input/output/inout 声明——写空壳模块的主力。
+- `/*AUTOINOUTCOMP("Mod"[,"re"[,"not-re"]])*/`(AIC)：同上但方向
+  取反（input 变 output）——写 testbench 用。
+- `/*AUTOINOUTIN("Mod"[,"re"])*/`(AII)：同上但全部声明为 input
+  ——写 monitor 用。
+- `/*AUTOINOUTMODPORT("If","mp-re"[,"re"[,"prefix"]])*/`(AIMP)：从
+  interface 的 modport 复制 I/O。
+- `/*AUTOINOUTPARAM("Mod"[,"re"])*/`(AIP)：复制 `parameter` 声明
+  （不带值，SystemVerilog-2009 风格）。
+
+标记放在模块头括号内时按 Verilog-2001 逗号风格展开，否则是 1995
+的 `;` 声明。正则带 `?!` 前缀表示排除。
+
+AIM 例子——空壳模块加上 AIU 例子的 `sub` 定义：
+
+```verilog
+module shell;
+/*AUTOINOUTMODULE("sub")*/
+endmodule
+```
+
+变为：
+
+```verilog
+module shell;
+/*AUTOINOUTMODULE("sub")*/
+// Beginning of automatic in/out/inouts (from specific module)
+output [7:0]            dout;
+output                  done;
+input                   clk;
+input [7:0]             din;
+// End of automatics
+endmodule
+```
+
+### AAMP —— AUTOASSIGNMODPORT
+
+`/*AUTOASSIGNMODPORT("If","mp-re","inst"[,"re"[,"prefix"]])*/` 生成
+把 modport 信号与 interface 实例互连的 `assign` 语句——UVM 验证
+模块常用。`bus_if.v` 定义：
+
+```verilog
+interface bus_if;
+    logic       req;
+    logic       gnt;
+    logic [7:0] data;
+    modport master (output req, data, input gnt);
+endinterface
+```
+
+则：
+
+```verilog
+module top;
+    bus_if u_bus ();
+    /*AUTOASSIGNMODPORT("bus_if", "master", "u_bus")*/
+endmodule
+```
+
+变为（先 modport 的 output 再 input，各自按名排序；方向关键字对
+其后所有逗号条目有效，所以 `data` 也是 output）：
+
+```verilog
+    /*AUTOASSIGNMODPORT("bus_if", "master", "u_bus")*/
+    // Beginning of automatic assignments from modport
+    assign data = u_bus.data;
+    assign req = u_bus.req;
+    assign u_bus.gnt = gnt;
+    // End of automatics
+```
+
+### AOE / ARI —— AUTOOUTPUTEVERY / AUTOREGINPUT
+
+`/*AUTOOUTPUTEVERY[("re")]*/` 把每个非 input 信号声明为 output
+（防综合优化掉）。作用于模块内已声明的信号：
+
+```verilog
+module top (
+    input wire clk
+);
+    /*AUTOOUTPUTEVERY*/
+    wire [7:0] dout_w;
+    wire       done_w;
+    sub u_sub (/*autoinst*/
+        .clk  (clk),
+        .din  (din),
+        .dout (dout_w),
+        .done (done_w)
+    );
+endmodule
+```
+
+变为：
+
+```verilog
+    /*AUTOOUTPUTEVERY*/
+    // Beginning of automatic outputs (every signal)
+    output              done_w;
+    output [7:0]        dout_w;
+    // End of automatics
+```
+
+`/*AUTOREGINPUT*/` 为喂给 AUTOINST input 引脚的未声明线网声明
+`reg`（注释 `// To <inst> of <Mod>.v`），写顶层测试壳常用：
+
+```verilog
+    /*AUTOREGINPUT*/
+    // Beginning of automatic reg inputs (for undeclared instantiated-module inputs)
+    reg                 clk;                    // To u_sub of sub.v
+    reg [7:0]           din;                    // To u_sub of sub.v
+    // End of automatics
+```
+
+### AASC —— AUTOASCIIENUM
+
+`/*AUTOASCIIENUM("sig", "ascii_sig"[,"prefix"[,"onehot"]])*/` 为
+枚举状态向量生成 ASCII 解码寄存器：以 `// auto enum <名>`（或
+`synopsys enum`）标记的参数定义状态，被
+`/* auto state_vector <sig> */` 标记的信号选定向量。生成
+`reg [8*N-1:0] ascii_sig; // Decode of sig` 加一个
+`always @(sig)` 的 case 解码器（默认 `"%Err"`）。
+
+规范写法（注意状态变量自身也要带 enum 标记，把它和参数组关联
+起来）：
+
+```verilog
+module fsm;
+    //== State enumeration
+    parameter [2:0] // auto enum state_info
+        SM_IDLE  = 3'b001,
+        SM_SEND  = 3'b010,
+        SM_WAIT1 = 3'b100;
+    //== State variables
+    reg [2:0] /* auto enum state_info */
+        state_r; /* auto state_vector state_r */
+    /*AUTOASCIIENUM("state_r", "state_ascii_r", "SM_")*/
+endmodule
+```
+
+变为：
+
+```verilog
+    /*AUTOASCIIENUM("state_r", "state_ascii_r", "SM_")*/
+    // Beginning of automatic ASCII enum decoding
+    reg [39:0]          state_ascii_r;          // Decode of state_r
+    always @(state_r) begin
+       case ({state_r})
+         SM_IDLE:  state_ascii_r = "idle ";
+         SM_SEND:  state_ascii_r = "send ";
+         SM_WAIT1: state_ascii_r = "wait1";
+         default:  state_ascii_r = "%Erro";
+       endcase
+    end
+    // End of automatics
+```
+
+（`"SM_"` 前缀会从解码名中去掉，名字按最宽的状态名补空格对齐。）
+
+### ALGC —— AUTOLOGIC
+
+`/*AUTOLOGIC*/` 是声明 `logic` 而非 `wire` 的 AUTOWIRE。文件局部
+变量 `// verilog-auto-wire-type: "logic"` 可让 `/*AUTOWIRE*/` 起
+同样作用：
+
+```verilog
+    /*AUTOLOGIC*/
+    // Beginning of automatic wires (for undeclared instantiated-module outputs)
+    logic                                   done_w; // From u_sub of sub.v
+    logic        [7:0]                      dout_w; // From u_sub of sub.v
+    // End of automatics
+```
+
+### ATIE —— AUTOTIEOFF
+
+`/*AUTOTIEOFF*/` 把每个未端接的模块 output 绑到无效值：
+`wire [w:0] o = w'h0;`（低有效信号 `~w'h0`，signed 信号
+`w'sh0`）。已声明、被 AUTOINST 驱动、或匹配
+`verilog-auto-tieoff-ignore-regexp` 的 output 跳过。是 AUNU 的
+经典搭档（空壳模块）：
+
+```verilog
+module stub (
+    output wire [7:0] o_data,
+    output wire       o_vld_n
+);
+    /*AUTOTIEOFF*/
+endmodule
+// Local Variables:
+// verilog-active-low-regexp: "_n$"
+// End:
+```
+
+变为（`_n` 结尾的低有效输出按该变量绑为 `~1'h0`，即逻辑 1）：
+
+```verilog
+    /*AUTOTIEOFF*/
+    // Beginning of automatic tieoffs (for this module's unterminated outputs)
+    wire [7:0]          o_data                  = 8'h0;
+    wire                o_vld_n                 = ~1'h0;
+    // End of automatics
+```
+
+### AUNU —— AUTOUNUSED
+
+`/*AUTOUNUSED*/` 就地展开为未使用的 input/inout 信号的逗号列表
+——设计用途是 `wire _unused_ok = &{1'b0, /*AUTOUNUSED*/ 1'b0};`，
+一条语句消掉全部未用信号告警。
+`verilog-auto-unused-ignore-regexp` 可排除名字。
+
+这里的"未使用"指**没有连到任何实例的 input/inout 引脚**（藏在
+`{...}`/`(...)` 里的连接算已用）；只被 `assign` 读取并不能让信号
+脱离列表。下例中 `spare_a`/`spare_b` 什么都不喂：
+
+```verilog
+module top (
+    input  wire       clk,
+    input  wire [7:0] din,
+    input  wire       spare_a,
+    input  wire       spare_b,
+    output wire [7:0] dout
+);
+    sub u_sub (/*autoinst*/
+        .clk (clk),
+        .din (din),
+        .dout(dout));
+    wire unused_ok = &{1'b0,
+                       /*AUTOUNUSED*/
+                       1'b0};
+endmodule
+```
+
+变为：
+
+```verilog
+    wire unused_ok = &{1'b0,
+                       /*AUTOUNUSED*/
+                       // Beginning of automatic unused inputs
+                       spare_a,
+                       spare_b,
+                       // End of automatics
+                       1'b0};
+```
+
+### AUND —— AUTOUNDEF
+
+`/*AUTOUNDEF[("re")]*/` 把上一个 AUTOUNDEF 以来见过的所有
+`` `define `` 都 `` `undef `` 掉（已经 undef 的跳过，所以
+`` `ifdef NEVER `` 守卫能工作），排序输出，可选正则过滤——防
+文件局部宏污染全局命名空间：
+
+```verilog
+`define FOO 8
+`define BAR 16
+module top;
+    /*AUTOUNDEF*/
+endmodule
+```
+
+变为：
+
+```verilog
+    /*AUTOUNDEF*/
+    // Beginning of automatic undefs
+`undef BAR
+`undef FOO
+    // End of automatics
+```
+
+### AIL / AILL —— AUTOINSERTLISP / AUTOINSERTLAST
+
+`/*AUTOINSERTLISP(!command args)*/` 执行 shell 命令并把 stdout
+插入 `// Beginning of automatic insert lisp` 区域，AIL 在所有其他
+AUTO 之前、AILL 在之后。Emacs 在这里求值 elisp，本移植版改为执行
+shell——这是有记载的差异（不支持 elisp `defun`，与
+AUTO_TEMPLATE `@"..."` 的子集规则一致）：
+
+```verilog
+module top;
+    /*AUTOINSERTLISP(!echo // inserted by shell)*/
+endmodule
+```
+
+变为：
+
+```verilog
+module top;
+    /*AUTOINSERTLISP(!echo // inserted by shell)*/
+    // Beginning of automatic insert lisp
+// inserted by shell
+    // End of automatics
+endmodule
+```
+
+### AINJ —— 给 legacy 代码注入 AUTO 标记
+
+向模块头插入 `/*AUTOARG*/`、向手写敏感列表已吻合的 always 块
+插入 `/*AS*/`、向引脚列表插入 `/*AUTOINST*/`（删除 `.x(x)` 恒
+等连接），然后跑完整的 AALL 流水线——即 `verilog-inject-auto`
+工作流，把老文件纳入 AUTO 管理：
+
+```verilog
+module top (clk, din, dout, done);
+    input clk;
+    input [7:0] din;
+    output [7:0] dout;
+    output done;
+    reg [7:0] r;
+    always @(clk or din) r = din;
+    sub u_sub (.clk(clk), .din(din), .dout(dout), .done(done));
+endmodule
+```
+
+变为：
+
+```verilog
+module top (clk, din, dout, done/*AUTOARG*/
+    //Outputs
+    dout, done,
+
+    //Inputs
+    clk, din
+);
+input                                clk;
+input[7:0]                           din;
+output[7:0]                          dout;
+output                               done;
+reg[7:0]                             r;
+    always @(clk or din) r = din;
+    sub u_sub (
+               /*AUTOINST*/
+               // Outputs
+        .dout   (dout[7:0]                                                  ),
+        .done   (done                                                       ),
+               // Inputs
+        .clk    (clk                                                        ),
+        .din    (din[7:0]                                                   )
+);
+endmodule
+```
+
+（`/*AS*/` 只在手写敏感列表已与块内读取一致时注入；不一致的
+always 块原样保留，等你先改对。）
+
+### ADIF —— 对比 AUTO 展开差异
+
+在副本上展开 AUTO，用预览窗口显示统一 diff（空白不敏感判定，同
+`verilog-diff-auto`）。输出为空表示 buffer 已完全展开——可用作
+lint/回归检查。过时的 `.stale(stale)` 引脚加待重展开会显示为：
+
+```diff
+--- current
++++ auto-expanded
+@@ -1,9 +1,10 @@
+ module top;
+     sub u_sub (/*autoinst*/
+-        .clk (clk),
+-        .din (din),
+-        .dout(dout),
+-        .done(done),
+-        .stale(stale)
+-    );
++               // Outputs
++        .dout   (dout[7:0]                                                  ),
++        .done   (done                                                       ),
++               // Inputs
++        .clk    (clk                                                        ),
++        .din    (din[7:0]                                                   )
++);
+ endmodule
+```
+
+### ATLINT —— 未使用的 AUTO_TEMPLATE 行
+
+带命中追踪地跑一次 EAI/EAP 展开，把从未被任何实例消费的模板条目
+列到 quickfix 窗口（`verilog-auto-template-warn-unused`）。下例中
+`.nosuch` 匹配不上 `sub` 的任何端口，会被报告；`.din` 被消费，
+保持沉默：
+
+```verilog
+module top;
+    /* sub AUTO_TEMPLATE (
+        .din (data_in),
+        .nosuch (nosuch),
+    ) */
+    sub u_sub (/*autoinst*/);
+endmodule
+```
+
+```
+top.v:2: AUTO_TEMPLATE line unused: ".nosuch (nosuch)"
+```
+
 ### AF 家族 —— 对齐
 
 只在当前 buffer 内做对齐（不需要模块文件）：
@@ -263,32 +848,212 @@ AR 会把它保留在 `//Inouts` 节，并在模块体内补一行
 
 幂等；已经对齐时报告 `no changes`。
 
+```verilog
+module top(input clk, input [7:0] din, output [7:0] dout);
+parameter W = 8;
+localparam DEPTH = 16;
+wire [7:0] a;
+wire b;
+sub u_sub(
+.clk(clk),
+.din(a),
+.dout (dout),
+.done(b));
+endmodule
+```
+
+`AF` 之后：
+
+```verilog
+module top(input clk, input [7:0] din, output [7:0] dout);
+parameter   W     = 8;
+localparam  DEPTH = 16;
+wire[7:0]                           a;
+wire                                b;
+sub u_sub(
+        .clk    (clk                                                        ),
+        .din    (a                                                          ),
+        .dout   (dout                                                       ),
+        .done   (b                                                          )
+);
+endmodule
+```
+
+实例头里手写的 `#(...)` 参数覆盖与引脚连接完全同等对齐——只有
+`)) inst (` 这一收尾行绝不会被卷进最后一个参数覆盖。
+
 ### AM / AME —— 实例空壳
 
-把光标下的单词变成该行的实例空壳：
-`fifo` → `fifo u0_fifo (/*autoinst*/);`（AM，automatic.vim 风格），
-AME 生成 emacs 风格的空壳。实例编号按 buffer 中该模块已有实例数
-递增。
+把光标下的单词变成该行的实例空壳。实例编号按 buffer 中该模块
+已有实例数递增。光标下的 `fifo` 用 `AM`（automatic.vim 风格）
+变为：
+
+```verilog
+fifo  u0_fifo(/*autoinst*/);
+```
+
+用 `AME`（emacs 风格，方便接 EAP 和模板）变为：
+
+```verilog
+/* fifo  auto_template (
+  ); */
+fifo #(/*autoinstparam*/)   u0_fifo(/*autoinst*/);
+```
 
 ### APM / AFM —— 参数 / 状态机骨架
 
-`/*autopara*/ (A, B=2, C)` 展开为对齐的 `parameter` 声明。
+`/*autopara*/ (A, B=2, C)` 展开为对齐的 `parameter` 声明：
+
+```verilog
+    /*autopara*/ (A, B=2, C)
+// Define parameter here
+parameter A = 2'd0;
+parameter B = 2'd2;
+parameter C = 2'd3;
+// End of automatic parameter
+```
+
 `/*autofsm*/ (IDLE,RUN,DONE) state nstate` 展开为状态 localparam
 加两段式 FSM 骨架（状态寄存器 + 次态组合逻辑），状态位宽按状态数
-自动推导。
+自动推导：
+
+```verilog
+    /*autofsm*/ (IDLE,RUN,DONE) state nstate
+// Define fsm here
+// Define FSM parameter here
+localparam IDLE = 2'd0;
+localparam RUN  = 2'd1;
+localparam DONE = 2'd2;
+// End of automatic parameter for FSM
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin
+        state[1:0] <= #`RD IDLE;
+    end else begin
+        state[1:0] <= #`RD nstate[1:0];
+    end
+end
+always @(*) begin
+    nstate[1:0] = state[1:0];
+    case(state[1:0])
+        IDLE: begin
+        end
+        RUN: begin
+        end
+        DONE: begin
+        end
+        default: begin
+        end
+    endcase
+end
+// End of automatic fsm
+```
 
 ### AH / ATpl —— 文件头与新文件
 
-`AH` 在文件开头插入文件头注释块（`// +FHDR`）。
-`ATpl foo.v` 按工程骨架创建新文件并打开——文件名带 `_tb`/`tb`
-后缀时生成 testbench 骨架。新建空的 `.v`/`.sv` buffer 时会自动
-套骨架（BufNewFile）。
+`AH` 在文件开头插入文件头注释块（`// +FHDR`）：
+
+```verilog
+// +FHDR----------------------------------------------------------------------
+//                 Copyright (c) 2026 .
+//                     ALL RIGHTS RESERVED
+//  This source file is the property of   Technology Co., Ltd. and
+//  may not be copied or distributed in any isomorphic form without the prior
+//  written consent of  Technology Co., Ltd.
+// ---------------------------------------------------------------------------
+// Filename      : hdr.v
+// Author        :
+// Created On    : 2026-10-08 18:47
+// Last Modified :
+// ---------------------------------------------------------------------------
+// Description:
+//
+//
+// -FHDR----------------------------------------------------------------------
+```
+
+`ATpl foo.v` 按工程骨架创建新文件（同样以 +FHDR 块开头）并打
+开——文件名带 `_tb`/`tb` 后缀时生成 testbench 骨架：
+
+```verilog
+//`timescale 1ns/1ps
+
+module foo_tb(/*autoarg*/);
+/*autoreginput*/
+
+
+reg                                     clk;
+reg                                     rst_n;
+/*autodef off*/
+initial begin
+    clk = 1'b0;
+    forever #10 clk = ~clk;
+end
+initial begin
+    rst_n = 1'b0;
+    #52 rst_n = 1'b1;
+end
+initial begin
+    $fsdbDumpfile("main.fsdb") ;
+    $fsdbDumpvars(0,foo_tb,"+mda");
+end
+initial begin
+    #1000;
+    $finish;
+end
+/*autodef on*/
+
+//{{{
+/*autodef*/
+/*autowire*/
+/*autoreg*/
+//}}}
+
+//inst u_inst(/*autoinst*/);
+
+// Local Variables:
+// verilog-auto-inst-param-value:t
+// verilog-library-flags:("-y  <文件所在目录>" )
+// verilog-library-directories:("<文件所在目录>" )
+// End:
+```
+
+（两个库路径写的是新文件自己的目录。）新建空的 `.v`/`.sv`
+buffer 时会自动套骨架（BufNewFile）。
 
 ### BPN / BP / BA —— always 块片段
 
-在光标处插入 always 骨架：`BPN` —
-`always @(posedge clk or negedge rst_n)` 带 `if (!rst_n)` 复位分支；
-`BP` — `always @(posedge clk)`；`BA` — 组合逻辑 `always @(*)`。
+在光标处插入 always 骨架。`BPN`：
+
+```verilog
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin
+
+    end else if() begin
+    end else begin
+    end
+end
+```
+
+`BP`：
+
+```verilog
+always @(posedge clk) begin
+    if() begin
+
+    end else begin
+    end
+end
+```
+
+`BA`：
+
+```verilog
+always @(*) begin
+
+end
+```
+
+（三种骨架里光标都落在第一个空分支中。）
 
 ## 默认按键映射
 
@@ -401,28 +1166,9 @@ mm_cdma_parse u_parse (/*autoinst*/);
   `vl-width`/`vl_width` 是*数值*位宽（`[0:3]` 对应 `'4'`，单比特对应
   `'1'`，参数化 range 对应 `'(1+(`a)-(`b))'`）——与 emacs 的
   `verilog-sig-width` 一致。
-- 标记前的 `/*AUTO_LISP(expr)*/` 会先求值一段 Python 绑定，供
-  `@"..."` 表达式引用
-- `/*AUTO_PYTHON( <代码> )*/` 定义普通 Python 函数，可在 `@"..."`
-  中直接调用（elisp `defun` 的 Python 替代；因连字符不是合法 Python
-  标识符，额外绑定下划线别名 `vl_name` / `vl_cell_name` / `vl_width` /
-  `vl_dir`)：
-
-  ```verilog
-  /*AUTO_PYTHON(
-  def surround(sig):
-      return "{" + sig + "," + sig + "}"
-  )*/
-  /* my_mod AUTO_TEMPLATE (
-      .\\(.*\\)  (@"surround(vl_name)"),
-  ); */
-  ```
-
-  `// verilog-auto-python-file: "myfuncs.py"`（文件局部变量）改为从共享
-  Python 文件加载顶层定义——语法与 `verilog-library-files` 一致：带引号、
-  空格分隔、可加括号（`("a.py" "b.py")`，多文件时后者覆盖前者）。
-  相对路径在 `-y`/vc 库目录和 buffer 所在目录中查找（支持 `~`/`$VAR`
-  展开，按 mtime 缓存）。同名时文件内联块优先于文件定义。
+- `/*AUTO_LISP(...)*/` 与 `/*AUTO_PYTHON(...)*/` 预先准备好供
+  `@"..."` 表达式使用的名字——见下文
+  [AUTO_PYTHON 与 AUTO_LISP](#auto_python-与-auto_lisp)。
 
 没有模板条目的端口连接同名线网（带位宽）；如果线网还没声明，
 AW/AD 会帮你声明。支持 SystemVerilog `interface` 端口（含
@@ -458,6 +1204,109 @@ modport):`cpu_bus.master bus` 连为 `.bus (bus.master)`。
 | `verilog-auto-declare-nettype` | `nil` | 无数据类型的 io 声明补 `<方向> <nettype>`（用于 `` `default_nettype none``） |
 
 注意：AUTOARG 分节顺序遵循 emacs —— Outputs、Inouts、Inputs。
+
+## AUTO_PYTHON 与 AUTO_LISP
+
+模板里的 `@"..."` 表达式常常需要内置变量之外的东西——名字变换、
+常量后缀、字符串拼接。有两种注释块为它们准备 Python 名字。两者
+都按 buffer 顺序求值、只求值到当前展开的实例为止，运行在**无
+builtins 的沙箱**中（不能 `import`、不能碰文件或网络）；块内代码
+报错会让整条命令失败并把出错代码引用出来。
+
+### AUTO_LISP —— 普通绑定
+
+`/*AUTO_LISP(...)*/` 执行 Python 语句（赋值），定义的名字之后
+可供 `@"..."` 表达式读取。它是 elisp 版 `AUTO_LISP` /
+`verilog-auto-lisp` 准备步骤的移植，只是用 Python 语法代替 elisp
+的 `setq`：
+
+```verilog
+/*AUTO_LISP(SFX = "_r")*/
+module top;
+    /* sub AUTO_TEMPLATE (
+        .din (@"vl_name + SFX"),
+    ) */
+    sub u_sub (/*autoinst*/);
+endmodule
+```
+
+跑 `EAI` 后，`din` 引脚连到 `din_r`：
+
+```verilog
+               .din                     (din_r));                // Templated
+```
+
+### AUTO_PYTHON —— 定义函数
+
+`/*AUTO_PYTHON( <代码> )*/` 在模块级执行完整的 Python 语句，
+通常是 `def`。定义出的名字可以从其后任何 `@"..."` 表达式调用
+——是为模板写 elisp 辅助函数的 Python 原生替代：
+
+```verilog
+/*AUTO_PYTHON(
+def surround(sig):
+    return "{" + sig + "," + sig + "}"
+)*/
+module top;
+    /* sub AUTO_TEMPLATE (
+        .din (@"surround(vl_name)"),
+    ) */
+    sub u_sub (/*autoinst*/);
+endmodule
+```
+
+跑 `EAI` 后：
+
+```verilog
+    sub u_sub (/*autoinst*/
+               // Outputs
+               .dout                    (dout[7:0]),
+               .done                    (done),
+               // Inputs
+               .clk                     (clk),
+               .din                     ({din,din}));            // Templated
+```
+
+在 `@"..."` 里和 AUTO_PYTHON 代码里，模板变量同时有 elisp 拼写
+（`vl-name`、`vl-cell-name`、`vl-width`、`vl-dir`——`@"..."`
+字符串中的连字符名会自动改写）和下划线别名（`vl_name`、
+`vl_cell_name`、`vl_width`、`vl_dir`），因为连字符不是合法的
+Python 标识符。
+
+### `verilog-auto-python-file` —— 共享 Python 文件
+
+多个文件共用的辅助函数可放进真正的 `.py` 文件，用文件局部变量
+加载（语法与 `verilog-library-files` 相同：带引号、空格分隔，
+括号可有可无，多文件时后者覆盖前者）：
+
+```verilog
+// Local Variables:
+// verilog-auto-python-file: "funcs.py"
+// End:
+```
+
+库路径上有 `funcs.py`：
+
+```python
+def shout(sig):
+    return sig.upper() + "_INT"
+```
+
+配合模板 `.din (@"shout(vl_name)")`，`EAI` 连出：
+
+```verilog
+               .din                     (DIN_INT));              // Templated
+```
+
+查找与优先级：
+
+- 先在 `-y`/vc 库目录中找，再在 buffer 所在目录中找（`~` 和
+  开头的 `$VAR` 会展开）；
+- 定义按文件 mtime 缓存——重复运行不会用到过期辅助函数；
+- 文件局部的文件先加载，内联的 `/*AUTO_PYTHON*/` 块随后；同名
+  时后定义者胜出（内联覆盖文件）；
+- 一切都在同一个无 builtins 沙箱里跑，所以辅助文件能定义函数和
+  常量，但碰不到文件系统。
 
 ## /*autodef*/ (AD/ADT)
 
@@ -495,6 +1344,46 @@ modport):`cpu_bus.master bus` 连为 `.bus (bus.master)`。
 （assign/always/实例）的模块 output 声明 `reg`。两者都跳过已声明的
 信号，位宽保持符号化。
 
+```verilog
+    /*AUTOWIRE*/
+    sub u_sub (/*autoinst*/
+        .clk  (clk),
+        .din  (din),
+        .dout (dout_w),
+        .done (done_w)
+    );
+```
+
+变为：
+
+```verilog
+    /*AUTOWIRE*/
+    // Beginning of automatic wires (for undeclared instantiated-module outputs)
+    wire                                    done_w; // From u_sub of sub.v
+    wire         [7:0]                      dout_w; // From u_sub of sub.v
+    // End of automatics
+```
+
+`/*AUTOREG*/` 在 1995 风格模块里：
+
+```verilog
+module top (q, vld);
+    output [7:0] q;
+    output vld;
+    /*AUTOREG*/
+endmodule
+```
+
+变为：
+
+```verilog
+    /*AUTOREG*/
+    // Beginning of automatic regs (for this module's undeclared outputs)
+    reg          [7:0]                      q;
+    reg                                     vld;
+    // End of automatics
+```
+
 ## AUTOINPUT / AUTOOUTPUT / AUTOINOUT (AIO)
 
 verilog-mode 的封装模块端口生成（`:AIO` 依次执行 AUTOOUTPUT、AUTOINPUT、
@@ -531,10 +1420,89 @@ verilog-mode 的开/闭逗号修补）；放在模块体内则是 1995 风格（
 - `// verilog-auto-wire-comment: nil` —— 不生成声明行尾的
   `// To`/`// From` 注释。
 
+```verilog
+module wrap;
+    /*AUTOINPUT*/
+    /*AUTOOUTPUT*/
+    /*AUTOINOUT*/
+    sub u_sub (/*autoinst*/
+        .clk  (clk),
+        .din  (din),
+        .dout (dout),
+        .done (done)
+    );
+endmodule
+```
+
+变为：
+
+```verilog
+module wrap;
+    /*AUTOINPUT*/
+    // Beginning of automatic inputs (from unused autoinst inputs)
+    input                                   clk; // To u_sub of sub.v
+    input        [7:0]                      din; // To u_sub of sub.v
+    // End of automatics
+    /*AUTOOUTPUT*/
+    // Beginning of automatic outputs (from unused autoinst outputs)
+    output                                  done; // From u_sub of sub.v
+    output       [7:0]                      dout; // From u_sub of sub.v
+    // End of automatics
+    /*AUTOINOUT*/
+    sub u_sub (/*autoinst*/
+        .clk  (clk),
+        .din  (din),
+        .dout (dout),
+        .done (done)
+    );
+endmodule
+```
+
 AIO 与 `/*autoarg*/` 的放置约定：头部有 `/*autoarg*/` 时，把
 AUTOINPUT/AUTOOUTPUT marker 放在模块**体内**——autoarg 会把生成的端口名
 收进头部端口表（这是 verilog-mode 的标准布局）。如果 AIO marker 本身
 就在头部，autoarg 会跳过该头部（名字列表会和完整声明重复）。
+
+## 命令行
+
+插件做的每件事都有对应的命令行程序——Vim 前端就是调用这些入口
+（仅用标准库）。把 `PYTHONPATH` 指向仓库的 `python/` 目录（或
+安装后的 `~/.vim/python`）：
+
+| 程序 | 命令 |
+|---|---|
+| `python3 -m verilog_tooling.inst` | `aall eai eap ait aiu aiu1 kill aif apf adf af ainj` |
+| `python3 -m verilog_tooling.arg` | `ar kill`（AUTOARG / KAR） |
+| `python3 -m verilog_tooling.autodef` | `adt kill`（AD/ADT / KADT） |
+| `python3 -m verilog_tooling.wire` | `aw ar kill-aw kill-ar`（AUTOWIRE / AUTOREG） |
+| `python3 -m verilog_tooling.inout` | `aio ain aout ainout kill-ain kill-aout kill-ainout` |
+| `python3 -m verilog_tooling.sense` | `asense areset kill-sense kill-reset` |
+| `python3 -m verilog_tooling.misc` | `aascii alogic atieoff aunused aundef ainsertlisp ainsertlast`（及 `kill-*`） |
+| `python3 -m verilog_tooling.xfer` | `ainoutmodule ainoutcomp ainoutin ainoutmodport ainoutparam aassignmodport aoutputevery areginput`（及 `kill-*`） |
+| `python3 -m verilog_tooling.gen` | `am ame apm afm kill-para kill-fsm`（`am`/`ame` 需 `--line N`） |
+| `python3 -m verilog_tooling.filehdr` | `template header`（`template -f new.v` 建新文件） |
+| `python3 -m verilog_tooling.inject` | `inject`（单独的 AINJ 标记注入） |
+| `python3 -m verilog_tooling.diffauto` | `diff`（统一 diff 输出到 stdout，或 `-o 文件`） |
+| `python3 -m verilog_tooling.lint` | `lint`（未用 AUTO_TEMPLATE 警告输出到 stdout） |
+
+通用参数：`-i in.v -o out.v`（输入/输出文件）、`-y dir`（库目录，
+可重复）、`-I name`（额外的 SystemVerilog interface 类型名）、
+`--ref_file f`（scratch buffer 背后的真实文件，用于 Local
+Variables 相对路径）。`verilog_tooling.inst` 另有：
+
+| 参数 | 作用 |
+|---|---|
+| `--which N` | 只处理第 N 个 `/*AUTOINST*/` 标记（0 基） |
+| `--line N` | 只处理编辑器第 N 行所在的实例（仅 AIT/AIU/AIU1） |
+| `--sort` | EAI/EAP 的引脚在各方向组内排序 |
+| `--dot-name` | 连接用 SystemVerilog `.name` 简写 |
+| `--param-value` | 把 `#(...)` 参数值代入引脚位宽 |
+| `--star-expand` / `--star-save` | 展开 `.*` 实例 / 展开并保留标记 |
+| `--date S` | 覆盖 INST_NEW/INST_DEL 的时间戳 |
+
+```bash
+PYTHONPATH=python python3 -m verilog_tooling.inst eai -i top.v -o top.out.v -y rtl -y ip
+```
 
 ## 目录结构
 

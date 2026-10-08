@@ -39,7 +39,11 @@ def lint_templates(
 
     hits: set[tuple[int, int]] = set()
 
-    # wrap template_connection used by emacs.auto_inst / auto_param
+    # wrap template_connection used by emacs.auto_inst / auto_param.
+    # emacs binds the name by `from .template import template_connection`,
+    # so the wrap must be installed on the emacs module's own binding —
+    # patching verilog_tooling.template alone never reaches it.
+    import verilog_tooling.emacs as _emacs
     import verilog_tooling.template as _tmpl
 
     orig = _tmpl.template_connection
@@ -53,24 +57,21 @@ def lint_templates(
         )
 
     _tmpl.template_connection = wrapped
+    _emacs.template_connection = wrapped
     try:
         emacs.auto_inst(list(lines), modules, templates=templates)
         emacs.auto_param(list(lines), modules, templates=templates)
     finally:
         _tmpl.template_connection = orig
+        _emacs.template_connection = orig
 
     # which templates were even applicable? (module instantiated in buffer)
     inst_mods: set[str] = set()
-    try:
-        for idx in emacs.find_auto_markers(lines, "AUTOINST"):
-            inst_mods.add(emacs.marker_module(lines, idx))
-    except Exception:
-        pass
-    try:
-        for idx in emacs.find_auto_markers(lines, "AUTOINSTPARAM"):
-            inst_mods.add(emacs.marker_module(lines, idx))
-    except Exception:
-        pass
+    for kw in ("AUTOINST", "AUTOINSTPARAM"):
+        try:
+            inst_mods.update(emacs.marker_modules(lines, kw))
+        except ValueError:
+            pass
 
     warnings = []
     for tpl in templates:
