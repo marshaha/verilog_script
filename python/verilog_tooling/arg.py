@@ -220,15 +220,19 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
         if not segs:
             i += 1
             continue
-        # join following lines while the LAST segment still has no name
-        # (after a join the segment text is re-split — it may itself carry
+        # join following lines while the LAST segment is unfinished:
+        # either it still has no name (``input [7:0]`` newline ``din,``)
+        # or its name list ends with a comma that wraps onto the next
+        # line (``output wire o_a, o_b,`` newline ``o_c, o_d``).
+        # after a join the segment text is re-split — it may itself carry
         # more direction groups, and the new last segment may continue the
-        # chain)
-        while i + 1 < n and not _PORT_PREFIX.sub(
-            "", segs[-1][1].rstrip().rstrip(",").rstrip()
-        ).strip():
+        # chain.
+        while i + 1 < n and _seg_unfinished(segs[-1][1]):
+            nxt = lines[i + 1].strip()
+            if not nxt or nxt.startswith(")"):
+                break
             i += 1
-            merged = segs[-1][1].rstrip().rstrip(",").rstrip() + " " + lines[i].strip()
+            merged = segs[-1][1].rstrip() + " " + lines[i].strip()
             segs = segs[:-1] + _dir_segments(merged)
         for direction, seg in segs:
             name = _PORT_PREFIX.sub("", seg)
@@ -244,6 +248,18 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
                 buckets[direction].append(name)
         i += 1
     return inputs, outputs, inouts
+
+
+def _seg_unfinished(text: str) -> bool:
+    """A direction-segment's statement is unfinished: either it carries
+    no name yet (a bare prefix split across lines) or its name list ends
+    with a comma that wraps onto the next line."""
+    s = text.rstrip()
+    if not s:
+        return False
+    if s.endswith(","):
+        return True
+    return not _PORT_PREFIX.sub("", s.rstrip(",)").rstrip()).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -325,14 +341,27 @@ def _consume_ansi_header(lines: Sequence[str]) -> "tuple[list[str], list[str]]":
                 )
 
     def complete(stmt: str) -> bool:
-        """The statement carries a name (not just a direction/width prefix)."""
+        """The statement carries a name (not just a direction/width prefix)
+        and its name list does not wrap: a trailing comma means more names
+        follow on the next line (``output wire a,`` newline ``b``)."""
         last = _dir_segments(stmt)
         if not last:
             return False
-        tail = last[-1][1].rstrip().rstrip(",").rstrip(")").rstrip()
+        tail = last[-1][1].partition("//")[0].rstrip()
+        if tail.endswith(","):
+            return False
+        tail = tail.rstrip(")").rstrip()
         return bool(_PORT_PREFIX.sub("", tail).strip())
 
     for k, piece in pieces:
+        if not piece.strip() or piece.strip().startswith("//"):
+            # comments/blanks move with the declarations; settle any
+            # pending statement first so the comment keeps its position
+            # between statements instead of being glued onto one.
+            if cur:
+                flush()
+            decls.append(piece.rstrip())
+            continue
         if cur:
             cur.append(piece.strip())
             if complete(" ".join(cur)):

@@ -664,6 +664,31 @@ def test_auto_arg_ansi_header_decls_move_to_body():
     assert auto_arg(out) == out  # idempotent
 
 
+def test_auto_arg_ansi_header_wrapped_multi_name_decl():
+    """A multi-name declaration whose name list wraps onto an indented
+    continuation line keeps every name (wbuart32 rtl/wbuart.v shape):
+    the names must all reach the regenerated port list and the moved
+    body declaration, and no fragment may be left dangling."""
+    lines = [
+        "module m #(parameter W = 8) (/*autoarg*/",
+        "    input wire i1,",
+        "    // group comment",
+        "    input wire i2,",
+        "    output wire o_long_a, o_long_b,",
+        "                o_long_c, o_long_d",
+        ");",
+        "endmodule",
+    ]
+    out = auto_arg(lines)
+    text = "\n".join(out)
+    assert "o_long_a, o_long_b, o_long_c, o_long_d" in text
+    assert "output wire o_long_a, o_long_b, o_long_c, o_long_d;" in text
+    assert any("// group comment" in ln for ln in out)  # comment keeps its place
+    body = out[out.index(");") + 1 :]
+    assert all(not ln.rstrip().endswith(",") for ln in body)
+    assert auto_arg(out) == out  # idempotent
+
+
 def test_auto_arg_ansi_single_line_header():
     lines = ["module m (/*autoarg*/ input a, output wire [3:0] b);", "endmodule"]
     out = auto_arg(lines)
