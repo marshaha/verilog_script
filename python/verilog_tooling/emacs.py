@@ -921,7 +921,14 @@ def _replace_region(
     # invalid syntax (emacs exhibits the same gap, but an invalid result
     # is not worth replicating).
     code_tail = re.sub(r"(\s*(//[^\n]*|/\*[\s\S]*?\*/)\s*)+$", "", pin_region).rstrip()
-    if re.search(r"\.\s*\w+\s*\(", pin_region) and code_tail.endswith(")"):
+    if code_tail.endswith(".*"):
+        # a kept star line (VeeR-EL2 style: `.clk(clk), .* /*AUTOINST*/`)
+        # needs the same separator comma before the generated pins —
+        # verilog-mode emits `.*,`; without it the splice is a syntax
+        # error (`.*` followed directly by `.port(...)`).
+        insert_at = open_idx + 1 + len(code_tail)
+        head = head[:insert_at] + "," + head[insert_at:]
+    elif re.search(r"\.\s*\w+\s*\(", pin_region) and code_tail.endswith(")"):
         insert_at = open_idx + 1 + len(code_tail)
         head = head[:insert_at] + "," + head[insert_at:]
     return head + gen + tail
