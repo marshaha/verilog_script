@@ -590,9 +590,14 @@ def _header_port_names(text: str) -> list[str]:
 
 
 def _parse_modport_items(inner: str, name: str) -> ModportDef:
-    """Parse a modport's ``(...)`` item list into a :class:`ModportDef`."""
+    """Parse a modport's ``(...)`` item list into a :class:`ModportDef`.
+
+    A direction keyword applies to every following comma item until the
+    next direction keyword (``output req, data`` makes both outputs);
+    bare items before any direction are not signals and are skipped."""
     clockings: list[str] = []
     buckets: dict[str, list[str]] = {"input": [], "output": [], "inout": []}
+    direction: str | None = None
     for item in _split_top(inner, ","):
         item = item.strip()
         if not item:
@@ -605,8 +610,13 @@ def _parse_modport_items(inner: str, name: str) -> ModportDef:
             continue  # a method import, not a signal
         md = _DIR_ITEM_RE.match(item)
         if md:
+            direction = md.group(1)
             names = [w for w in re.findall(r"[a-zA-Z_]\w*", md.group(2))]
-            buckets[md.group(1)].extend(names)
+        elif direction is not None:
+            names = [w for w in re.findall(r"[a-zA-Z_]\w*", item)]
+        else:
+            continue
+        buckets[direction].extend(names)
     return ModportDef(
         name,
         tuple(clockings),
