@@ -1734,9 +1734,12 @@ endmodule
     assert any(re.search(r"reg\s+cur_sta;", line) for line in out)
 
 
-def test_inst_wire_nonlocal_symbolic_width_is_unresolved():
+def test_inst_wire_nonlocal_symbolic_width_declared_at_driver_dimension():
     """An inst_wire whose port width uses the SUBMODULE's parameter names
-    (not visible here) must be flagged unresolved, not declared broken."""
+    is declared at the driver's dimension anyway (user rule: when the
+    width does not fold to a constant, declare by the instance
+    output's dimension instead of dropping the net as unresolved).
+    Supersedes the older unresolved policy for driven nets."""
     SUB_P = """\
 module subp (
     input  wire                         clk,
@@ -1755,8 +1758,8 @@ subp u_subp (/*autoinst*/
 endmodule
 """
     out = "\n".join(auto_def_t(text.splitlines(), mods))
-    assert "wire [SUBW-1:0]" not in out
-    assert "// unresolved: dout_w //" in out
+    assert re.search(r"(?m)^wire\s+\[SUBW-1:0\]\s+dout_w;", out)
+    assert "// unresolved: dout_w" not in out
 
 
 def test_multi_packed_dim_declaration_preserved():
@@ -2071,10 +2074,10 @@ endmodule
     assert (
         "// unresolved: d_unresolved // no driver or declaration found" in text
     )
-    assert (
-        "// unresolved: foreign_w // width 'SUBW-1' references symbol(s) "
-        "not visible in this module: SUBW" in text
-    )
+    # foreign_w is instance-driven: declared at the driver's dimension
+    # (SUBW-1) under the driver-dimension rule, not left unresolved
+    assert "// unresolved: foreign_w" not in text
+    assert "[SUBW-1:0]" in text and "foreign_w" in text
 
 
 def test_multidim_packed_port_declared_with_dims():
@@ -2434,3 +2437,99 @@ endmodule
     out = "\n".join(_adt(text, _pmods()))
     assert re.search(r"(?m)^wire\s+\[15:0\]\s+mid;", out)
     assert "unresolved" not in out
+
+
+# ---------------------------------------------------------------------------
+# driver dimension is declared even when not constant-foldable
+
+_MODA_LOCALPARAM = """\
+module modl (
+    input  wire          clk,
+    output wire [LW-1:0] dout
+);
+    localparam LW = 12;
+endmodule
+"""
+
+_MODA_NODEF = """\
+module modn #(parameter W) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+
+_MODA_CHAIN = """\
+module modc #(parameter W = D*K, parameter D = 4) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+
+
+def _one_mod(text):
+    d = parse_module_ports(text.splitlines(), with_params=True)
+    return d
+
+
+def _drive_out(driver_text, driver_name, inst_head=None, extra_mods=()):
+    inst_head = inst_head or driver_name
+    mods = {driver_name: _one_mod(driver_text)}
+    for t in extra_mods:
+        d = _one_mod(t)
+        mods[d.name] = d
+    text = f"""\
+module top (input wire clk);
+/*autodef*/
+{inst_head} u_a (
+    .clk  (clk),
+    .dout (mid)
+);
+modb u_b (
+    .clk (clk),
+    .din (mid)
+);
+endmodule
+"""
+    mods["modb"] = _one_mod(_MODB_P)
+    return "\n".join(_adt(text, mods))
+
+
+def test_localparam_driver_dimension_declared():
+    out = _drive_out(_MODA_LOCALPARAM, "modl")
+    assert re.search(r"(?m)^wire\s+\[LW-1:0\]\s+mid;", out)
+    assert "unresolved" not in out
+
+
+def test_param_without_default_declared_at_driver_dimension():
+    out = _drive_out(_MODA_NODEF, "modn")
+    assert re.search(r"(?m)^wire\s+\[W-1:0\]\s+mid;", out)
+    assert "unresolved" not in out
+
+
+def test_partial_default_chain_declared_at_driver_dimension():
+    out = _drive_out(_MODA_CHAIN, "modc")
+    # D folds (4), K stays symbolic: the declaration keeps the
+    # driver's dimension expression instead of going unresolved
+    assert re.search(r"(?m)^wire\s+\[.*K.*\]\s+mid;", out)
+    assert "unresolved" not in out
+
+
+def test_sink_only_net_still_unresolved_when_symbolic():
+    text = """\
+module top (input wire clk);
+/*autodef*/
+modb u_b (
+    .clk (clk),
+    .din (mid)
+);
+endmodule
+"""
+    # modb's BW bottoms out at Q, which nothing defines: mid is only
+    # a sink-width hint (inst_in_wire), never driven, so the
+    # driver-dimension rule must not rescue it
+    mods = {"modb": _one_mod(_MODB_P.replace("parameter BW = 16", "parameter BW = Q"))}
+    out = "\n".join(_adt(text, mods))
+    assert "unresolved: mid" in out
+    assert not re.search(r"(?m)^wire\s+\[.*\]\s+mid;", out)

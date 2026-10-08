@@ -648,10 +648,11 @@ def _auto_wire_single(
             for name, net in driven.items()
             if net.direction == "inout" and name in port_names
         }
-    # widths must name LOCAL symbols; a still-foreign width (a submodule
-    # parameter the instance map does not cover) would not compile — skip it
-    # here and let autodef flag the net as unresolved instead
-    from .autodef import _const_symbols, _width_syms_known
+    # every net here is instance-driven, so a width still naming foreign
+    # symbols (a submodule parameter the constants do not cover) is the
+    # DRIVER's dimension: declare with it, matching autodef's rule,
+    # instead of skipping the net
+    from .autodef import _const_symbols
 
     local_syms = set(get_all_paras(lines)) | set(_const_symbols(lines))
     from .autodef import _merge_unpacked_indexes
@@ -664,15 +665,6 @@ def _auto_wire_single(
         if typedef_re and re.search(typedef_re, name):
             continue  # a typedef, not a net (verilog-typedef-regexp)
         net = driven[name]
-        if net.packed_dims:
-            # multi-dim declaration compiles only when every dim's symbols
-            # are visible here (the EAI note / #(...) map usually provides them)
-            if any(
-                not _width_syms_known(d, local_syms) for d in net.packed_dims
-            ):
-                continue
-        elif net.width not in ("", "c0") and not _width_syms_known(net.width, local_syms):
-            continue
         # unpacked array: merge the element indexes from all instances into
         # one range (abc[0]+abc[2] -> [0:2]); a whole-array connection of an
         # unpacked port keeps the port's own dims
@@ -683,10 +675,7 @@ def _auto_wire_single(
                 continue
             dims = (merged,)
         elif net.unpacked_dims:
-            if any(
-                not _width_syms_known(d, local_syms) for d in net.unpacked_dims
-            ):
-                continue
+            # driver-owned dims, same rule as the packed width above
             dims = tuple(net.unpacked_dims)
         sigs.append(
             Signal(

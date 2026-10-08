@@ -3013,6 +3013,14 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     for name, sig in list(signals.signals.items()):
         if sig.type == "usrdef":
             continue
+        if sig.type == "inst_wire":
+            # driven by an instance output/inout pin: its width IS the
+            # driver's dimension (submodule parameters/`defines already
+            # substituted as far as they resolve).  Declare with that
+            # dimension even when the remainder still names symbols the
+            # parent does not define — dropping the net would lose the
+            # one authoritative width it has.
+            continue
         if sig.packed_dims:
             dims_text = "".join(f"[{d}]" for d in sig.packed_dims)
             misses = sorted(
