@@ -705,7 +705,7 @@ def main(argv=None) -> None:
                 src = _module_lines(name, files, buffer_mods)
                 if src is not None:
                     modules[name] = parse_module_ports(
-                        src, typedef_regexp=td_re, interfaces=interfaces
+                        src, with_params=True, typedef_regexp=td_re, interfaces=interfaces
                     )
         out = lines
         if args.command in ("aio", "aout"):

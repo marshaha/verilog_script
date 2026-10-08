@@ -2346,7 +2346,9 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     # 6. AD (autodef) share the plain port mapping; AIO runs first so the
     # new port declarations are visible to AW/AREG/ADT
     modules_w = {
-        n: parse_module_ports(s, typedef_regexp=td_re, interfaces=interfaces)
+        n: parse_module_ports(
+            s, with_params=True, typedef_regexp=td_re, interfaces=interfaces
+        )
         for n in names_wire
         if (s := src_of(n))
     }
