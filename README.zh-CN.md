@@ -15,7 +15,7 @@ buffer：流水线关键步骤会实时写入 `:messages`（大型 SoC top 处�
 ## 环境要求
 
 - Vim 8.2+
-- `PATH` 中有 **Python ≥ 3.8**（或用 `g:verilog_tooling_python` 指定解释器）
+- `PATH` 中有 **Python ≥ 3.7**（或用 `g:verilog_tooling_python` 指定解释器）
 
 ## 安装
 

@@ -16,7 +16,7 @@ ever clobbered; `VERILOG_TOOLING_QUIET=1` silences the progress logs.
 ## Requirements
 
 - Vim 8.2+
-- **Python ≥ 3.8** in `PATH` (or point `g:verilog_tooling_python` at one)
+- **Python ≥ 3.7** in `PATH` (or point `g:verilog_tooling_python` at one)
 
 ## Install
 

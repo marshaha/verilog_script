@@ -503,12 +503,12 @@ def _expand_ansi_header(lines: list[str], interfaces: Iterable[str] | None = Non
     # expand only when ports are declared inline (a direction keyword or a
     # known interface type present AND the header body sits on a single
     # logical line)
+    def _iface_decl(part: str) -> bool:
+        im = _IFACE_PORT_DECL.match(part.strip())
+        return bool(im) and im.group(1) in interfaces
+
     if not re.search(r"\b(input|output|inout)\b", inner) and not (
-        interfaces
-        and any(
-            (im := _IFACE_PORT_DECL.match(part.strip())) and im.group(1) in interfaces
-            for part in _split_top_commas(inner)
-        )
+        interfaces and any(_iface_decl(part) for part in _split_top_commas(inner))
     ):
         return lines
     if "\n" in inner.strip():
@@ -2301,7 +2301,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     )
     if which is None or resolvable:
         module_params = {
-            n: emacs.parse_module_params(s) for n in names_emacs if (s := src_of(n))
+            n: emacs.parse_module_params(src_of(n)) for n in names_emacs if src_of(n)
         }
         lines = emacs.auto_param(
             lines, module_params, which=which, templates=templates, sort=args.sort
@@ -2316,9 +2316,9 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     )
     if which is None or resolvable:
         modules = {
-            n: parse_module_ports(s, with_params=True, interfaces=interfaces, typedef_regexp=td_re)
+            n: parse_module_ports(src_of(n), with_params=True, interfaces=interfaces, typedef_regexp=td_re)
             for n in names_emacs
-            if (s := src_of(n))
+            if src_of(n)
         }
         lines = emacs.auto_inst(
             lines,
@@ -2346,9 +2346,9 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     # 6. AD (autodef) share the plain port mapping; AIO runs first so the
     # new port declarations are visible to AW/AREG/ADT
     modules_w = {
-        n: parse_module_ports(s, typedef_regexp=td_re, interfaces=interfaces)
+        n: parse_module_ports(src_of(n), typedef_regexp=td_re, interfaces=interfaces)
         for n in names_wire
-        if (s := src_of(n))
+        if src_of(n)
     }
     lines = xfer.auto_inoutmodule(lines, modules_w)
     lines = xfer.auto_inoutcomp(lines, modules_w)
@@ -2357,9 +2357,9 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     # AUTOINOUTPARAM copies the submodule's parameters: needs with_params
     if xfer._find_markers("\n".join(lines), "AUTOINOUTPARAM"):
         modules_p = {
-            n: parse_module_ports(s, with_params=True, typedef_regexp=td_re, interfaces=interfaces)
+            n: parse_module_ports(src_of(n), with_params=True, typedef_regexp=td_re, interfaces=interfaces)
             for n in names_wire
-            if (s := src_of(n))
+            if src_of(n)
         }
     else:
         modules_p = modules_w

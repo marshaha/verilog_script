@@ -570,20 +570,23 @@ class SignalTable:
                 return seq
             name = m2.group(1)
             name_end = m.end() + m2.end()
-        elif (um := _inst_mod._UDT_HEAD_RE.match(rest)) and um.group(1) not in (
-            "enum",
-            "struct",
-            "union",
-        ):
-            # a typedef'd declaration with no verilog-typedef-regexp
-            # local in scope (`axi_resp_t slv_resp_cut;`): the FIRST word
-            # is the type even without the explicit regexp — without
-            # this the type name was registered and the real signal
-            # stayed "undeclared" (axi_demux.sv AUTOWIRE duplicates).
-            name = um.group(3)
-            name_end = um.end()
         else:
-            name_end = m.end()
+            um = _inst_mod._UDT_HEAD_RE.match(rest)
+            if um is not None and um.group(1) not in (
+                "enum",
+                "struct",
+                "union",
+            ):
+                # a typedef'd declaration with no verilog-typedef-regexp
+                # local in scope (`axi_resp_t slv_resp_cut;`): the FIRST
+                # word is the type even without the explicit regexp —
+                # without this the type name was registered and the real
+                # signal stayed "undeclared" (axi_demux.sv AUTOWIRE
+                # duplicates).
+                name = um.group(3)
+                name_end = um.end()
+            else:
+                name_end = m.end()
         # Multi-name declarations (`logic a, b;`): every name is declared
         # by this line — registering only the first left the others to be
         # re-declared by AUTOWIRE/AUTODEF (pulp axi_demux.sv duplicates).

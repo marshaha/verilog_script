@@ -66,7 +66,7 @@ function! s:Python() abort
     return filereadable(l:venv) ? l:venv : 'python3'
 endfunction
 
-" One-time interpreter sanity check: the package needs Python >= 3.8.
+" One-time interpreter sanity check: the package needs Python >= 3.7.
 let s:py_checked = 0
 function! s:CheckPython() abort
     if s:py_checked
@@ -81,10 +81,10 @@ function! s:CheckPython() abort
         echohl None
         return 0
     endif
-    call system(l:py . ' -c "import sys; sys.exit(sys.version_info < (3, 8))"')
+    call system(l:py . ' -c "import sys; sys.exit(sys.version_info < (3, 7))"')
     if v:shell_error != 0
         echohl ErrorMsg
-        echom '[verilog_tooling] Python >= 3.8 required by ' . l:py
+        echom '[verilog_tooling] Python >= 3.7 required by ' . l:py
         echohl None
         return 0
     endif
