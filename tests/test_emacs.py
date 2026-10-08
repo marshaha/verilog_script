@@ -132,6 +132,31 @@ def test_auto_inst_keeps_manual_pins_and_adds_comma():
     ]
 
 
+def test_auto_inst_adds_comma_after_kept_star():
+    # VeeR-EL2 shape: hand connections + `.*` before the marker.  The
+    # star has no closing paren, so the manual-pin comma logic missed
+    # it and the generated pins fused onto `.*` (syntax error).
+    # verilog-mode emits `.*,`.
+    buf = [
+        "InstModule instName (",
+        "    .i (my_i),",
+        "    .*",
+        "    /*AUTOINST*/",
+        ");",
+    ]
+    ind = " " * 21
+    out = auto_inst(buf, mods(IM))
+    assert out == [
+        "InstModule instName (",
+        "    .i (my_i),",
+        "    .*,",  # comma added after the kept star
+        "    /*AUTOINST*/",
+        ind + "// Outputs",
+        ind + ".o" + " " * 17 + "(o[31:0]));",
+    ]
+    assert auto_inst(out, mods(IM)) == out  # idempotent
+
+
 def test_auto_inst_regexp_filter_include_and_exclude():
     buf = ["filt u_f (/*AUTOINST(\".*_i\")*/);"]
     out = auto_inst(buf, mods(FILT))

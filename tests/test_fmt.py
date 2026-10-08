@@ -104,6 +104,29 @@ def test_aif_leaves_multiline_param_value_untouched():
     assert auto_inst_format(out) == out
 
 
+def test_aif_leaves_handwritten_param_block_untouched():
+    # veer-el2 el2_veer: a hand-written multi-line #(...) header with a
+    # `.*` tail and no AUTO markers.  The parameter overrides used to
+    # be re-aligned as pin connections, dragging `.pt(pt)` out of the
+    # header and orphaning the instance (Verilator syntax errors).
+    lines = [
+        "  el2_pmp #(",
+        "      .PMP_CHANNELS(3),",
+        "      .pt(pt)",
+        "  ) pmp (",
+        "      .clk  (active_l2clk),",
+        "      .rst_l(core_rst_l),",
+        "      .*",
+        "  );",
+    ]
+    out = auto_inst_format(lines)
+    assert out[:4] == lines[:4]  # header verbatim
+    assert "active_l2clk" in out[4] and out[4].lstrip().startswith(".clk")
+    assert out[6] == "      .*"  # implicit tail untouched
+    assert out[7] == "  );"
+    assert auto_inst_format(out) == out
+
+
 def test_aif_verilog_buffer_method():
     buf = VerilogBuffer(["small u_s (/*autoinst*/ .clk(clk));"])
     assert buf.auto_inst_format().lines[1] == CLK_LAST
@@ -136,6 +159,21 @@ def test_apf_keeps_udt_when_name_glued_to_range():
     assert out[0].rstrip().endswith("mst_reqs_o,"), out
 
 
+def test_apf_leaves_port_with_initializer_untouched():
+    # hdmi: ``output logic [BIT_WIDTH-1:0] cx = START_X,`` — a port
+    # default.  The last-token name extraction used to rebuild this as
+    # a port named START_X, deleting cx and the initializer (and
+    # colliding with the START_X parameter: Verilator duplicate).
+    lines = [
+        "    output logic [BIT_WIDTH-1:0] cx = START_X,",
+        "    output logic [BIT_HEIGHT-1:0] cy = START_Y,",
+        "    input logic clk,",
+    ]
+    out = auto_port_format(lines)
+    assert out[:2] == lines[:2]
+    assert "cx = START_X" in out[0] and "cy = START_Y" in out[1]
+
+
 def test_apf_aligns_ports_and_preserves_terminator_and_comment():
     out = auto_port_format(APF_BUF)
     assert out == [
@@ -153,6 +191,24 @@ def test_apf_semicolon_terminator_and_inout():
     out = auto_port_format(["inout pad; // pad ring", "wire w;"])
     # 'wire w;' gives max_len = 3 -> inout space_max = 25 -> 26 spaces
     assert out == ["inout" + " " * 26 + "pad;// pad ring", "wire w;"]
+
+
+def test_apf_keeps_name_and_terminator_with_unpacked_dimensions():
+    # ibex_core: ``input logic [TagSizeECC-1:0] ic_tag_rdata_i
+    # [IC_NUM_WAYS],`` — the line ends in `]` so the old end-anchored
+    # ``\w+`` name/terminator extraction found neither and APF emitted
+    # a nameless, comma-less declaration (Verilator syntax error).
+    out = auto_port_format([
+        "    input  logic [7:0] plain_i,",
+        "    input  logic [7:0] arr_i [2],",
+        "    output logic [7:0] arr_o [2][3],",
+        "    output logic [7:0] glued_o[4]",
+    ])
+    assert out[0].startswith("input logic [7:0]"), out
+    assert out[0].rstrip().endswith("plain_i,"), out
+    assert out[1].rstrip().endswith("arr_i [2],"), out
+    assert out[2].rstrip().endswith("arr_o [2][3],"), out
+    assert out[3].rstrip().endswith("glued_o[4]"), out
 
 
 # ---------------------------------------------------------------------------

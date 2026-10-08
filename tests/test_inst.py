@@ -377,9 +377,97 @@ def test_auto_inst_update_order_delegates_stub_to_auto_inst():
     ]
 
 
+def test_auto_inst_update_order_keeps_multiline_handwritten_connection():
+    # a hand-written connection may span several lines (concat opened on
+    # the first line, closed on a later one); the kept text must include
+    # every line, or the instance ends mid-expression
+    lines = [
+        "small u_s (/*autoinst*/",
+        "    .clk (my_clk),",
+        "    .din ({din_hi[3:0],",
+        "          din_lo[3:0]}),",
+        "    .vld (vld)",
+        ");",
+    ]
+    out = auto_inst_update_order(lines, {"small": small_mod()}, date=DATE)
+    joined = "\n".join(out)
+    assert ".din ({din_hi[3:0],\n          din_lo[3:0]})," in joined
+    assert "syntax" not in joined  # trivial guard against truncation
+    # both continuation words survive exactly once
+    assert joined.count("din_hi") == 1 and joined.count("din_lo") == 1
+
+
+def test_auto_inst_update_order_comments_every_line_of_deleted_multiline():
+    # a deleted port whose hand-written connection spans lines: the
+    # INST_DEL note is on the first line, but every continuation line
+    # must be commented out as well or it becomes live code again
+    lines = [
+        "small u_s (/*autoinst*/",
+        "    .clk (my_clk),",
+        "    .gone ({gone_hi[3:0],",
+        "            gone_lo[3:0]}),",
+        "    .vld (vld)",
+        ");",
+    ]
+    out = auto_inst_update_order(lines, {"small": small_mod()}, date=DATE)
+    assert out == [
+        "small u_s (/*autoinst*/",
+        "    .clk (my_clk),",
+        DIN_LINE + f" // INST_NEW {DATE}",
+        "    .vld (vld)",
+        f"//    .gone ({{gone_hi[3:0], // INST_DEL: port gone have deleted {DATE}",
+        "//            gone_lo[3:0]}),",
+        ");",
+    ]
+
+
 def test_modify_emacs_inst_format():
     out = modify_emacs_inst_format(["    .din (din[7:0])); // data", "plain"])
     assert out == ["    .din (din[7:0])  // data", "); ", "plain"]
+
+
+def test_auto_inst_update_order_which_list_targets_only_listed():
+    # the CLI passes the list of resolvable marker ordinals when some
+    # instance modules are missing; the pre-format passes must accept
+    # the list (they used to crash with TypeError on '<=' int vs list)
+    # and leave unlisted instances byte-identical.
+    lines = [
+        "module top;",
+        "small u_a (/*AUTOINST*/",
+        "    .vld (vld),",
+        "    .clk (clk),",
+        "    .din (din[7:0]));",
+        "small u_b (/*AUTOINST*/",
+        "    .vld (vld),",
+        "    .clk (clk),",
+        "    .din (din[7:0]));",
+        "endmodule",
+    ]
+    out = auto_inst_update_order(lines, {"small": small_mod()}, which=[1], date=DATE)
+    assert out[:5] == lines[:5]  # u_a verbatim, tail '));' unsplit
+    assert out[5:] == [
+        "small u_b (/*AUTOINST*/",
+        "    .clk (clk),",
+        "    .din (din[7:0]),",
+        "    .vld (vld)",
+        ");",
+        "endmodule",
+    ]
+
+
+def test_cli_aiu_skips_instance_with_missing_module(tmp_path, capsys):
+    # veerel2 shape: one instance's module (rvoclkhdr) is not in the
+    # tree; aiu must warn and process the resolvable instances instead
+    # of crashing in the which-list pre-format passes.
+    (tmp_path / "small.v").write_text(SMALL)
+    buf = tmp_path / "top.v"
+    buf.write_text("small u_ok (/*autoinst*/);\nghost u_missing (/*autoinst*/);\n")
+    out_file = tmp_path / "out.v"
+    main(["aiu", "-i", str(buf), "-o", str(out_file), "-y", str(tmp_path)])
+    text = out_file.read_text()
+    assert ".clk" in text  # u_ok expanded
+    assert "ghost u_missing (/*autoinst*/);" in text  # skipped verbatim
+    assert "skipping 1 instance" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

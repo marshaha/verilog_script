@@ -71,6 +71,8 @@ _UDT_STRIP_EXEMPT = frozenset(
     {"logic", "bit", "signed", "unsigned", "var", "int", "time", "tri", "supply0", "supply1"}
 )
 _AIO_MARK = re.compile(r"/\*\s*\b(?:autoinput|autooutput)\b", re.IGNORECASE)
+_PREPROC_LINE = re.compile(r"^\s*`[A-Za-z_]")
+_MODULE_NAME = re.compile(r"\bmodule\s+([A-Za-z_][\w$]*)")
 _PORT_TAIL = re.compile(r"\s*;.*$")
 _PORT_TRAIL_COMMA = re.compile(r"\s*,\s*$")  # header-style decl: `input clk,`
 _PORT_TRAIL_PAREN = re.compile(r"\s*\)+\s*$")  # single-line header: `input b)`
@@ -220,15 +222,18 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
         if not segs:
             i += 1
             continue
-        # join following lines while the LAST segment still has no name
-        # (after a join the segment text is re-split — it may itself carry
+        # join following lines while the LAST segment is unfinished:
+        # either it still has no name (``input [7:0]`` newline ``din,``)
+        # or its name list ends with a comma that wraps onto the next
+        # line (``output wire o_a, o_b,`` newline ``o_c, o_d``).
+        # after a join the segment text is re-split — it may itself carry
         # more direction groups, and the new last segment may continue the
-        # chain)
-        while i + 1 < n and not _PORT_PREFIX.sub(
-            "", segs[-1][1].rstrip().rstrip(",").rstrip()
-        ).strip():
+        # chain.
+        while i + 1 < n and _seg_unfinished(segs[-1][1]):
+            if not _joinable_continuation(segs[-1][1], lines[i + 1]):
+                break
             i += 1
-            merged = segs[-1][1].rstrip().rstrip(",").rstrip() + " " + lines[i].strip()
+            merged = segs[-1][1].rstrip() + " " + lines[i].strip()
             segs = segs[:-1] + _dir_segments(merged)
         for direction, seg in segs:
             name = _PORT_PREFIX.sub("", seg)
@@ -244,6 +249,70 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
                 buckets[direction].append(name)
         i += 1
     return inputs, outputs, inouts
+
+
+def _seg_unfinished(text: str) -> bool:
+    """A direction-segment's statement is unfinished: either it carries
+    no name yet (a bare prefix split across lines) or its name list ends
+    with a comma that wraps onto the next line."""
+    s = text.rstrip()
+    if not s:
+        return False
+    if s.endswith(","):
+        return True
+    return not _PORT_PREFIX.sub("", s.rstrip(",)").rstrip()).strip()
+
+
+_STRUCTURAL_WORDS = {
+    "always", "always_comb", "always_ff", "always_latch", "and", "assert",
+    "assign", "assume", "begin", "bind", "buf", "bufif0", "bufif1", "case",
+    "casex", "casez", "checker", "class", "clocking", "cmos", "config",
+    "cover", "defparam", "else", "end", "endcase", "endchecker", "endclass",
+    "endclocking", "endconfig", "endfunction", "endgenerate", "endinterface",
+    "endmodule", "endpackage", "endprimitive", "endprogram", "endproperty",
+    "endsequence", "endtable", "endtask", "enum", "final", "for", "foreach",
+    "fork", "function", "generate", "genvar", "if", "import", "initial",
+    "interface", "localparam", "module", "nand", "nmos", "nor", "not",
+    "notif0", "notif1", "or", "package", "parameter", "pmos", "primitive",
+    "program", "property", "pulldown", "pullup", "rcmos", "return", "rnmos",
+    "rpmos", "rtran", "rtranif0", "rtranif1", "sequence", "struct", "task",
+    "tran", "tranif0", "tranif1", "typedef", "union", "while", "xor", "xnor",
+}
+
+_TYPE_STARTERS = {
+    "bit", "genvar", "int", "integer", "logic", "reg", "signed", "supply0",
+    "supply1", "time", "tri", "tri0", "tri1", "unsigned", "var", "wire",
+}
+
+
+def _joinable_continuation(cur_text: str, next_line: str) -> bool:
+    """Whether NEXT_LINE can continue an unfinished direction segment.
+
+    A wrapped ANSI/body declaration continues with a bare name, a packed
+    range, or a type-led following port item.  It never continues into a
+    preprocessor directive, the header close, a new direction statement,
+    or a structural statement.  This matters for conditional port groups
+    such as ibex's RVFI ports: the line after ``output logic x,`` in the
+    comment-filtered view is `` `ifdef RVFI``; joining it would turn the
+    directive into a bogus port-name entry and orphan the real ports.
+    """
+    nxt = next_line.strip()
+    if not nxt or nxt.startswith(("`", ")")):
+        return False
+    if _dir_segments(next_line):
+        return False
+    if nxt.startswith("["):
+        return True
+    first = re.match(r"[A-Za-z_][\w$]*", nxt)
+    if first is None:
+        return True
+    word = first.group(0)
+    if word in _STRUCTURAL_WORDS:
+        return False
+    has_name = bool(_PORT_PREFIX.sub("", cur_text.rstrip().rstrip(",)").rstrip()).strip())
+    if has_name and word in _TYPE_STARTERS and ";" in nxt:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +372,11 @@ def _consume_ansi_header(lines: Sequence[str]) -> "tuple[list[str], list[str]]":
     pieces.extend((k, lines[k]) for k in range(mk + 1, hc + 1))
     if not any(re.match(r"\s*(?:input|output|inout)\b", t) for _, t in pieces):
         return list(lines), []
+    if any(_PREPROC_LINE.search(t) for _, t in pieces):
+        # Conditional port groups cannot be represented by the regenerated
+        # name list without moving directives or losing their association
+        # with the gated declarations.  Leave such headers untouched.
+        return list(lines), []
 
     decls: list[str] = []
     keep: dict[int, str] = {}
@@ -325,30 +399,56 @@ def _consume_ansi_header(lines: Sequence[str]) -> "tuple[list[str], list[str]]":
                 )
 
     def complete(stmt: str) -> bool:
-        """The statement carries a name (not just a direction/width prefix)."""
+        """The statement carries a name (not just a direction/width prefix)
+        and its name list does not wrap: a trailing comma means more names
+        follow on the next line (``output wire a,`` newline ``b``)."""
         last = _dir_segments(stmt)
         if not last:
             return False
-        tail = last[-1][1].rstrip().rstrip(",").rstrip(")").rstrip()
+        tail = last[-1][1].partition("//")[0].rstrip()
+        if tail.endswith(","):
+            return False
+        tail = tail.rstrip(")").rstrip()
         return bool(_PORT_PREFIX.sub("", tail).strip())
 
     for k, piece in pieces:
+        stripped = piece.strip()
+        if not stripped or stripped.startswith("//"):
+            # Comments/blanks move with the declarations.  Settle any
+            # pending statement first: a comment line is a hard boundary,
+            # so text after an inline comment can never be absorbed into
+            # the previous declaration's comment by flush().
+            if cur:
+                flush()
+            decls.append(piece.rstrip())
+            continue
+        if stripped.startswith("`"):
+            if cur:
+                flush()
+            keep[k] = piece
+            continue
+        if re.match(r"^\s*\)\s*;?\s*$", piece):
+            if cur:
+                flush()
+            continue  # the header's own close: _expand_arg_markers re-adds it
+        if re.match(r"\s*(?:input|output|inout)\b", piece):
+            # A new direction statement settles the previous one.  Merely
+            # appending it to the pending statement makes flush() take the
+            # first ``//`` in the combined text as the comment delimiter,
+            # which silently swallows the following declaration.
+            if cur:
+                flush()
+            cur_indent = re.match(r"\s*", piece).group(0)
+            cur.append(piece.strip())
+            if complete(piece):
+                flush()
+            continue
         if cur:
             cur.append(piece.strip())
             if complete(" ".join(cur)):
                 flush()
             continue
-        if re.match(r"\s*(?:input|output|inout)\b", piece):
-            cur_indent = re.match(r"\s*", piece).group(0)
-            cur.append(piece.strip())
-            if complete(piece):
-                flush()
-        elif re.match(r"^\s*\)\s*;?\s*$", piece):
-            pass  # the header's own close: _expand_arg_markers re-adds it
-        elif not piece.strip() or piece.strip().startswith("//"):
-            decls.append(piece.rstrip())  # comments/blanks move with the decls
-        else:
-            keep[k] = piece  # foreign header content (e.g. a bare name): stay
+        keep[k] = piece  # foreign header content (e.g. a bare name): stay
     if cur:
         flush()
     out: list[str] = []
@@ -376,6 +476,120 @@ def _local_arg_format(lines: Sequence[str]) -> str:
     if m and m.group(1).lower() == "single":
         return "single"
     return "packed"
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    """Split TEXT on commas that are not nested in (), [] or {}."""
+    parts: list[str] = []
+    start = 0
+    par = bracket = brace = 0
+    for idx, ch in enumerate(text):
+        if ch == "(":
+            par += 1
+        elif ch == ")":
+            par = max(0, par - 1)
+        elif ch == "[":
+            bracket += 1
+        elif ch == "]":
+            bracket = max(0, bracket - 1)
+        elif ch == "{":
+            brace += 1
+        elif ch == "}":
+            brace = max(0, brace - 1)
+        elif ch == "," and par == bracket == brace == 0:
+            parts.append(text[start:idx])
+            start = idx + 1
+    parts.append(text[start:])
+    return parts
+
+
+def _bare_port_names(signal_text: str) -> list[str]:
+    """Bare port names from a collected declaration, for a converted ANSI
+    header.
+
+    A regenerated 1995-style header is a name list: directions, types,
+    packed ranges and unpacked dimensions belong to the body declaration
+    emitted for the same port.  Leaving them in the header makes Verilator
+    report ranges in a port list as unsupported.  Body-declared AUTOARG
+    lists keep their historical text; this helper is only applied when
+    ``_consume_ansi_header`` converted the header, or when the existing
+    region already lists bare names (the converted shape, kept stable
+    across re-runs).
+    """
+    names: list[str] = []
+    for item in _split_top_level_commas(signal_text):
+        item = item.strip().strip(";").strip()
+        if not item:
+            continue
+        item = item.split("=", 1)[0].strip()  # drop any default value
+        item = re.sub(r"\[[^\]]*\]", " ", item).strip(" ,)")
+        if not item:
+            continue
+        # Drop leading type words (possibly several: ``signed logic`` or a
+        # pkg-scoped UDT) until only the name remains.  A single remaining
+        # identifier is the name itself and is not stripped.
+        while re.search(r"\s+[A-Za-z_]", item):
+            item = re.sub(
+                r"^[A-Za-z_][\w$]*(?:::[A-Za-z_][\w$]*)*"
+                r"(?:\.[A-Za-z_][\w$]*)?\s+",
+                "",
+                item,
+                count=1,
+            ).strip()
+        m = re.search(r"[A-Za-z_][\w$]*", item)
+        if m:
+            names.append(m.group(0))
+    return names
+
+
+def _header_region_is_bare_name_list(lines: Sequence[str]) -> bool:
+    """Whether the existing /*autoarg*/ region already lists bare names
+    only (no direction/type keyword, no range).
+
+    This is the shape a converted ANSI header is left in, so recognising
+    it keeps a later run's list bare even though the moved body
+    declarations still carry their types.  A stub header (``/*autoarg*/);``)
+    or a region carrying typed entries returns False, preserving the
+    historical body-declaration behaviour locked by the Vim-parity tests.
+    """
+    mk = next((k for k, ln in enumerate(lines) if _MARK_LINE.search(ln)), None)
+    if mk is None:
+        return False
+    end = next(
+        (k for k in range(mk, len(lines)) if _REGION_END.search(lines[k])), None
+    )
+    if end is None:
+        return False
+    keyword = re.compile(
+        r"\b(?:input|output|inout|logic|signed|unsigned|wire|reg|bit|int|"
+        r"integer|time|var|genvar|tri|tri0|tri1|supply0|supply1|parameter|"
+        r"localparam)\b|\["
+    )
+    names = 0
+    for idx in range(mk, end + 1):
+        ln = lines[idx]
+        if idx == mk:
+            # only what follows the marker comment is region content; the
+            # module keyword and module name must not count as port names
+            ln = ln.split("*/", 1)[1] if "*/" in ln else ""
+        text = re.sub(r"/\*.*?\*/", "", ln.split("//", 1)[0])
+        if keyword.search(text):
+            return False
+        names += len(re.findall(r"[A-Za-z_][\w$]*", text))
+    return names > 0
+
+
+def _autoarg_header_has_preproc(lines: Sequence[str]) -> bool:
+    """Whether a preprocessor directive occurs between an /*autoarg*/
+    marker and the header's bare ``);`` close."""
+    mk = next((k for k, ln in enumerate(lines) if _MARK_LINE.search(ln)), None)
+    if mk is None:
+        return False
+    end = next(
+        (k for k in range(mk, len(lines)) if _REGION_END.search(lines[k])),
+        len(lines) - 1,
+    )
+    return any(_PREPROC_LINE.search(ln) for ln in lines[mk : end + 1])
 
 
 def _pack_ports(ports: Sequence[str], *, trailing_comma: bool) -> list[str]:
@@ -435,9 +649,32 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
 
         for name, net in _inst_driven_nets(lines, modules, ("inout",), simple_only=True).items():
             inout_nets[name] = net.width
+    # Per-module header facts must be read before kill_auto_arg collapses
+    # the generated regions; the collapse deletes region lines but never
+    # a module line, so modules keep their order and can be matched by
+    # ordinal below.  Skipped modules must re-emit their ORIGINAL span:
+    # after a collapse the region is already gone, and copying the
+    # collapsed body through would delete the port list.
+    bare_by_module: list[bool] = []
+    skip_by_module: list[bool] = []
+    orig_spans: list[list[str]] = []
+    _k = 0
+    while _k < len(lines):
+        if re.match(r"\s*module\b", lines[_k]):
+            _j = _k
+            while _j < len(lines) and not _ENDMODULE.match(lines[_j]):
+                _j += 1
+            _span = list(lines[_k : _j + 1])
+            orig_spans.append(_span)
+            bare_by_module.append(_header_region_is_bare_name_list(_span))
+            skip_by_module.append(_autoarg_header_has_preproc(_span))
+            _k = _j + 1
+        else:
+            _k += 1
     lines = kill_auto_arg(lines)
     out: list[str] = []
     i = 0
+    mod_idx = -1
     n = len(lines)
     while i < n:
         if not re.match(r"\s*module\b", lines[i]):
@@ -449,6 +686,7 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
             j += 1
         j = min(j + 1, n)  # [i, j) is this module's span
         body = lines[i:j]
+        mod_idx += 1
         close_idx = next((k for k, ln in enumerate(body) if _CLOSE.search(ln)), None)
         if close_idx is not None and any(
             _AIO_MARK.search(ln) for ln in body[: close_idx + 1]
@@ -459,6 +697,27 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
             # The canonical combo is /*autoarg*/ in the header with the
             # AIO markers in the body; leave this header alone.
             out.extend(body)
+            i = j
+            continue
+        if mod_idx < len(skip_by_module) and skip_by_module[mod_idx]:
+            # A name-list regeneration cannot preserve conditional port
+            # groups: it would have to move the directives or drop the
+            # association between a directive and the ports it gates.
+            # Leaving the header untouched is strictly better than turning
+            # `` `ifdef``/`` `endif`` into bogus port-name entries.  Emit
+            # the pre-collapse span so a re-run cannot lose the list.
+            import sys
+
+            orig = orig_spans[mod_idx]
+            mname = _MODULE_NAME.search("\n".join(orig[:4]))
+            label = f"module {mname.group(1)}: " if mname else ""
+            print(
+                "warning: autoarg: "
+                f"{label}preprocessor directives in the /*autoarg*/ "
+                "header; module left unchanged",
+                file=sys.stderr,
+            )
+            out.extend(orig)
             i = j
             continue
         inputs, outputs, inouts = _collect_ports(_filter_lines(body))
@@ -472,7 +731,20 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
         )
         # ANSI io declarations in the header move to the body (1995 style):
         # the regenerated name list would otherwise leave them dangling
+        keep_bare = mod_idx < len(bare_by_module) and bare_by_module[mod_idx]
         body, ansi_decls = _consume_ansi_header(body)
+        if ansi_decls or keep_bare:
+            # The header now holds only the port list, so its entries must
+            # be bare names: a typed/ranged entry duplicated in the header
+            # and the emitted body declaration is what Verilator rejects
+            # as ranges in a port list.
+            inputs = [name for entry in inputs for name in _bare_port_names(entry)]
+            outputs = [name for entry in outputs for name in _bare_port_names(entry)]
+            inouts = [name for entry in inouts for name in _bare_port_names(entry)]
+            declared = set(inputs) | set(outputs) | set(inouts)
+            infer = [name for name in infer if name not in declared]
+            if _local_arg_sort(lines):
+                inputs, outputs, inouts = sorted(inputs), sorted(outputs), sorted(inouts)
         expanded = _expand_arg_markers(
             body, inputs, outputs, inouts + infer,
             arg_format=_local_arg_format(lines),

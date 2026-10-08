@@ -1756,6 +1756,10 @@ def get_assign_side(
         if re.fullmatch(r"-?\d+\s*:\s*-?\d+", last):
             hi, lo = (int(x) for x in re.split(r"\s*:\s*", last))
             return Side(left, str(1 + hi - lo) if hi >= lo else "1")
+        pm = re.search(r"[+-]:\s*(\d+|[A-Za-z_][\w$]*)\s*$", last)
+        if pm:
+            # indexed part-select sig[base +: W]: the select is W wide
+            return Side(left, pm.group(1))
         return Side(left, "1")  # element pick: scalar
     if re.match(r"^~?\w+\s*;$", right):  # plain signal (or ~signal)
         return Side(left, link=frozenset([re.search(r"\w+", right).group(0)]))
@@ -1779,10 +1783,15 @@ def get_assign_side(
 def update_link_dict(
     link_dict: dict[str, set[str]], paras: set[str], key: str, rhs_signals
 ) -> None:
-    """Merge RHS signal names into link_dict[key], dropping parameters."""
+    """Merge RHS signal names into link_dict[key], dropping parameters
+    and numeric constants.  A constant is not a signal: letting ``0``
+    join (every ``assign x = 0;`` tie-off links its LHS to it) bridges
+    all such assignments in the file into one link group, and
+    update_define then smears the widest member's width across
+    unrelated hand-written declarations."""
     bucket = link_dict.setdefault(key, set())
     for name in rhs_signals:
-        if name not in paras:
+        if name not in paras and not re.fullmatch(r"\d[\d_]*", name):
             bucket.add(name)
 
 

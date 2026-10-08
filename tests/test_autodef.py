@@ -10,6 +10,7 @@ from verilog_tooling.autodef import (
     get_assign_side,
     group_link_dict,
     kill_auto_def_t,
+    update_link_dict,
 )
 from verilog_tooling.inst import parse_module_ports
 
@@ -193,6 +194,58 @@ def test_get_assign_side_width_forms():
 def test_group_link_dict_transitive():
     groups = group_link_dict({"a": {"b"}, "b": {"c"}, "d": {"e"}})
     assert sorted(sorted(g) for g in groups.values()) == [["a", "b", "c"], ["d", "e"]]
+
+
+def test_update_link_dict_drops_numeric_constants():
+    # a constant is not a signal: `assign x = 0;` must not put '0' in the
+    # link graph, where it would bridge every tie-off in the file into a
+    # single group (corundum mqnic_core: hundreds of `= 0` tie-offs).
+    link_dict: dict = {}
+    for name in ("a", "b"):
+        side = get_assign_side(name, " 0;")
+        update_link_dict(link_dict, set(), name, side.link)
+    assert link_dict == {"a": set(), "b": set()}
+    groups = group_link_dict(link_dict)
+    assert sorted(sorted(g) for g in groups.values()) == [["a"], ["b"]]
+
+
+def test_get_assign_side_indexed_part_select_width():
+    # sig[base +: W] is W bits wide, not a scalar element pick
+    assert get_assign_side("y", " x[1 +: 1];").width == "1"
+    assert get_assign_side("y", " x[OFF*3 +: 3];").width == "3"
+    assert get_assign_side("y", " x[OFF +: W];").width == "W"
+    assert get_assign_side("y", " x[OFF -: 2];").width == "2"
+    assert get_assign_side("y", " x[i];").width == "1"
+
+
+def test_autodef_constant_tieoffs_do_not_bridge_widths():
+    """Corundum mqnic_core shape: a scalar net driven by a 1-bit
+    part-select in one generate branch and tied to 0 in the other keeps
+    its hand-written scalar declaration, even though an unrelated
+    3-bit port is also tied to 0.  Through the constant '0' the two
+    used to land in one link group and the scalar was grown to [2:0],
+    which Verilator reports as new WIDTHEXPAND/WIDTHTRUNC warnings."""
+    lines = [
+        "module m (",
+        "    output wire [2:0] wide_out",
+        ");",
+        "    wire [2:0] bus;",
+        "    wire dst;",
+        "    assign bus = 3'b0;",
+        "    generate",
+        "        if (1) begin",
+        "            assign dst = bus[1 +: 1];",
+        "        end else begin",
+        "            assign dst = 0;",
+        "        end",
+        "    endgenerate",
+        "    assign wide_out = 0;",
+        "endmodule",
+    ]
+    out = auto_def_t(lines)
+    text = "\n".join(out)
+    assert "wire [2:0] dst" not in text
+    assert re.search(r"wire\s+dst;", text)
 
 
 # ---------------------------------------------------------------------------

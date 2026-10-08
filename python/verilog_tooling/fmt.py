@@ -169,6 +169,64 @@ def auto_define_len(lines: Sequence[str]) -> int:
 # VerilogBuffer methods (attached below)
 
 
+_AUTO_MARKER = re.compile(r"/\*\s*(?:autoinst|autoinstparam|AUTOINST|AUTOINSTPARAM)\b")
+
+
+def _unmanaged_param_lines(lines: Sequence[str], comment_mask: Sequence[bool]) -> set[int]:
+    """Indices of lines inside a HAND-WRITTEN ``#(...)`` parameter block.
+
+    A multi-line instance parameter block holds ``.NAME(value)`` lines
+    that are line-for-line indistinguishable from pin connections; the
+    pin alignment must not treat them as pins (it used to drag
+    ``.pt(pt)`` out of el2_veer's parameter header and re-align it as
+    a connection, orphaning the instance).  Blocks belonging to an
+    AUTO-managed instance — an /*autoinst*/ or /*autoinstparam*/
+    marker between the block opener and the statement's ``);`` — are
+    excluded: EAP/AIU output relies on those lines being aligned.
+    Comment lines are not scanned (their parens would desync the
+    stack); strings are blanked first.
+    """
+    blocks: list[tuple[int, int]] = []  # (opener line, closing line)
+    stack: list[bool] = []  # True: this '(' opened a #(...) block
+    open_li: int | None = None
+    for li, line in enumerate(lines):
+        if comment_mask[li]:
+            continue
+        src = re.sub(r'"(?:[^"\\]|\\.)*"', '""', line)
+        src = src.split("//", 1)[0]
+        i = 0
+        while i < len(src):
+            c = src[i]
+            if c == "#" and not any(stack):
+                j = i + 1
+                while j < len(src) and src[j] in " \t":
+                    j += 1
+                if j < len(src) and src[j] == "(":
+                    stack.append(True)
+                    open_li = li
+                    i = j + 1
+                    continue
+            elif c == "(":
+                stack.append(False)
+            elif c == ")":
+                if stack:
+                    if stack.pop() and open_li is not None:
+                        blocks.append((open_li, li))
+                        open_li = None
+            i += 1
+    out: set[int] = set()
+    for open_li, close_li in blocks:
+        end = close_li
+        while end < len(lines) and ");" not in re.sub(
+            r'"(?:[^"\\]|\\.)*"', '""', lines[end]
+        ):
+            end += 1
+        if any(_AUTO_MARKER.search(lines[k]) for k in range(open_li, min(end, len(lines) - 1) + 1)):
+            continue  # AUTO-managed instance: its params stay alignable
+        out.update(range(open_li, close_li + 1))
+    return out
+
+
 def _auto_inst_format(self: VerilogBuffer) -> VerilogBuffer:
     """AIF: explode one-liner instances, then re-align every pin line
     (EAI-sectioned instances included — their pins/parens are reformatted
@@ -202,14 +260,15 @@ def _auto_inst_format(self: VerilogBuffer) -> VerilogBuffer:
 
     # pass 2: measure prefix/suffix maxima over pin lines
     comment_mask = block_comment_mask(out)
+    param_lines = _unmanaged_param_lines(out, comment_mask)
     prefix_max_len = 0
     suffix_max_len = 0
     for li, line in enumerate(out):
         if comment_mask[li]:
             continue
         parts = _inst_pin_parts(line)
-        if parts is None:
-            continue
+        if parts is None or (li in param_lines and not parts[4]):
+            continue  # a parameter override inside #(...), not a pin
         port, conn, _, _, _ = parts
         prefix_max_len = max(prefix_max_len, len(port))
         suffix_max_len = max(suffix_max_len, len(conn))
@@ -223,6 +282,8 @@ def _auto_inst_format(self: VerilogBuffer) -> VerilogBuffer:
             final.append(line)
             continue
         parts = _inst_pin_parts(line)
+        if parts is not None and li in param_lines and not parts[4]:
+            parts = None  # a parameter override inside #(...), not a pin
         if parts is None:
             final.append(line)
             continue
@@ -279,7 +340,10 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         if re.search(r"\)\s*;?\s*$", body):
             terminator = ");"
         else:
-            tm = re.search(r"\w+\s*([;|,])\s*$", body)
+            # the token before the terminator may be `]` when the port
+            # carries an unpacked dimension (``arr_i [2],``): an
+            # end-anchored ``\w+`` misses it and drops the punctuation.
+            tm = re.search(r"[\w\]]\s*([;|,])\s*$", body)
             terminator = tm.group(1) if tm else ""
         width = _extract_width(body)
         body_ns = re.sub(r"\s*$", "", body)
@@ -289,6 +353,15 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         # ports on one line; the single-name rebuild below would keep
         # only the last one.  Leave such lines untouched.
         if _top_level_comma(body_ns):
+            out.append(line)
+            continue
+        # A port declaration with an initializer (``output logic [W-1:0]
+        # cx = START_X,``) is not a plain declaration: the name
+        # extraction below assumes the name is the last token and would
+        # rebuild the port as ``START_X``, dropping the real name and
+        # the default value.  Leave it untouched (ADF already guards
+        # the same shape for wire/reg declarations).
+        if _INIT_ASSIGN_RE.search(body):
             out.append(line)
             continue
         # an optional reg/wire/logic after the direction must be kept
@@ -307,8 +380,16 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
             )
             if tm:
                 kw = tm.group(1) + " "
-        nm = re.search(r"\w+\s*$", body_ns)
-        port_name = nm.group(0).strip() if nm else ""
+        # the name is the identifier at the end of the declaration,
+        # optionally followed by unpacked dimensions (``arr_i [2]``):
+        # the dims are kept with the name — end-anchored ``\w+\s*$``
+        # alone loses the name entirely when a dim is present.
+        nm = re.search(r"(\w+)((?:\s*\[[^\]]*\])*)\s*$", body_ns)
+        if nm:
+            port_name = nm.group(1) + re.sub(r"\s+", " ", nm.group(2))
+        else:
+            nm2 = re.search(r"\w+\s*$", body_ns)
+            port_name = nm2.group(0).strip() if nm2 else ""
         space_max = 20 + max_len + (1 if m.group(1) == "output" else 2)
         out.append(
             m.group(1)
