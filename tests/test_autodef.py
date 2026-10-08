@@ -3,6 +3,7 @@
 import re
 
 from verilog_tooling.autodef import (
+    _candidate_module_names,
     auto_def_t,
     get_all_defs,
     get_all_paras,
@@ -2461,3 +2462,18 @@ endmodule
     # default+override bindings as the line-oriented path
     assert re.search(r"(?m)^wire\s+\[7:0\]\s+mid;", out)
     assert "unresolved" not in out
+
+
+def test_candidate_names_cover_single_line_instances():
+    # the CLI gathers module files from these candidates before the
+    # real scan: a header whose pins open AND close on the same line
+    # must still name its module, or the file never loads and the
+    # (already supported) single-line scan sees an unknown module
+    lines = [
+        "module top (input wire clk);",
+        "moda u_a (.clk(clk), .dout(mid));",
+        "modb u_b (.clk(clk));",
+        "always @(posedge clk) begin end",
+        "endmodule",
+    ]
+    assert _candidate_module_names(lines) == {"moda", "modb"}

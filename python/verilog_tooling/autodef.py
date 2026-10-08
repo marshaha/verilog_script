@@ -2650,7 +2650,7 @@ def _candidate_module_names(lines: Sequence[str]) -> set[str]:
     names: set[str] = set()
     for line in lines:
         raw = re.sub(r"//.*$", "", line)
-        m = re.match(r"^\s*(\w+)\s+(#\s*\(.*\)\s*)?(\w+)\s*\(\s*$", raw)
+        m = re.match(r"^\s*(\w+)\s+(#\s*\(.*\)\s*)?(\w+)\s*\(", raw)
         if m and m.group(1) not in _KEYWORDS:
             names.add(m.group(1))
             continue
