@@ -426,6 +426,50 @@ def test_modify_emacs_inst_format():
     assert out == ["    .din (din[7:0])  // data", "); ", "plain"]
 
 
+def test_auto_inst_update_order_which_list_targets_only_listed():
+    # the CLI passes the list of resolvable marker ordinals when some
+    # instance modules are missing; the pre-format passes must accept
+    # the list (they used to crash with TypeError on '<=' int vs list)
+    # and leave unlisted instances byte-identical.
+    lines = [
+        "module top;",
+        "small u_a (/*AUTOINST*/",
+        "    .vld (vld),",
+        "    .clk (clk),",
+        "    .din (din[7:0]));",
+        "small u_b (/*AUTOINST*/",
+        "    .vld (vld),",
+        "    .clk (clk),",
+        "    .din (din[7:0]));",
+        "endmodule",
+    ]
+    out = auto_inst_update_order(lines, {"small": small_mod()}, which=[1], date=DATE)
+    assert out[:5] == lines[:5]  # u_a verbatim, tail '));' unsplit
+    assert out[5:] == [
+        "small u_b (/*AUTOINST*/",
+        "    .clk (clk),",
+        "    .din (din[7:0]),",
+        "    .vld (vld)",
+        ");",
+        "endmodule",
+    ]
+
+
+def test_cli_aiu_skips_instance_with_missing_module(tmp_path, capsys):
+    # veerel2 shape: one instance's module (rvoclkhdr) is not in the
+    # tree; aiu must warn and process the resolvable instances instead
+    # of crashing in the which-list pre-format passes.
+    (tmp_path / "small.v").write_text(SMALL)
+    buf = tmp_path / "top.v"
+    buf.write_text("small u_ok (/*autoinst*/);\nghost u_missing (/*autoinst*/);\n")
+    out_file = tmp_path / "out.v"
+    main(["aiu", "-i", str(buf), "-o", str(out_file), "-y", str(tmp_path)])
+    text = out_file.read_text()
+    assert ".clk" in text  # u_ok expanded
+    assert "ghost u_missing (/*autoinst*/);" in text  # skipped verbatim
+    assert "skipping 1 instance" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # CLI
 

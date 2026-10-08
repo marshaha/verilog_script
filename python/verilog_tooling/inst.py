@@ -1023,7 +1023,9 @@ class VerilogBuffer:
             raise ValueError(f"cannot resolve module name, line: {marker_idx + 1}")
         return module, inst
 
-    def _markers_at_head(self, which: int | None = None) -> "VerilogBuffer":
+    def _markers_at_head(
+        self, which: "int | Sequence[int] | None" = None
+    ) -> "VerilogBuffer":
         # WHICH (a 0-based marker ordinal) limits the move to that instance:
         # a targeted update must not reformat instances it was not asked to touch
         """Move /*autoinst*/ markers that ride the last connection line
@@ -1046,8 +1048,13 @@ class VerilogBuffer:
             starts.append(pos)
             pos += len(ln) + 1
         edits: list[tuple[int, int, str]] = []
+        # WHICH is one marker ordinal or the list of them (the CLI passes
+        # the resolvable list when some instance modules are missing)
+        targets: set[int] | None = None
+        if which is not None:
+            targets = {which} if isinstance(which, int) else set(which)
         for ordinal, midx in enumerate(self.markers()):
-            if which is not None and ordinal != which:
+            if targets is not None and ordinal not in targets:
                 continue  # targeted update: other instances stay verbatim
             m = _AUTOINST_MARK.search(self._lines[midx])
             if not m:
@@ -1467,7 +1474,10 @@ class VerilogBuffer:
     # AutoInstUpdateOrder (AIU)
 
     def modify_emacs_inst_format(
-        self, *, skip_sections: bool = False, which: int | None = None
+        self,
+        *,
+        skip_sections: bool = False,
+        which: "int | Sequence[int] | None" = None,
     ) -> VerilogBuffer:
         """Split verilog-mode's last-port ``.port(sig)); // comment`` into
         ``.port(sig)  // comment`` plus a standalone ``);`` line.  A bare
@@ -1480,20 +1490,24 @@ class VerilogBuffer:
         head = re.compile(r"^\s*.\w+.*\)\s*\)\s*;")
         section = re.compile(r"^\s*//\s*(Outputs|Inouts|Inputs|Interfaces|Parameters)\s*$")
         comment_mask = block_comment_mask(self._lines)
-        # WHICH (a 0-based marker ordinal) restricts the split to the
-        # targeted instance's statement: a cursor-scoped update must not
-        # reformat other instances' tails
-        span_lines: "tuple[int, int] | None" = None
+        # WHICH (a 0-based marker ordinal, or the list of them when the
+        # CLI processes only the resolvable instances) restricts the
+        # split to the targeted instances' statements: a cursor-scoped
+        # update must not reformat other instances' tails
+        spans: list[tuple[int, int]] = []
         if which is not None:
             ml = self.markers()
-            if 0 <= which < len(ml):
-                mt = mask_comments("\n".join(self._lines))
-                moff = _marker_offsets(self._lines, ml)[which]
+            ordinals = (which,) if isinstance(which, int) else tuple(which)
+            mt = mask_comments("\n".join(self._lines))
+            offs = _marker_offsets(self._lines, ml)
+            for ordinal in ordinals:
+                if not (0 <= ordinal < len(ml)):
+                    continue
                 try:
-                    so, eo = _statement_span(mt, moff)
-                    span_lines = (mt.count("\n", 0, so), mt.count("\n", 0, eo))
+                    so, eo = _statement_span(mt, offs[ordinal])
+                    spans.append((mt.count("\n", 0, so), mt.count("\n", 0, eo)))
                 except ValueError:
-                    span_lines = None
+                    continue
         out: list[str] = []
         in_section = False
         for li, line in enumerate(self._lines):
@@ -1509,8 +1523,8 @@ class VerilogBuffer:
                 if re.search(r"\)\s*;?\s*$", line) and not re.match(r"^\s*\.", line):
                     in_section = False
                 continue
-            if span_lines is not None and not (span_lines[0] <= li <= span_lines[1]):
-                out.append(line)  # outside the targeted instance: verbatim
+            if spans and not any(lo <= li <= hi for lo, hi in spans):
+                out.append(line)  # outside the targeted instances: verbatim
                 continue
             if pat.match(line) and not _LINE_COMMENT.match(line):
                 pre = head.match(line).group(0)
@@ -1529,7 +1543,7 @@ class VerilogBuffer:
         self,
         modules: Mapping[str, ModuleDef],
         *,
-        which: int | None = None,
+        which: "int | Sequence[int] | None" = None,
         date: str | None = None,
         templates: Sequence[AutoTemplate] | None = None,
         sort: bool = False,
@@ -1836,7 +1850,7 @@ def auto_inst_update_order(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef],
     *,
-    which: int | None = None,
+    which: "int | Sequence[int] | None" = None,
     date: str | None = None,
     templates: Sequence[AutoTemplate] | None = None,
     sort: bool = False,
