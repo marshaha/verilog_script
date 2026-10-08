@@ -2365,3 +2365,120 @@ endmodule
     fifo_lines = [l for l in out.splitlines() if "fifo" in l and "assign" not in l]
     assert fifo_lines and all("[" not in l.split("fifo")[0] or True for l in fifo_lines)
     assert decl("reg", "", "fifo") in out
+
+
+# ---------------------------------------------------------------------------
+# for-header forms: ++/-- steps, inline typed init, reused variables
+
+
+def test_for_step_plusplus_keeps_dimension():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < 4; i++) begin
+        mem[i][7:0] <= din;
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    assert "reg          [7:0]                      mem [0:3];" in out
+    assert decl("integer", "", "i") in out
+    assert "unresolved: i" not in out
+
+
+def test_for_sv_inline_int_declares_nothing_twice():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    for (int i = 0; i < 4; i++) begin
+        q4[i] <= din;
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # i is declared by the header itself: no module-level integer, and
+    # q4 still gets its dimension from the loop bound
+    assert not re.search(r"(?m)^integer\s", out)
+    assert "unresolved" not in out
+    assert "[0:3]" in out and "q4" in out
+
+
+def test_for_genvar_inline_in_generate():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+generate
+    for (genvar g = 0; g < 4; g = g + 1) begin: gg
+        always @(posedge clk) begin
+            dd[g] <= din;
+        end
+    end
+endgenerate
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    assert not re.search(r"(?m)^genvar\s", out)  # declared inline
+    assert "unresolved" not in out
+    assert "[0:3]" in out and "dd" in out
+
+
+def test_same_loop_var_two_loops_widest_range():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < 4; i = i + 1) begin
+        aa[i] <= din;
+    end
+end
+always @(posedge clk) begin
+    for (i = 0; i < 2; i = i + 1) begin
+        bb[i] <= din;
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # the shared variable's range is the union, so the first block's
+    # wider extent is not lost (was: both declared [0:1])
+    assert "aa [0:3];" in out
+    assert sum(1 for l in out.splitlines() if l.startswith("integer")) == 1
+
+
+def test_inner_loop_bound_from_outer_variable():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < 4; i = i + 1) begin
+        for (j = 0; j <= i; j = j + 1) begin
+            tri[i][j] <= din;
+        end
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # j's extent follows i's range edge (was: only [0:3], one dim)
+    assert "tri [0:3] [0:3];" in out
+
+
+def test_index_times_symbolic_coefficient():
+    text = """\
+module top (input clk, input [7:0] din);
+parameter DW = 8;
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < 4; i = i + 1) begin
+        val[i*DW] <= din[0];
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # loop variable times a parameter coefficient: DW*3 (was: bare reg)
+    assert "[DW*3:0]" in out and "val;" in out

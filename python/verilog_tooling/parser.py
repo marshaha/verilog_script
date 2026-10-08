@@ -23,6 +23,7 @@ class LoopInfo:
     cond: str
     step: str
     scope: tuple[int, int]
+    inline_type: str = ""  # type keyword of an inline `for (int i = ...)` decl
 
 
 def get_identifiers(expr: str) -> list[str]:
@@ -58,15 +59,32 @@ def parse_declaration(line: str) -> Declaration | None:
     return Declaration(name=name, kind=kind, packed=packed, unpacked=unpacked)
 
 
-def parse_for_header(line: str) -> tuple[str, str, str, str] | None:
+_FOR_INIT_TYPES = r"int|integer|genvar|longint|shortint|byte|bit|logic|reg"
+
+
+def parse_for_header(
+    line: str,
+) -> tuple[str, str, str, str, str] | None:
+    """Parse a for-loop header into (var, init, cond, step, inline_type).
+
+    The init may carry a SystemVerilog inline declaration
+    (``for (int i = 0; ...)``, ``for (genvar g = 0; ...)``); the type
+    keyword is returned as INLINE_TYPE ("" when absent) so callers know
+    the variable is already declared in place.  The step may be an
+    assignment (``i = i + 1``), a compound assignment (``i += 2``) or a
+    bare ``i++`` / ``++i`` / ``i--`` / ``--i``.
+    """
     m = re.search(
-        r"for\s*\(\s*([A-Za-z_]\w*)\s*=\s*(.*?)\s*;\s*(.*?)\s*;\s*\1\s*=\s*(.*?)\s*\)",
+        r"for\s*\(\s*(?:("
+        + _FOR_INIT_TYPES
+        + r")\s+)?([A-Za-z_]\w*)\s*=\s*(.*?)\s*;\s*(.*?)\s*;\s*"
+        r"((?:\+\+\s*\2|--\s*\2|\2\s*(?:\+\+|--|\+=|-=|\*=|/=|%=|=).*?))\)",
         line,
     )
     if not m:
         return None
-    var, init, cond, step = m.groups()
-    return var, init.strip(), cond.strip(), step.strip()
+    inline_type, var, init, cond, step = m.groups()
+    return var, init.strip(), cond.strip(), step.strip(), inline_type or ""
 
 
 def discover_for_scopes(lines: list[str]) -> list[LoopInfo]:
@@ -85,7 +103,7 @@ def discover_for_scopes(lines: list[str]) -> list[LoopInfo]:
         end_count = len(re.findall(r"\bend\b", line))
 
         if header:
-            var, init, cond, step = header
+            var, init, cond, step, inline_type = header
             target_depth = depth + (1 if begin_count else 0)
             stack.append(
                 {
@@ -93,6 +111,7 @@ def discover_for_scopes(lines: list[str]) -> list[LoopInfo]:
                     "init": init,
                     "cond": cond,
                     "step": step,
+                    "inline_type": inline_type,
                     "start": lineno,
                     "body_depth": target_depth,
                 }
@@ -110,6 +129,7 @@ def discover_for_scopes(lines: list[str]) -> list[LoopInfo]:
                     cond=x["cond"],
                     step=x["step"],
                     scope=(x["start"], lineno),
+                    inline_type=x["inline_type"],
                 )
             )
             stack.remove(x)

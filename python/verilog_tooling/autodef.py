@@ -1337,10 +1337,12 @@ def _loop_var_decls(lines: Sequence[str]) -> list[tuple[str, str]]:
     always_regions = _always_regions(lines)
     function_regions = _function_regions(lines)
     declared = _declared_loop_vars(lines)
+    loops = discover_for_scopes(list(lines))
+    inline = {lp.var for lp in loops if lp.inline_type}
     kinds: dict[str, str] = {}
     order: list[str] = []
-    for lp in discover_for_scopes(list(lines)):
-        if lp.var in declared:
+    for lp in loops:
+        if lp.var in declared or lp.var in inline:
             continue
         if any(s <= lp.scope[0] <= e for s, e in function_regions):
             continue  # function/task-local: no module-level declaration
@@ -1361,7 +1363,7 @@ def _loop_var_decls(lines: Sequence[str]) -> list[tuple[str, str]]:
             continue
         for vm in re.finditer(r"([A-Za-z_]\w*)\s*=", fm.group(1)):
             v = vm.group(1)
-            if v not in kinds and v not in declared:
+            if v not in kinds and v not in declared and v not in inline:
                 kinds[v] = "integer"
                 order.append(v)
     return [(v, kinds[v]) for v in order]
@@ -1410,6 +1412,12 @@ def _loop_ranges(lines: Sequence[str]) -> dict[str, str]:
         is_numeric = not any(
             re.search(r"\b" + re.escape(nm) + r"\b", rhs_clean) for nm in symbolic_names
         )
+        # a bound naming another loop variable (j <= i) inherits that
+        # variable's range edge: a sound over-approximation for a
+        # declaration bound (loops are visited outer-first)
+        dep = None
+        if re.fullmatch(r"[A-Za-z_]\w*", rhs_clean) and rhs_clean in ranges:
+            dep = ranges[rhs_clean].split(":", 1)
         if op in ("<", "<="):
             lo = str(init)
             b = _eval_bound(rhs, consts)
@@ -1418,6 +1426,8 @@ def _loop_ranges(lines: Sequence[str]) -> dict[str, str]:
             elif not is_numeric:
                 sym = _eval_bound(rhs, consts, symbolic=True)
                 hi = f"{sym}-1" if op == "<" else sym
+            elif dep is not None:
+                hi = dep[1]
             else:
                 continue  # bound references a non-constant (e.g. an input)
         else:  # descending: var > E / var >= E
@@ -1428,13 +1438,29 @@ def _loop_ranges(lines: Sequence[str]) -> dict[str, str]:
             elif not is_numeric:
                 sym = _eval_bound(rhs, consts, symbolic=True)
                 lo = f"{sym}+1" if op == ">" else sym
+            elif dep is not None:
+                lo = dep[0]
             else:
                 continue
         # sanity: for purely numeric ranges, require hi >= lo
         if re.fullmatch(r"-?\d+", lo) and re.fullmatch(r"-?\d+", hi):
             if int(hi) < int(lo):
                 continue
-        ranges[lp.var] = f"{lo}:{hi}"
+        new = f"{lo}:{hi}"
+        old = ranges.get(lp.var)
+        if old is not None and old != new:
+            # the same variable heading several loops at different
+            # bounds: the declaration must cover the widest extent
+            on = re.fullmatch(r"(-?\d+):(-?\d+)", old)
+            nn = re.fullmatch(r"(-?\d+):(-?\d+)", new)
+            if on and nn:
+                new = (
+                    f"{min(int(on.group(1)), int(nn.group(1)))}"
+                    f":{max(int(on.group(2)), int(nn.group(2)))}"
+                )
+            else:
+                new = old  # symbolic extents do not merge; keep the first
+        ranges[lp.var] = new
     return ranges
 
 
@@ -1462,7 +1488,17 @@ def _loop_bounds(lines: Sequence[str]) -> dict[str, tuple[int, int]]:
             continue
         bound = _eval_bound(m.group(2), consts)
         if bound is None:
-            continue
+            # bound naming another loop variable (j <= i): that
+            # variable's range edge stands in for the bound
+            rhs_name = m.group(2).strip()
+            donor = (
+                bounds.get(rhs_name)
+                if re.fullmatch(r"[A-Za-z_]\w*", rhs_name)
+                else None
+            )
+            if donor is None:
+                continue
+            bound = donor[1] if op in ("<", "<=") else donor[0]
         op = m.group(1)
         if op == "<":
             hi = bound - 1
@@ -1477,7 +1513,11 @@ def _loop_bounds(lines: Sequence[str]) -> dict[str, tuple[int, int]]:
         else:
             lo, hi = hi, init
         if hi >= lo:
-            bounds[lp.var] = (lo, hi)
+            if lp.var in bounds:
+                olo, ohi = bounds[lp.var]
+                bounds[lp.var] = (min(olo, lo), max(ohi, hi))
+            else:
+                bounds[lp.var] = (lo, hi)
     return bounds
 
 
@@ -1517,6 +1557,8 @@ def _eval_index(
             var, coef_txt = a, ""
         elif b.isdigit():
             var, coef_txt = a, b  # j*2
+        elif a in bounds or a in sym_bounds:
+            var, coef_txt = a, b  # j*DW: loop var times a symbolic coef
         else:
             var, coef_txt = b, a  # 32*gv_i / BITS*gv_i
         if var in sym_bounds:
@@ -1534,6 +1576,19 @@ def _eval_index(
             lo, hi = bounds[var]
             coef = int(coef_txt) if coef_txt else 1
             const_total += sign * coef * (hi if sign * coef > 0 else lo)
+        elif var in bounds and coef_txt:
+            # numeric loop bound times a symbolic coefficient (i*DW with
+            # i in 0..3): the product stays symbolic (DW*3)
+            lo, hi = bounds[var]
+            v = hi if sign > 0 else lo
+            if v == 0:
+                pass
+            elif v > 0:
+                sym_parts.append(
+                    f"{coef_txt}*{v}" if sign > 0 else f"-{coef_txt}*{v}"
+                )
+            else:
+                return None
         else:
             return None
     if not sym_parts:
