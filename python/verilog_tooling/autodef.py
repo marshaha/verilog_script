@@ -1517,6 +1517,8 @@ def _eval_index(
             var, coef_txt = a, ""
         elif b.isdigit():
             var, coef_txt = a, b  # j*2
+        elif a in bounds or a in sym_bounds:
+            var, coef_txt = a, b  # j*DW: loop var times a symbolic coef
         else:
             var, coef_txt = b, a  # 32*gv_i / BITS*gv_i
         if var in sym_bounds:
@@ -1534,6 +1536,19 @@ def _eval_index(
             lo, hi = bounds[var]
             coef = int(coef_txt) if coef_txt else 1
             const_total += sign * coef * (hi if sign * coef > 0 else lo)
+        elif var in bounds and coef_txt:
+            # numeric loop bound times a symbolic coefficient (i*DW with
+            # i in 0..3): the product stays symbolic (DW*3)
+            lo, hi = bounds[var]
+            v = hi if sign > 0 else lo
+            if v == 0:
+                pass
+            elif v > 0:
+                sym_parts.append(
+                    f"{coef_txt}*{v}" if sign > 0 else f"-{coef_txt}*{v}"
+                )
+            else:
+                return None
         else:
             return None
     if not sym_parts:

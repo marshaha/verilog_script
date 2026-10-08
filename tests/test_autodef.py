@@ -2351,6 +2351,24 @@ endmodule
     assert "[8*NCH-1:0]" in out and "fifo;" in out
 
 
+def test_indexed_part_select_lhs_parameter_width():
+    text = """\
+module top (input clk, input [7:0] din);
+parameter NCH = 4;
+parameter DW = 8;
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < NCH; i = i + 1) begin
+        fifo[i*DW +: DW] <= din;
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # width and slope both parameterised: [DW*NCH-1:0] (was: bare reg)
+    assert "[DW*NCH-1:0]" in out and "fifo;" in out
+
+
 def test_indexed_part_select_lhs_unresolvable_base_no_width():
     text = """\
 module top (input clk, input [7:0] din, input [3:0] addr);
