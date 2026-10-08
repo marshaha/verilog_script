@@ -377,6 +377,50 @@ def test_auto_inst_update_order_delegates_stub_to_auto_inst():
     ]
 
 
+def test_auto_inst_update_order_keeps_multiline_handwritten_connection():
+    # a hand-written connection may span several lines (concat opened on
+    # the first line, closed on a later one); the kept text must include
+    # every line, or the instance ends mid-expression
+    lines = [
+        "small u_s (/*autoinst*/",
+        "    .clk (my_clk),",
+        "    .din ({din_hi[3:0],",
+        "          din_lo[3:0]}),",
+        "    .vld (vld)",
+        ");",
+    ]
+    out = auto_inst_update_order(lines, {"small": small_mod()}, date=DATE)
+    joined = "\n".join(out)
+    assert ".din ({din_hi[3:0],\n          din_lo[3:0]})," in joined
+    assert "syntax" not in joined  # trivial guard against truncation
+    # both continuation words survive exactly once
+    assert joined.count("din_hi") == 1 and joined.count("din_lo") == 1
+
+
+def test_auto_inst_update_order_comments_every_line_of_deleted_multiline():
+    # a deleted port whose hand-written connection spans lines: the
+    # INST_DEL note is on the first line, but every continuation line
+    # must be commented out as well or it becomes live code again
+    lines = [
+        "small u_s (/*autoinst*/",
+        "    .clk (my_clk),",
+        "    .gone ({gone_hi[3:0],",
+        "            gone_lo[3:0]}),",
+        "    .vld (vld)",
+        ");",
+    ]
+    out = auto_inst_update_order(lines, {"small": small_mod()}, date=DATE)
+    assert out == [
+        "small u_s (/*autoinst*/",
+        "    .clk (my_clk),",
+        DIN_LINE + f" // INST_NEW {DATE}",
+        "    .vld (vld)",
+        f"//    .gone ({{gone_hi[3:0], // INST_DEL: port gone have deleted {DATE}",
+        "//            gone_lo[3:0]}),",
+        ");",
+    ]
+
+
 def test_modify_emacs_inst_format():
     out = modify_emacs_inst_format(["    .din (din[7:0])); // data", "plain"])
     assert out == ["    .din (din[7:0])  // data", "); ", "plain"]

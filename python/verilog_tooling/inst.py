@@ -846,6 +846,19 @@ def default_connection(port: Port, inst_vector: str = "t") -> str:
     return port.name + (f"[{port.width}]" if (port.width and use_vector) else "")
 
 
+def _paren_delta(text: str) -> int:
+    """Net ``()``/``[]`` depth change across TEXT (comments stripped by
+    the caller): positive means a connection value opened here has not
+    yet closed on this line."""
+    d = 0
+    for ch in text:
+        if ch in "([":                                     
+            d += 1
+        elif ch in ")]":
+            d -= 1
+    return d
+
+
 def _split_top_level_commas(text: str) -> list[str]:
     """Split TEXT at commas that sit at parenthesis/bracket depth 0 (a
     connection list like '.a(x), .b(y),'; commas inside .p({...}) or .p(f(a,b))
@@ -1565,11 +1578,30 @@ class VerilogBuffer:
             prefix_max_len, suffix_max_len = get_port_max_len(moddef.entries, sort=sort)
             out.append(line)
             old: dict[str, tuple[str, bool]] = {}  # port -> (raw line, was-last)
+            pending: "str | None" = None  # port whose (first) line leaves parens open
+            pending_depth = 0
             i += 1
             while True:
                 if i >= n:
                     raise ValueError("instance not terminated by ');'")
                 line = lines[i]
+                if pending is not None:
+                    # a hand-written connection may span several lines
+                    # (``.data_i ({..., 22'b0, <newline> ...})``): the
+                    # following lines are part of that connection — keep
+                    # them, or the kept text ends mid-expression
+                    raw, _ = old[pending]
+                    old[pending] = (raw + "\n" + line, _)
+                    pending_depth += _paren_delta(_strip_lc(line))
+                    i += 1
+                    if pending_depth <= 0:
+                        raw, _ = old[pending]
+                        old[pending] = (
+                            raw,
+                            re.search(r"\)\s*,\s*$", _strip_lc(raw)) is None,
+                        )
+                        pending = None
+                    continue
                 if _INST_END.search(line):
                     i += 1
                     break
@@ -1580,6 +1612,7 @@ class VerilogBuffer:
                 # (`.a(x), .b(y),`); record each, or the updater re-emits
                 # every later one as a duplicated INST_NEW
                 frags = [f for f in _split_top_level_commas(_strip_lc(line)) if f.strip()]
+                candidate: "str | None" = None
                 if len(frags) > 1:
                     for fi, frag in enumerate(frags):
                         port = self._get_port_name(frag)
@@ -1588,11 +1621,18 @@ class VerilogBuffer:
                                 frag.strip() + ("," if fi < len(frags) - 1 else ""),
                                 fi == len(frags) - 1,
                             )
+                            candidate = port
                 else:
                     port = self._get_port_name(line)
                     if port:
                         body = _strip_lc(line)
                         old[port] = (line, re.search(r"\)\s*,", body) is None)
+                        candidate = port
+                if candidate is not None:
+                    d = _paren_delta(_strip_lc(line))
+                    if d > 0:
+                        pending = candidate
+                        pending_depth = d
                 i += 1
             last_name = moddef.last_port_name()
             for entry in moddef.entries:
@@ -1629,7 +1669,16 @@ class VerilogBuffer:
                         + f" // INST_NEW {date}"
                     )
             for port, (raw, _) in old.items():
-                out.append(f"//{raw} // INST_DEL: port {port} have deleted {date}")
+                # a deleted connection may span several lines: every
+                # line must be commented out, not just the first
+                if "\n" in raw:
+                    first, rest = raw.split("\n", 1)
+                    out.append(
+                        f"//{first} // INST_DEL: port {port} have deleted {date}"
+                    )
+                    out.extend("//" + ln for ln in rest.split("\n"))
+                else:
+                    out.append(f"//{raw} // INST_DEL: port {port} have deleted {date}")
             out.append(");")
         return VerilogBuffer(out)
 
