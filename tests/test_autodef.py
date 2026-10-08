@@ -2365,3 +2365,66 @@ endmodule
     fifo_lines = [l for l in out.splitlines() if "fifo" in l and "assign" not in l]
     assert fifo_lines and all("[" not in l.split("fifo")[0] or True for l in fifo_lines)
     assert decl("reg", "", "fifo") in out
+
+
+# ---------------------------------------------------------------------------
+# marker-less instances whose pins open on the header line (single-line)
+
+SUB_DONE = """\
+module sub (
+    input  wire       clk,
+    input  wire [7:0] din,
+    output wire [7:0] dout,
+    output wire       done
+);
+endmodule
+"""
+
+
+def done_mods():
+    return {"sub": parse_module_ports(SUB_DONE.splitlines())}
+
+
+def test_single_line_instance_nets_declared():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+sub u_sub (.clk(clk), .din(din), .dout(w0), .done());
+endmodule
+"""
+    out = "\n".join(_adt(text, done_mods()))
+    assert decl("wire", "7", "w0") in out
+    assert "unresolved" not in out
+
+
+def test_single_line_instance_pins_span_lines():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+sub u_sub (.clk(clk),
+           .din(din), .dout(w0), .done(done_w));
+endmodule
+"""
+    out = "\n".join(_adt(text, done_mods()))
+    assert re.search(r"(?m)^wire\s+\[7:0\]\s+w0;", out)
+    assert re.search(r"(?m)^wire\s+done_w;", out)
+    assert "unresolved" not in out
+
+
+def test_single_line_instance_in_generate_array():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+generate
+    for (a = 0; a < 2; a = a + 1) begin: ga
+        sub u_sub (.clk(clk), .din(din), .dout(w[a]), .done());
+    end
+endgenerate
+endmodule
+"""
+    out = "\n".join(_adt(text, done_mods()))
+    # instance connections declare the net with the port's width; the
+    # generate-loop index adds no unpacked dimension (that derivation
+    # belongs to always-block LHS classification, on every inst path)
+    assert re.search(r"(?m)^wire\s+\[7:0\]\s+w;", out)
+    assert "unresolved" not in out

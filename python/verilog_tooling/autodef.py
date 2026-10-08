@@ -2503,6 +2503,60 @@ def _scan_always_block(
     return i
 
 
+def _scan_inst_body_text(
+    lines: Sequence[str],
+    start: int,
+    inst_io: Mapping[str, Port],
+    signals: SignalTable,
+    loop_bounds: Mapping[str, tuple[int, int]] | None = None,
+    sym_hi: Mapping[str, str] | None = None,
+) -> int:
+    """Consume an instance whose pin list opens on the header line
+    (``sub u_sub (.clk(clk), .dout(w));``), possibly spanning lines.
+
+    The pin list is located by paren balance from the header's pin
+    ``(``, split at top-level commas, and each named pin is recorded
+    exactly like a line of the line-oriented body scan.  Positional
+    connections stay unrecorded, as in the line-oriented path.
+    Returns the line index after the instance's closing line.
+    """
+    from .inst import _split_top_commas
+
+    loop_bounds = loop_bounds or {}
+    sym_hi = sym_hi or {}
+    m = re.match(
+        r"^\s*\w+\s+(?:#\s*\(.*?\)\s*)?(\w+)\s*\(", re.sub(r"//.*$", "", lines[start])
+    )
+    if not m:
+        return start + 1
+    text = "\n".join(lines[start:])
+    open_idx = m.end() - 1
+    depth = 0
+    close_idx = -1
+    for k in range(open_idx, len(text)):
+        if text[k] == "(":
+            depth += 1
+        elif text[k] == ")":
+            depth -= 1
+            if depth == 0:
+                close_idx = k
+                break
+    if close_idx < 0:
+        return start + 1
+    inner = text[open_idx + 1 : close_idx]
+    for part in _split_top_commas(inner):
+        pm = re.match(r"\s*\.(\w+)\s*\((.*)\)\s*$", part, re.S)
+        if pm:
+            signals.extend_inst_wire_from_line(
+                pm.group(1) + " " + pm.group(2) + ")",
+                inst_io,
+                loop_bounds,
+                sym_hi,
+                None,
+            )
+    return start + text[:close_idx].count("\n") + 1
+
+
 def _scan_inst_body(
     lines: Sequence[str],
     start: int,
@@ -2646,6 +2700,13 @@ def _instance_headers(
         m = re.match(r"^\s*(\w+)\s+(#\s*\(.*\)\s*)?(\w+)\s*\(\s*$", raw)
         if m and m.group(1) in modules and m.group(3) not in _KEYWORDS:
             out[i] = (m.group(1), m.group(3), -1)
+            i += 1
+            continue
+        # body opens on the header line itself: `mod inst (.clk(clk), ...);`
+        # (header_end -2 marks "scan the header line's own text")
+        m = re.match(r"^\s*(\w+)\s+(#\s*\(.*?\)\s*)?(\w+)\s*\((?!\s*$)", raw)
+        if m and m.group(1) in modules and m.group(3) not in _KEYWORDS:
+            out[i] = (m.group(1), m.group(3), -2)
         i += 1
     return out
 
@@ -2985,6 +3046,13 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             module, _inst, hdr_end = inst_headers[i]
             moddef = modules[module]
             inst_io = {p.name: p for p in moddef.ports}
+            if hdr_end == -2:
+                # pins begin on the header line itself (single-line
+                # instance): scan the balanced pin-list text
+                i = _scan_inst_body_text(
+                    lines, i, inst_io, signals, loop_bounds, sym_hi
+                )
+                continue
             start = (hdr_end + 1) if hdr_end >= 0 else (i + 1)
             # the pin-list open paren: last '(' of the header's final line
             hl = hdr_end if hdr_end >= 0 else i
