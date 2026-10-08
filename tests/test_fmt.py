@@ -104,6 +104,29 @@ def test_aif_leaves_multiline_param_value_untouched():
     assert auto_inst_format(out) == out
 
 
+def test_aif_leaves_handwritten_param_block_untouched():
+    # veer-el2 el2_veer: a hand-written multi-line #(...) header with a
+    # `.*` tail and no AUTO markers.  The parameter overrides used to
+    # be re-aligned as pin connections, dragging `.pt(pt)` out of the
+    # header and orphaning the instance (Verilator syntax errors).
+    lines = [
+        "  el2_pmp #(",
+        "      .PMP_CHANNELS(3),",
+        "      .pt(pt)",
+        "  ) pmp (",
+        "      .clk  (active_l2clk),",
+        "      .rst_l(core_rst_l),",
+        "      .*",
+        "  );",
+    ]
+    out = auto_inst_format(lines)
+    assert out[:4] == lines[:4]  # header verbatim
+    assert "active_l2clk" in out[4] and out[4].lstrip().startswith(".clk")
+    assert out[6] == "      .*"  # implicit tail untouched
+    assert out[7] == "  );"
+    assert auto_inst_format(out) == out
+
+
 def test_aif_verilog_buffer_method():
     buf = VerilogBuffer(["small u_s (/*autoinst*/ .clk(clk));"])
     assert buf.auto_inst_format().lines[1] == CLK_LAST
