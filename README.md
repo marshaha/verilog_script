@@ -214,9 +214,41 @@ range — `.dout (dout[7:0])`. Notes:
 
 ### EAP — AUTOINSTPARAM
 
-Fills the `#(...)` parameter list (`/*AUTOINSTPARAM*/`, or new instances
-created by AIT/EAI). See the priority rules in
-[AUTOINSTPARAM (EAP)](#autoinstparam-eap) below.
+Fills the `#(...)` parameter list from the submodule's parameter
+declarations. With a `subp` defined as:
+
+```verilog
+module subp #(
+    parameter DW = 8,
+    parameter DEPTH = 4
+) (
+    input  wire          clk,
+    output wire [DW-1:0] dout
+);
+endmodule
+```
+
+this:
+
+```verilog
+module top;
+    subp #(/*AUTOINSTPARAM*/) u_subp (/*autoinst*/);
+endmodule
+```
+
+becomes:
+
+```verilog
+module top;
+    subp #(/*AUTOINSTPARAM*/
+           // Parameters
+           .DW                          (DW),
+           .DEPTH                       (DEPTH)) u_subp (/*autoinst*/);
+endmodule
+```
+
+See the priority rules in [AUTOINSTPARAM (EAP)](#autoinstparam-eap)
+below.
 
 ### AIT — deprecated, delegates to EAI
 
@@ -240,10 +272,58 @@ For daily "the submodule changed" work:
   `.port (custom_sig)` connections keep their text. An `AUTO_TEMPLATE`
   entry still wins for the ports it declares.
 
+Example. The submodule changed: `done` was deleted, `dout`/`cnt` are
+new. Starting from:
+
+```verilog
+module top;
+    sub u_sub (/*autoinst*/
+        .clk (rx_clk),
+        .din (din),
+        .done(done)
+    );
+endmodule
+```
+
+`AIU1` (keep every line in place):
+
+```verilog
+module top;
+    sub u_sub (/*autoinst*/
+        .clk (rx_clk),
+        .din (din),
+//        .done(done) // INST_DEL: port done have deleted 2026-10-08 18:49
+    .dout                       (dout[7:0]                                  ), // output // INST_NEW 2026-10-08 18:49
+    .cnt                        (cnt[3:0]                                   )  // output // INST_NEW 2026-10-08 18:49
+    );
+endmodule
+```
+
+`AIU` (same update, rewritten in module port order):
+
+```verilog
+module top;
+    sub u_sub (/*autoinst*/
+        .clk (rx_clk),
+        .din (din),
+    .dout                       (dout[7:0]                                  ), // output // INST_NEW 2026-10-08 18:49
+    .cnt                        (cnt[3:0]                                   )  // output // INST_NEW 2026-10-08 18:49
+//        .done(done) // INST_DEL: port done have deleted 2026-10-08 18:49
+);
+endmodule
+```
+
+The hand-written `.clk (rx_clk)` connection survives both; the
+timestamp is the run time (`--date` overrides it on the command line).
+
 ### KI — collapse an instance
 
 Deletes the generated pin list, leaving the `mod inst (/*autoinst*/);`
-stub. The next EAI/AIT rebuilds from scratch.
+stub. The next EAI/AIT rebuilds from scratch:
+
+```verilog
+    sub u_sub (/*autoinst*/);
+```
 
 ### AD / ADT — declare every undeclared signal
 
@@ -254,6 +334,36 @@ drivers. Undriven outputs become `reg`. See [/*autodef*/
 (AD/ADT)](#autodef-adadt) below for the full rules. `KADT` collapses the
 region back to the marker.
 
+```verilog
+module top (
+    input  wire       clk,
+    input  wire [7:0] din,
+    output wire [7:0] dout
+);
+    /*autodef*/
+    always @(posedge clk) begin
+        q <= din;
+    end
+    assign dout = q;
+endmodule
+```
+
+becomes (the undeclared `q` lands in the flip-flop section; the empty
+sections stay as comment headers):
+
+```verilog
+    /*autodef*/
+// Define io wire here
+// Define flip-flop registers here
+reg          [7:0]                      q;
+// Define combination registers here
+// Define wires here
+// Define inst wires here
+// Define integer here
+// Unresolved define signals here
+// End of automatic define
+```
+
 ### AR — header port list
 
 Regenerates `/*autoarg*/` in the module header from the port
@@ -263,6 +373,32 @@ declarations (`input clk,`), several declarations on one line
 (`input a, input b`), cross-line declarations, and unpacked dimensions
 (`val[3:0]`). A misplaced marker (outside the header) is left untouched.
 `KAR` collapses the list back to the marker.
+
+```verilog
+module top (/*AUTOARG*/);
+    input  wire       clk;
+    input  wire [7:0] din;
+    output wire [7:0] dout;
+endmodule
+```
+
+becomes:
+
+```verilog
+module top (/*AUTOARG*/
+    //Outputs
+    dout,
+
+    //Inputs
+    clk, din
+);
+    input  wire       clk;
+    input  wire [7:0] din;
+    output wire [7:0] dout;
+endmodule
+```
+
+(section order is Outputs, Inouts, Inputs — the emacs order).
 
 **Inout inference**: a port-list name with only a `wire` declaration or
 no direction at all is not a legal Verilog port and would be dropped
@@ -290,48 +426,72 @@ a `/*memory or*/` note. `/*AUTORESET*/` inside a reset branch emits
 but not manually reset before the marker (`<=` vs `=` follows the block's
 style; active-low names per `verilog-active-low-regexp` reset to 1).
 
-### AIM / AIC / AII / AIMP / AIP — copy I/O from elsewhere
+AUTOSENSE:
 
-- `/*AUTOINOUTMODULE("Mod"[,"re"])*/` (AIM): copy input/output/inout
-  declarations from another module — the null-shell workhorse.
-- `/*AUTOINOUTCOMP("Mod"[,"re"[,"not-re"]])*/` (AIC): same, complemented
-  (inputs become outputs) — for testbenches.
-- `/*AUTOINOUTIN("Mod"[,"re"])*/` (AII): same, everything as input — for
-  monitors.
-- `/*AUTOINOUTMODPORT("If","mp-re"[,"re"[,"prefix"]])*/` (AIMP): copy I/O
-  from an interface modport.
-- `/*AUTOINOUTPARAM("Mod"[,"re"])*/` (AIP): copy `parameter` declarations
-  (value-less, SystemVerilog-2009 style).
+```verilog
+    always @(/*AUTOSENSE*/) begin
+        q = a & b;
+    end
+```
 
-Inside a module header they emit Verilog-2001 comma style, otherwise
-1995 `;` declarations. `?!` prefix on a regexp excludes matches.
+becomes:
 
-### AAMP — AUTOASSIGNMODPORT
+```verilog
+    always @(/*AUTOSENSE*/a or b) begin
+        q = a & b;
+    end
+```
 
-`/*AUTOASSIGNMODPORT("If","mp-re","inst"[,"re"[,"prefix"]])*/` builds
-`assign` statements wiring the modport signals to/from the interface
-instance — for UVM verification modules.
+AUTORESET:
 
-### AOE / ARI — AUTOOUTPUTEVERY / AUTOREGINPUT
+```verilog
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            /*AUTORESET*/
+        end else begin
+            q   <= din;
+            vld <= 1'b1;
+        end
+    end
+```
 
-`/*AUTOOUTPUTEVERY[("re")]*/` declares every non-input signal an output
-(keeps synthesis from optimizing signals away). `/*AUTOREGINPUT*/`
-declares `reg` for undeclared nets feeding AUTOINST input pins
-(`// To <inst> of <Mod>.v`), handy for top-level test shells.
+becomes:
 
-### AASC — AUTOASCIIENUM
+```verilog
+        if (!rst_n) begin
+            /*AUTORESET*/
+            // Beginning of autoreset for uninitialized flops
+            q <= 8'h0;
+            vld <= 1'h0;
+            // End of automatics
+        end else begin
+```
 
-`/*AUTOASCIIENUM("sig", "ascii_sig"[,"prefix"[,"onehot"]])*/` builds an
-ASCII decode register for an enum state vector: parameters tagged
-`// auto enum <name>` (or `synopsys enum`) define the states, the signal
-tagged `/* auto state_vector <sig> */` selects the vector. Emits
-`reg [8*N-1:0] ascii_sig; // Decode of sig` plus the `always @(sig)`
-case decoder (`"%Err"` default).
+### Copying I/O, modports, and the rest
 
-### ALGC — AUTOLOGIC
+The remaining AUTO commands have no leader mapping; each is one line
+in the [command table](#commands) above, with its marker syntax:
 
-`/*AUTOLOGIC*/` is AUTOWIRE declaring `logic` instead of `wire`. A file-local
-`// verilog-auto-wire-type: "logic"` switches `/*AUTOWIRE*/` the same way.
+| Command | Marker | Effect |
+|---|---|---|
+| `AIM` / `AIC` / `AII` | `/*AUTOINOUTMODULE("Mod"[,"re"])*/`, `...COMP(...)`, `...IN(...)` | copy I/O declarations from another module (AIC complements directions, AII all-input) |
+| `AIMP` / `AIP` | `/*AUTOINOUTMODPORT("If","mp-re"[,"re"[,"prefix"]])*/`, `/*AUTOINOUTPARAM("Mod"[,"re"])*/` | copy I/O from an interface modport / `parameter` declarations from a module |
+| `AAMP` | `/*AUTOASSIGNMODPORT("If","mp-re","inst"[,"re"[,"prefix"]])*/` | `assign` statements wiring a modport to its interface instance (modport direction keywords carry across comma items) |
+| `AOE` | `/*AUTOOUTPUTEVERY[("re")]*/` | declare every declared non-input signal an output |
+| `ARI` | `/*AUTOREGINPUT*/` | `reg` for undeclared nets feeding AUTOINST input pins |
+| `AASC` | `/*AUTOASCIIENUM("sig","ascii_sig"[,"prefix"[,"onehot"]])*/` | ASCII decode register + `case` for an enum state vector (`// auto enum` parameters, `/* auto state_vector */` signal) |
+| `ALGC` | `/*AUTOLOGIC*/` | AUTOWIRE declaring `logic` (also `// verilog-auto-wire-type: "logic"`) |
+| `AUNU` | `/*AUTOUNUSED*/` | inline comma list of inputs/inouts not connected to any instance pin — for `wire _unused_ok = &{1'b0, /*AUTOUNUSED*/ 1'b0};` |
+| `AUND` | `/*AUTOUNDEF[("re")]*/` | `` `undef `` every `` `define `` seen since the previous AUTOUNDEF |
+| `AIL` / `AILL` | `/*AUTOINSERTLISP(!shell-cmd)*/` | insert the shell command's stdout before (AIL) / after (AILL) all other AUTOs |
+| `ATLINT` | — | report AUTO_TEMPLATE entries no instance consumes (quickfix) |
+| `APM` / `AFM` | `/*autopara*/ (A, B=2, C)`, `/*autofsm*/ (S...) cur nxt` | aligned `parameter` declarations / FSM localparams + two-always skeleton |
+| `AH` / `ATpl {file}` | — | prepend the `// +FHDR` header block / create a file from the project skeleton (`_tb` suffix = testbench) |
+| `KADT` / `KAR` | — | collapse the `/*autodef*/` / `/*autoarg*/` region back to its marker |
+
+The AIM family emits Verilog-2001 comma style inside a module header,
+1995 `;` declarations in the body; a `?!` regexp prefix excludes
+matches.
 
 ### ATIE — AUTOTIEOFF
 
@@ -341,27 +501,28 @@ Outputs already declared, driven by AUTOINST, or matching
 `verilog-auto-tieoff-ignore-regexp` are skipped. The classic stub-module
 companion to `AUNU`.
 
-### AUNU — AUTOUNUSED
+```verilog
+module stub (
+    output wire [7:0] o_data,
+    output wire       o_vld_n
+);
+    /*AUTOTIEOFF*/
+endmodule
+// Local Variables:
+// verilog-active-low-regexp: "_n$"
+// End:
+```
 
-`/*AUTOUNUSED*/` expands inline to the comma-separated list of unused
-input/inout signals — designed for
-`wire _unused_ok = &{1'b0, /*AUTOUNUSED*/ 1'b0};` so one pragma silences
-all unused warnings. `verilog-auto-unused-ignore-regexp` excludes names.
+becomes (the `_n` output is tied to 1 as `~1'h0`, per the active-low
+variable):
 
-### AUND — AUTOUNDEF
-
-`/*AUTOUNDEF[("re")]*/` emits `` `undef `` for every `` `define `` seen
-since the previous AUTOUNDEF (already-undef'd names are skipped, so
-`` `ifdef NEVER `` guards work), sorted, optionally regexp-filtered —
-keeps file-local defines out of the global namespace.
-
-### AIL / AILL — AUTOINSERTLISP / AUTOINSERTLAST
-
-`/*AUTOINSERTLISP(!command args)*/` runs the shell command and inserts its
-stdout into a `// Beginning of automatic insert lisp` region, before (AIL)
-or after (AILL) all other AUTOs. Emacs evaluates elisp here; this port runs
-shell instead — the documented difference (elisp `defun`s are not
-supported, mirroring the AUTO_TEMPLATE `@"..."` subset rule).
+```verilog
+    /*AUTOTIEOFF*/
+    // Beginning of automatic tieoffs (for this module's unterminated outputs)
+    wire [7:0]          o_data                  = 8'h0;
+    wire                o_vld_n                 = ~1'h0;
+    // End of automatics
+```
 
 ### AINJ — inject AUTOs into legacy code
 
@@ -371,17 +532,79 @@ into pin lists (deleting `.x(x)` identity pins), then runs the full AALL
 pipeline — the `verilog-inject-auto` workflow for bringing old files
 under AUTO control.
 
+```verilog
+module top (clk, din, dout, done);
+    input clk;
+    input [7:0] din;
+    output [7:0] dout;
+    output done;
+    reg [7:0] r;
+    always @(clk or din) r = din;
+    sub u_sub (.clk(clk), .din(din), .dout(dout), .done(done));
+endmodule
+```
+
+becomes:
+
+```verilog
+module top (clk, din, dout, done/*AUTOARG*/
+    //Outputs
+    dout, done,
+
+    //Inputs
+    clk, din
+);
+input                                clk;
+input[7:0]                           din;
+output[7:0]                          dout;
+output                               done;
+reg[7:0]                             r;
+    always @(clk or din) r = din;
+    sub u_sub (
+               /*AUTOINST*/
+               // Outputs
+        .dout   (dout[7:0]                                                  ),
+        .done   (done                                                       ),
+               // Inputs
+        .clk    (clk                                                        ),
+        .din    (din[7:0]                                                   )
+);
+endmodule
+```
+
+(The `/*AS*/` marker is only injected when the existing hand-written
+sensitivity list already agrees with the block's reads — otherwise the
+always block is left alone for you to fix first.)
+
 ### ADIF — diff AUTOs
 
 Expands AUTOs on a copy and shows the unified diff in a preview window
 (whitespace-insensitive detection, like `verilog-diff-auto`). Empty output
 means the buffer is fully expanded — suitable for a lint/regression check.
 
-### ATLINT — unused AUTO_TEMPLATE lines
+A stale `.stale(stale)` pin plus a pending re-expansion shows as:
 
-Runs the EAI/EAP expansion with hit-tracking and lists template entries
-never consumed by any instance in the quickfix window
-(`verilog-auto-template-warn-unused`).
+```diff
+--- current
++++ auto-expanded
+@@ -1,9 +1,10 @@
+ module top;
+     sub u_sub (/*autoinst*/
+-        .clk (clk),
+-        .din (din),
+-        .dout(dout),
+-        .done(done),
+-        .stale(stale)
+-    );
++               // Outputs
++        .dout   (dout[7:0]                                                  ),
++        .done   (done                                                       ),
++               // Inputs
++        .clk    (clk                                                        ),
++        .din    (din[7:0]                                                   )
++);
+ endmodule
+```
 
 ### AF family — alignment
 
@@ -395,33 +618,94 @@ Buffer-local formatting (no module files needed):
 
 Idempotent; reports `no changes` when already aligned.
 
+```verilog
+module top(input clk, input [7:0] din, output [7:0] dout);
+parameter W = 8;
+localparam DEPTH = 16;
+wire [7:0] a;
+wire b;
+sub u_sub(
+.clk(clk),
+.din(a),
+.dout (dout),
+.done(b));
+endmodule
+```
+
+after `AF`:
+
+```verilog
+module top(input clk, input [7:0] din, output [7:0] dout);
+parameter   W     = 8;
+localparam  DEPTH = 16;
+wire[7:0]                           a;
+wire                                b;
+sub u_sub(
+        .clk    (clk                                                        ),
+        .din    (a                                                          ),
+        .dout   (dout                                                       ),
+        .done   (b                                                          )
+);
+endmodule
+```
+
+Hand-written `#(...)` parameter overrides in an instance header are
+aligned exactly like pin connections — only the `)) inst (` closer
+line is never folded into the last override.
+
 ### AM / AME — instance stubs
 
-Turns the word under the cursor into an instance stub on that line:
-`fifo` → `fifo u0_fifo (/*autoinst*/);` (AM, automatic.vim style) or
-the emacs-flavored stub (AME). The instance index counts the module's
-previous instances in the buffer.
+Turns the word under the cursor into an instance stub on that line.
+The instance index counts the module's previous instances in the
+buffer. `fifo` under the cursor becomes, with `AM` (automatic.vim
+style):
 
-### APM / AFM — parameter / FSM skeletons
+```verilog
+fifo  u0_fifo(/*autoinst*/);
+```
 
-`/*autopara*/ (A, B=2, C)` expands into aligned `parameter`
-declarations. `/*autofsm*/ (IDLE,RUN,DONE) state nstate` expands into
-state localparams plus the two-always-block FSM skeleton (state register
-+ next-state logic), with the state width derived from the state count.
+and with `AME` (emacs-flavored, ready for EAP + a template):
 
-### AH / ATpl — file header & new file
-
-`AH` prepends the file header comment block (`// +FHDR`).
-`ATpl foo.v` creates a new file from the project skeleton — a `_tb`/`tb`
-suffix produces a testbench skeleton — and opens it. New empty `.v`/`.sv`
-buffers get the skeleton automatically (BufNewFile).
+```verilog
+/* fifo  auto_template (
+  ); */
+fifo #(/*autoinstparam*/)   u0_fifo(/*autoinst*/);
+```
 
 ### BPN / BP / BA — always-block snippets
 
-Insert an always skeleton at the cursor: `BPN` —
-`always @(posedge clk or negedge rst_n)` with `if (!rst_n)` reset
-branch; `BP` — `always @(posedge clk)`; `BA` — combinational
-`always @(*)`.
+Insert an always skeleton at the cursor. `BPN`:
+
+```verilog
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin
+
+    end else if() begin
+    end else begin
+    end
+end
+```
+
+`BP`:
+
+```verilog
+always @(posedge clk) begin
+    if() begin
+
+    end else begin
+    end
+end
+```
+
+`BA`:
+
+```verilog
+always @(*) begin
+
+end
+```
+
+(the cursor is left in the empty first branch of each skeleton).
 
 ## Default key mappings
 
@@ -537,30 +821,9 @@ mm_cdma_parse u_parse (/*autoinst*/);
   subtraction. `vl-width`/`vl_width` is the *numeric* port width
   (`'4'` for `[0:3]`, `'1'` for a single bit, `'(1+(`a)-(`b))'` for
   parameterised ranges) — matching emacs `verilog-sig-width`.
-- `/*AUTO_LISP(expr)*/` before the marker evaluates Python bindings that
-  `@"..."` expressions can reference
-- `/*AUTO_PYTHON( <code> )*/` defines plain Python functions callable from
-  `@"..."` (the Python-native alternative to elisp `defun`; underscore
-  aliases `vl_name` / `vl_cell_name` / `vl_width` / `vl_dir` are bound,
-  since hyphens aren't valid Python identifiers):
-
-  ```verilog
-  /*AUTO_PYTHON(
-  def surround(sig):
-      return "{" + sig + "," + sig + "}"
-  )*/
-  /* my_mod AUTO_TEMPLATE (
-      .\(.*\)  (@"surround(vl_name)"),
-  ); */
-  ```
-
-  `// verilog-auto-python-file: "myfuncs.py"` (file-local) loads top-level
-  definitions from shared Python files instead — same quoted,
-  whitespace-separated syntax as `verilog-library-files`
-  (`("a.py" "b.py")`, later files override earlier ones).  Resolved
-  against the `-y`/vc library dirs and the buffer's own directory
-  (`~`/`$VAR` expanded, cached by mtime).  Inline blocks override
-  same-named file definitions.
+- `/*AUTO_LISP(...)*/` and `/*AUTO_PYTHON(...)*/` prepare names that
+  `@"..."` expressions can use — see
+  [AUTO_PYTHON and AUTO_LISP](#auto_python-and-auto_lisp) below.
 
 Without a template entry, a port connects to a same-named net (range
 included); if the net is not declared yet, AW/AD declare it for you.
@@ -601,6 +864,113 @@ when absent):
 
 Note: AUTOARG sections follow the emacs order — Outputs, Inouts, Inputs.
 
+## AUTO_PYTHON and AUTO_LISP
+
+Template `@"..."` expressions often need more than the built-in
+variables — a name transformation, a constant suffix, a string build.
+Two comment blocks prepare Python names for them. Both are evaluated
+in buffer order, only up to the instance being expanded, in a sandbox
+with **no builtins** (no `import`, no file or network access); a
+failing block aborts the command with the offending code quoted.
+
+### AUTO_LISP — plain bindings
+
+`/*AUTO_LISP(...)*/` executes Python statements (assignments) whose
+names later `@"..."` expressions can read. It is the port of elisp's
+`AUTO_LISP` / `verilog-auto-lisp` preparation step, with Python syntax
+standing in for elisp `setq`:
+
+```verilog
+/*AUTO_LISP(SFX = "_r")*/
+module top;
+    /* sub AUTO_TEMPLATE (
+        .din (@"vl_name + SFX"),
+    ) */
+    sub u_sub (/*autoinst*/);
+endmodule
+```
+
+After `EAI`, the `din` pin is connected to `din_r`:
+
+```verilog
+               .din                     (din_r));                // Templated
+```
+
+### AUTO_PYTHON — defining functions
+
+`/*AUTO_PYTHON( <code> )*/` runs full Python statements, typically
+`def`s, at module level. The defined names become callable from any
+following `@"..."` expression — the Python-native alternative to
+defining elisp helpers for a template:
+
+```verilog
+/*AUTO_PYTHON(
+def surround(sig):
+    return "{" + sig + "," + sig + "}"
+)*/
+module top;
+    /* sub AUTO_TEMPLATE (
+        .din (@"surround(vl_name)"),
+    ) */
+    sub u_sub (/*autoinst*/);
+endmodule
+```
+
+After `EAI`:
+
+```verilog
+    sub u_sub (/*autoinst*/
+               // Outputs
+               .dout                    (dout[7:0]),
+               .done                    (done),
+               // Inputs
+               .clk                     (clk),
+               .din                     ({din,din}));            // Templated
+```
+
+Inside `@"..."` and inside AUTO_PYTHON code alike, the template
+variables are available both in their elisp spelling (`vl-name`,
+`vl-cell-name`, `vl-width`, `vl-dir` — hyphenated names in `@"..."`
+strings are rewritten automatically) and as underscore aliases
+(`vl_name`, `vl_cell_name`, `vl_width`, `vl_dir`), because hyphens are
+not legal Python identifiers.
+
+### `verilog-auto-python-file` — shared Python files
+
+Helper functions shared by many files can live in real `.py` files,
+loaded via a file-local variable (same quoted, whitespace-separated
+syntax as `verilog-library-files`; parentheses optional, later files
+override earlier ones):
+
+```verilog
+// Local Variables:
+// verilog-auto-python-file: "funcs.py"
+// End:
+```
+
+with `funcs.py` on the library path:
+
+```python
+def shout(sig):
+    return sig.upper() + "_INT"
+```
+
+and the template `.din (@"shout(vl_name)")`, `EAI` connects:
+
+```verilog
+               .din                     (DIN_INT));              // Templated
+```
+
+Resolution and precedence:
+
+- files are searched in the `-y`/vc library directories, then the
+  buffer's own directory (`~` and a leading `$VAR` expand);
+- definitions are cached by file mtime — no stale helpers across runs;
+- file-local files load first, then inline `/*AUTO_PYTHON*/` blocks;
+  on a name clash the later definition wins (inline beats files);
+- everything runs under the same no-builtins sandbox, so a helper file
+  can define functions and constants but cannot touch the filesystem.
+
 ## /*autodef*/ (AD/ADT)
 
 Regenerates every undeclared signal into fixed sections, inferring widths
@@ -631,12 +1001,109 @@ Type rules:
   grown in place); append `//DT` ("don't touch") to exempt one
 - SystemVerilog `logic` is understood everywhere
 
+For-loop extraction in full — loop variables, unpacked dimensions
+from loop bounds, and widths grown from indexed part-selects:
+
+```verilog
+module top (
+    input  wire       clk,
+    input  wire [7:0] din,
+    output wire [7:0] dout
+);
+    /*autodef*/
+    generate
+        for (g = 0; g < 4; g = g + 1) begin: gen_ch
+            always @(posedge clk) begin
+                ch_data[g] <= din;
+            end
+        end
+    endgenerate
+    always @(posedge clk) begin
+        for (i = 0; i < 4; i = i + 1) begin
+            for (j = 0; j < 8; j = j + 1) begin
+                mem[i][j] <= din;
+            end
+            fifo[i*8 +: 8] <= din;
+        end
+    end
+    assign dout = ch_data[0];
+endmodule
+```
+
+generates:
+
+```verilog
+    /*autodef*/
+// Define io wire here
+// Define flip-flop registers here
+reg                                     ch_data [0:3];
+reg          [31:0]                     fifo;
+reg                                     mem [0:3] [0:7];
+// Define combination registers here
+// Define wires here
+// Define inst wires here
+// Define integer here
+genvar g;
+integer                                 i;
+integer                                 j;
+// Unresolved define signals here
+// End of automatic define
+```
+
+Reading the result: `g` became a `genvar` (generate loop), `i`/`j`
+`integer`s (procedural loops); `g`, `i`, `j` as indices became the
+unpacked dimensions `[0:3]`, `[0:3] [0:7]`; `fifo[i*8 +: 8]` grew the
+packed width to `[31:0]` (max index 24 + 8); plain loop-variable
+elements (`ch_data[g]`, `mem[i][j]`) keep scalar elements — only an
+explicit trailing part-select (`[7:0]`, `[i*8 +: 8]`) evidences an
+element width.
+
 ## AUTOWIRE / AUTOREG (AW/AREG)
 
 `/*AUTOWIRE*/` declares wires for nets driven by `/*autoinst*/` instance
 outputs (with a `// From u_x of mod.v` comment). `/*AUTOREG*/` declares
 `reg` for module outputs that have no driver (assign/always/instance).
 Both skip anything already declared and resolve widths symbolically.
+
+```verilog
+    /*AUTOWIRE*/
+    sub u_sub (/*autoinst*/
+        .clk  (clk),
+        .din  (din),
+        .dout (dout_w),
+        .done (done_w)
+    );
+```
+
+becomes:
+
+```verilog
+    /*AUTOWIRE*/
+    // Beginning of automatic wires (for undeclared instantiated-module outputs)
+    wire                                    done_w; // From u_sub of sub.v
+    wire         [7:0]                      dout_w; // From u_sub of sub.v
+    // End of automatics
+```
+
+and `/*AUTOREG*/` in a 1995-style module:
+
+```verilog
+module top (q, vld);
+    output [7:0] q;
+    output vld;
+    /*AUTOREG*/
+endmodule
+```
+
+becomes:
+
+```verilog
+    /*AUTOREG*/
+    // Beginning of automatic regs (for this module's undeclared outputs)
+    reg          [7:0]                      q;
+    reg                                     vld;
+    // End of automatics
+```
 
 ## AUTOINPUT / AUTOOUTPUT / AUTOINOUT (AIO)
 
@@ -678,11 +1145,92 @@ AUTOWIRE and friends:
 - `// verilog-auto-wire-comment: nil` — suppress the `// To`/`// From`
   comments on generated declarations.
 
+```verilog
+module wrap;
+    /*AUTOINPUT*/
+    /*AUTOOUTPUT*/
+    /*AUTOINOUT*/
+    sub u_sub (/*autoinst*/
+        .clk  (clk),
+        .din  (din),
+        .dout (dout),
+        .done (done)
+    );
+endmodule
+```
+
+becomes:
+
+```verilog
+module wrap;
+    /*AUTOINPUT*/
+    // Beginning of automatic inputs (from unused autoinst inputs)
+    input                                   clk; // To u_sub of sub.v
+    input        [7:0]                      din; // To u_sub of sub.v
+    // End of automatics
+    /*AUTOOUTPUT*/
+    // Beginning of automatic outputs (from unused autoinst outputs)
+    output                                  done; // From u_sub of sub.v
+    output       [7:0]                      dout; // From u_sub of sub.v
+    // End of automatics
+    /*AUTOINOUT*/
+    sub u_sub (/*autoinst*/
+        .clk  (clk),
+        .din  (din),
+        .dout (dout),
+        .done (done)
+    );
+endmodule
+```
+
 AIO and `/*autoarg*/`: with `/*autoarg*/` in the header, put the
 AUTOINPUT/AUTOOUTPUT markers in the **body** — autoarg then packs the
 generated port names into the header (the canonical verilog-mode layout).
 When the AIO markers are in the header themselves, autoarg leaves that
 header alone (a name list would duplicate the full declarations).
+
+## Command line
+
+Everything the plugin does is also a command-line program — the Vim
+front-end shells out to these same entry points (standard library
+only). Point `PYTHONPATH` at the repo's `python/` directory (or the
+installed `~/.vim/python`):
+
+| Program | Commands |
+|---|---|
+| `python3 -m verilog_tooling.inst` | `aall eai eap ait aiu aiu1 kill aif apf adf af ainj` |
+| `python3 -m verilog_tooling.arg` | `ar kill` (AUTOARG / KAR) |
+| `python3 -m verilog_tooling.autodef` | `adt kill` (AD/ADT / KADT) |
+| `python3 -m verilog_tooling.wire` | `aw ar kill-aw kill-ar` (AUTOWIRE / AUTOREG) |
+| `python3 -m verilog_tooling.inout` | `aio ain aout ainout kill-ain kill-aout kill-ainout` |
+| `python3 -m verilog_tooling.sense` | `asense areset kill-sense kill-reset` |
+| `python3 -m verilog_tooling.misc` | `aascii alogic atieoff aunused aundef ainsertlisp ainsertlast` (+ `kill-*`) |
+| `python3 -m verilog_tooling.xfer` | `ainoutmodule ainoutcomp ainoutin ainoutmodport ainoutparam aassignmodport aoutputevery areginput` (+ `kill-*`) |
+| `python3 -m verilog_tooling.gen` | `am ame apm afm kill-para kill-fsm` (`am`/`ame` take `--line N`) |
+| `python3 -m verilog_tooling.filehdr` | `template header` (`template -f new.v` creates the file) |
+| `python3 -m verilog_tooling.inject` | `inject` (the AINJ marker pass on its own) |
+| `python3 -m verilog_tooling.diffauto` | `diff` (unified diff to stdout, or `-o file`) |
+| `python3 -m verilog_tooling.lint` | `lint` (unused-AUTO_TEMPLATE warnings to stdout) |
+
+Common flags: `-i in.v -o out.v` (input/output files), `-y dir`
+(library directory, repeatable), `-I name` (extra SystemVerilog
+interface type name), `--ref_file f` (the real file behind a scratch
+buffer, for Local-Variables relative paths). `verilog_tooling.inst`
+adds:
+
+| Flag | Effect |
+|---|---|
+| `--which N` | only the Nth `/*AUTOINST*/` marker (0-based) |
+| `--line N` | only the instance at editor line N (AIT/AIU/AIU1 only) |
+| `--sort` | sort EAI/EAP pins within each direction group |
+| `--dot-name` | emit SystemVerilog `.name` shorthand connections |
+| `--param-value` | substitute `#(...)` parameter values into port widths |
+| `--star-expand` / `--star-save` | expand `.*` instances / keep the expansion tagged |
+| `--date S` | override the INST_NEW/INST_DEL timestamp |
+
+```bash
+PYTHONPATH=python python3 -m verilog_tooling.inst eai -i top.v -o top.out.v -y rtl -y ip
+```
 
 ## Layout
 
