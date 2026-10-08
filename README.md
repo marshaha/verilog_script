@@ -467,187 +467,31 @@ becomes:
         end else begin
 ```
 
-### AIM / AIC / AII / AIMP / AIP — copy I/O from elsewhere
+### Copying I/O, modports, and the rest
 
-- `/*AUTOINOUTMODULE("Mod"[,"re"])*/` (AIM): copy input/output/inout
-  declarations from another module — the null-shell workhorse.
-- `/*AUTOINOUTCOMP("Mod"[,"re"[,"not-re"]])*/` (AIC): same, complemented
-  (inputs become outputs) — for testbenches.
-- `/*AUTOINOUTIN("Mod"[,"re"])*/` (AII): same, everything as input — for
-  monitors.
-- `/*AUTOINOUTMODPORT("If","mp-re"[,"re"[,"prefix"]])*/` (AIMP): copy I/O
-  from an interface modport.
-- `/*AUTOINOUTPARAM("Mod"[,"re"])*/` (AIP): copy `parameter` declarations
-  (value-less, SystemVerilog-2009 style).
+The remaining AUTO commands have no leader mapping; each is one line
+in the [command table](#commands) above, with its marker syntax:
 
-Inside a module header they emit Verilog-2001 comma style, otherwise
-1995 `;` declarations. `?!` prefix on a regexp excludes matches.
+| Command | Marker | Effect |
+|---|---|---|
+| `AIM` / `AIC` / `AII` | `/*AUTOINOUTMODULE("Mod"[,"re"])*/`, `...COMP(...)`, `...IN(...)` | copy I/O declarations from another module (AIC complements directions, AII all-input) |
+| `AIMP` / `AIP` | `/*AUTOINOUTMODPORT("If","mp-re"[,"re"[,"prefix"]])*/`, `/*AUTOINOUTPARAM("Mod"[,"re"])*/` | copy I/O from an interface modport / `parameter` declarations from a module |
+| `AAMP` | `/*AUTOASSIGNMODPORT("If","mp-re","inst"[,"re"[,"prefix"]])*/` | `assign` statements wiring a modport to its interface instance (modport direction keywords carry across comma items) |
+| `AOE` | `/*AUTOOUTPUTEVERY[("re")]*/` | declare every declared non-input signal an output |
+| `ARI` | `/*AUTOREGINPUT*/` | `reg` for undeclared nets feeding AUTOINST input pins |
+| `AASC` | `/*AUTOASCIIENUM("sig","ascii_sig"[,"prefix"[,"onehot"]])*/` | ASCII decode register + `case` for an enum state vector (`// auto enum` parameters, `/* auto state_vector */` signal) |
+| `ALGC` | `/*AUTOLOGIC*/` | AUTOWIRE declaring `logic` (also `// verilog-auto-wire-type: "logic"`) |
+| `AUNU` | `/*AUTOUNUSED*/` | inline comma list of inputs/inouts not connected to any instance pin — for `wire _unused_ok = &{1'b0, /*AUTOUNUSED*/ 1'b0};` |
+| `AUND` | `/*AUTOUNDEF[("re")]*/` | `` `undef `` every `` `define `` seen since the previous AUTOUNDEF |
+| `AIL` / `AILL` | `/*AUTOINSERTLISP(!shell-cmd)*/` | insert the shell command's stdout before (AIL) / after (AILL) all other AUTOs |
+| `ATLINT` | — | report AUTO_TEMPLATE entries no instance consumes (quickfix) |
+| `APM` / `AFM` | `/*autopara*/ (A, B=2, C)`, `/*autofsm*/ (S...) cur nxt` | aligned `parameter` declarations / FSM localparams + two-always skeleton |
+| `AH` / `ATpl {file}` | — | prepend the `// +FHDR` header block / create a file from the project skeleton (`_tb` suffix = testbench) |
+| `KADT` / `KAR` | — | collapse the `/*autodef*/` / `/*autoarg*/` region back to its marker |
 
-AIM example — an empty shell module plus the `sub` definition from the
-AIU example gives:
-
-```verilog
-module shell;
-/*AUTOINOUTMODULE("sub")*/
-endmodule
-```
-
-becomes:
-
-```verilog
-module shell;
-/*AUTOINOUTMODULE("sub")*/
-// Beginning of automatic in/out/inouts (from specific module)
-output [7:0]            dout;
-output                  done;
-input                   clk;
-input [7:0]             din;
-// End of automatics
-endmodule
-```
-
-### AAMP — AUTOASSIGNMODPORT
-
-`/*AUTOASSIGNMODPORT("If","mp-re","inst"[,"re"[,"prefix"]])*/` builds
-`assign` statements wiring the modport signals to/from the interface
-instance — for UVM verification modules.
-
-With `bus_if.v` defining:
-
-```verilog
-interface bus_if;
-    logic       req;
-    logic       gnt;
-    logic [7:0] data;
-    modport master (output req, data, input gnt);
-endinterface
-```
-
-this:
-
-```verilog
-module top;
-    bus_if u_bus ();
-    /*AUTOASSIGNMODPORT("bus_if", "master", "u_bus")*/
-endmodule
-```
-
-becomes (modport outputs first, then inputs, each sorted by name; the
-direction keyword carries across comma items, so `data` is an output
-too):
-
-```verilog
-    /*AUTOASSIGNMODPORT("bus_if", "master", "u_bus")*/
-    // Beginning of automatic assignments from modport
-    assign data = u_bus.data;
-    assign req = u_bus.req;
-    assign u_bus.gnt = gnt;
-    // End of automatics
-```
-
-### AOE / ARI — AUTOOUTPUTEVERY / AUTOREGINPUT
-
-`/*AUTOOUTPUTEVERY[("re")]*/` declares every non-input signal an output
-(keeps synthesis from optimizing signals away). `/*AUTOREGINPUT*/`
-declares `reg` for undeclared nets feeding AUTOINST input pins
-(`// To <inst> of <Mod>.v`), handy for top-level test shells.
-
-AUTOOUTPUTEVERY acts on the module's declared signals:
-
-```verilog
-module top (
-    input wire clk
-);
-    /*AUTOOUTPUTEVERY*/
-    wire [7:0] dout_w;
-    wire       done_w;
-    sub u_sub (/*autoinst*/
-        .clk  (clk),
-        .din  (din),
-        .dout (dout_w),
-        .done (done_w)
-    );
-endmodule
-```
-
-becomes:
-
-```verilog
-    /*AUTOOUTPUTEVERY*/
-    // Beginning of automatic outputs (every signal)
-    output              done_w;
-    output [7:0]        dout_w;
-    // End of automatics
-```
-
-AUTOREGINPUT on the same instance:
-
-```verilog
-    /*AUTOREGINPUT*/
-    // Beginning of automatic reg inputs (for undeclared instantiated-module inputs)
-    reg                 clk;                    // To u_sub of sub.v
-    reg [7:0]           din;                    // To u_sub of sub.v
-    // End of automatics
-```
-
-### AASC — AUTOASCIIENUM
-
-`/*AUTOASCIIENUM("sig", "ascii_sig"[,"prefix"[,"onehot"]])*/` builds an
-ASCII decode register for an enum state vector: parameters tagged
-`// auto enum <name>` (or `synopsys enum`) define the states, the signal
-tagged `/* auto state_vector <sig> */` selects the vector. Emits
-`reg [8*N-1:0] ascii_sig; // Decode of sig` plus the `always @(sig)`
-case decoder (`"%Err"` default).
-
-The canonical shape (note the enum tag on the state variable itself,
-which links it to the parameter group):
-
-```verilog
-module fsm;
-    //== State enumeration
-    parameter [2:0] // auto enum state_info
-        SM_IDLE  = 3'b001,
-        SM_SEND  = 3'b010,
-        SM_WAIT1 = 3'b100;
-    //== State variables
-    reg [2:0] /* auto enum state_info */
-        state_r; /* auto state_vector state_r */
-    /*AUTOASCIIENUM("state_r", "state_ascii_r", "SM_")*/
-endmodule
-```
-
-becomes:
-
-```verilog
-    /*AUTOASCIIENUM("state_r", "state_ascii_r", "SM_")*/
-    // Beginning of automatic ASCII enum decoding
-    reg [39:0]          state_ascii_r;          // Decode of state_r
-    always @(state_r) begin
-       case ({state_r})
-         SM_IDLE:  state_ascii_r = "idle ";
-         SM_SEND:  state_ascii_r = "send ";
-         SM_WAIT1: state_ascii_r = "wait1";
-         default:  state_ascii_r = "%Erro";
-       endcase
-    end
-    // End of automatics
-```
-
-(the `"SM_"` prefix is stripped from the decoded names, which are
-space-padded to the widest state name).
-
-### ALGC — AUTOLOGIC
-
-`/*AUTOLOGIC*/` is AUTOWIRE declaring `logic` instead of `wire`. A file-local
-`// verilog-auto-wire-type: "logic"` switches `/*AUTOWIRE*/` the same way.
-
-```verilog
-    /*AUTOLOGIC*/
-    // Beginning of automatic wires (for undeclared instantiated-module outputs)
-    logic                                   done_w; // From u_sub of sub.v
-    logic        [7:0]                      dout_w; // From u_sub of sub.v
-    // End of automatics
-```
+The AIM family emits Verilog-2001 comma style inside a module header,
+1995 `;` declarations in the body; a `?!` regexp prefix excludes
+matches.
 
 ### ATIE — AUTOTIEOFF
 
@@ -678,98 +522,6 @@ variable):
     wire [7:0]          o_data                  = 8'h0;
     wire                o_vld_n                 = ~1'h0;
     // End of automatics
-```
-
-### AUNU — AUTOUNUSED
-
-`/*AUTOUNUSED*/` expands inline to the comma-separated list of unused
-input/inout signals — designed for
-`wire _unused_ok = &{1'b0, /*AUTOUNUSED*/ 1'b0};` so one pragma silences
-all unused warnings. `verilog-auto-unused-ignore-regexp` excludes names.
-
-"Unused" means *not connected to any instance input/inout pin*
-(connections inside `{...}`/`(...)` count as used); being read by an
-`assign` does not rescue a signal. In this module `spare_a`/`spare_b`
-feed nothing:
-
-```verilog
-module top (
-    input  wire       clk,
-    input  wire [7:0] din,
-    input  wire       spare_a,
-    input  wire       spare_b,
-    output wire [7:0] dout
-);
-    sub u_sub (/*autoinst*/
-        .clk (clk),
-        .din (din),
-        .dout(dout));
-    wire unused_ok = &{1'b0,
-                       /*AUTOUNUSED*/
-                       1'b0};
-endmodule
-```
-
-becomes:
-
-```verilog
-    wire unused_ok = &{1'b0,
-                       /*AUTOUNUSED*/
-                       // Beginning of automatic unused inputs
-                       spare_a,
-                       spare_b,
-                       // End of automatics
-                       1'b0};
-```
-
-### AUND — AUTOUNDEF
-
-`/*AUTOUNDEF[("re")]*/` emits `` `undef `` for every `` `define `` seen
-since the previous AUTOUNDEF (already-undef'd names are skipped, so
-`` `ifdef NEVER `` guards work), sorted, optionally regexp-filtered —
-keeps file-local defines out of the global namespace.
-
-```verilog
-`define FOO 8
-`define BAR 16
-module top;
-    /*AUTOUNDEF*/
-endmodule
-```
-
-becomes:
-
-```verilog
-    /*AUTOUNDEF*/
-    // Beginning of automatic undefs
-`undef BAR
-`undef FOO
-    // End of automatics
-```
-
-### AIL / AILL — AUTOINSERTLISP / AUTOINSERTLAST
-
-`/*AUTOINSERTLISP(!command args)*/` runs the shell command and inserts its
-stdout into a `// Beginning of automatic insert lisp` region, before (AIL)
-or after (AILL) all other AUTOs. Emacs evaluates elisp here; this port runs
-shell instead — the documented difference (elisp `defun`s are not
-supported, mirroring the AUTO_TEMPLATE `@"..."` subset rule).
-
-```verilog
-module top;
-    /*AUTOINSERTLISP(!echo // inserted by shell)*/
-endmodule
-```
-
-becomes:
-
-```verilog
-module top;
-    /*AUTOINSERTLISP(!echo // inserted by shell)*/
-    // Beginning of automatic insert lisp
-// inserted by shell
-    // End of automatics
-endmodule
 ```
 
 ### AINJ — inject AUTOs into legacy code
@@ -854,29 +606,6 @@ A stale `.stale(stale)` pin plus a pending re-expansion shows as:
  endmodule
 ```
 
-### ATLINT — unused AUTO_TEMPLATE lines
-
-Runs the EAI/EAP expansion with hit-tracking and lists template entries
-never consumed by any instance in the quickfix window
-(`verilog-auto-template-warn-unused`).
-
-For this buffer, `.nosuch` matches no port of `sub`, so it is reported;
-`.din` is consumed and stays silent:
-
-```verilog
-module top;
-    /* sub AUTO_TEMPLATE (
-        .din (data_in),
-        .nosuch (nosuch),
-    ) */
-    sub u_sub (/*autoinst*/);
-endmodule
-```
-
-```
-top.v:2: AUTO_TEMPLATE line unused: ".nosuch (nosuch)"
-```
-
 ### AF family — alignment
 
 Buffer-local formatting (no module files needed):
@@ -942,129 +671,6 @@ and with `AME` (emacs-flavored, ready for EAP + a template):
   ); */
 fifo #(/*autoinstparam*/)   u0_fifo(/*autoinst*/);
 ```
-
-### APM / AFM — parameter / FSM skeletons
-
-`/*autopara*/ (A, B=2, C)` expands into aligned `parameter`
-declarations:
-
-```verilog
-    /*autopara*/ (A, B=2, C)
-// Define parameter here
-parameter A = 2'd0;
-parameter B = 2'd2;
-parameter C = 2'd3;
-// End of automatic parameter
-```
-
-`/*autofsm*/ (IDLE,RUN,DONE) state nstate` expands into state
-localparams plus the two-always-block FSM skeleton (state register +
-next-state logic), with the state width derived from the state count:
-
-```verilog
-    /*autofsm*/ (IDLE,RUN,DONE) state nstate
-// Define fsm here
-// Define FSM parameter here
-localparam IDLE = 2'd0;
-localparam RUN  = 2'd1;
-localparam DONE = 2'd2;
-// End of automatic parameter for FSM
-always @(posedge clk or negedge rst_n) begin
-    if(!rst_n) begin
-        state[1:0] <= #`RD IDLE;
-    end else begin
-        state[1:0] <= #`RD nstate[1:0];
-    end
-end
-always @(*) begin
-    nstate[1:0] = state[1:0];
-    case(state[1:0])
-        IDLE: begin
-        end
-        RUN: begin
-        end
-        DONE: begin
-        end
-        default: begin
-        end
-    endcase
-end
-// End of automatic fsm
-```
-
-### AH / ATpl — file header & new file
-
-`AH` prepends the file header comment block (`// +FHDR`):
-
-```verilog
-// +FHDR----------------------------------------------------------------------
-//                 Copyright (c) 2026 .
-//                     ALL RIGHTS RESERVED
-//  This source file is the property of   Technology Co., Ltd. and
-//  may not be copied or distributed in any isomorphic form without the prior
-//  written consent of  Technology Co., Ltd.
-// ---------------------------------------------------------------------------
-// Filename      : hdr.v
-// Author        :
-// Created On    : 2026-10-08 18:47
-// Last Modified :
-// ---------------------------------------------------------------------------
-// Description:
-//
-//
-// -FHDR----------------------------------------------------------------------
-```
-
-`ATpl foo.v` creates a new file from the project skeleton (after the
-same `+FHDR` block) and opens it — a `_tb`/`tb` suffix produces the
-testbench skeleton:
-
-```verilog
-//`timescale 1ns/1ps
-
-module foo_tb(/*autoarg*/);
-/*autoreginput*/
-
-
-reg                                     clk;
-reg                                     rst_n;
-/*autodef off*/
-initial begin
-    clk = 1'b0;
-    forever #10 clk = ~clk;
-end
-initial begin
-    rst_n = 1'b0;
-    #52 rst_n = 1'b1;
-end
-initial begin
-    $fsdbDumpfile("main.fsdb") ;
-    $fsdbDumpvars(0,foo_tb,"+mda");
-end
-initial begin
-    #1000;
-    $finish;
-end
-/*autodef on*/
-
-//{{{
-/*autodef*/
-/*autowire*/
-/*autoreg*/
-//}}}
-
-//inst u_inst(/*autoinst*/);
-
-// Local Variables:
-// verilog-auto-inst-param-value:t
-// verilog-library-flags:("-y  <dir-of-file>" )
-// verilog-library-directories:("<dir-of-file>" )
-// End:
-```
-
-(the two library paths are written with the new file's own directory).
-New empty `.v`/`.sv` buffers get the skeleton automatically
-(BufNewFile).
 
 ### BPN / BP / BA — always-block snippets
 
@@ -1394,6 +1000,63 @@ Type rules:
 - hand-written declarations are kept (a provably stale numeric width is
   grown in place); append `//DT` ("don't touch") to exempt one
 - SystemVerilog `logic` is understood everywhere
+
+For-loop extraction in full — loop variables, unpacked dimensions
+from loop bounds, and widths grown from indexed part-selects:
+
+```verilog
+module top (
+    input  wire       clk,
+    input  wire [7:0] din,
+    output wire [7:0] dout
+);
+    /*autodef*/
+    generate
+        for (g = 0; g < 4; g = g + 1) begin: gen_ch
+            always @(posedge clk) begin
+                ch_data[g] <= din;
+            end
+        end
+    endgenerate
+    always @(posedge clk) begin
+        for (i = 0; i < 4; i = i + 1) begin
+            for (j = 0; j < 8; j = j + 1) begin
+                mem[i][j] <= din;
+            end
+            fifo[i*8 +: 8] <= din;
+        end
+    end
+    assign dout = ch_data[0];
+endmodule
+```
+
+generates:
+
+```verilog
+    /*autodef*/
+// Define io wire here
+// Define flip-flop registers here
+reg                                     ch_data [0:3];
+reg          [31:0]                     fifo;
+reg                                     mem [0:3] [0:7];
+// Define combination registers here
+// Define wires here
+// Define inst wires here
+// Define integer here
+genvar g;
+integer                                 i;
+integer                                 j;
+// Unresolved define signals here
+// End of automatic define
+```
+
+Reading the result: `g` became a `genvar` (generate loop), `i`/`j`
+`integer`s (procedural loops); `g`, `i`, `j` as indices became the
+unpacked dimensions `[0:3]`, `[0:3] [0:7]`; `fifo[i*8 +: 8]` grew the
+packed width to `[31:0]` (max index 24 + 8); plain loop-variable
+elements (`ch_data[g]`, `mem[i][j]`) keep scalar elements — only an
+explicit trailing part-select (`[7:0]`, `[i*8 +: 8]`) evidences an
+element width.
 
 ## AUTOWIRE / AUTOREG (AW/AREG)
 

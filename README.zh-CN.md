@@ -441,180 +441,29 @@ AR 会把它保留在 `//Inouts` 节，并在模块体内补一行
         end else begin
 ```
 
-### AIM / AIC / AII / AIMP / AIP —— 从别处复制 I/O
+### 其他命令（无 leader 映射）
 
-- `/*AUTOINOUTMODULE("Mod"[,"re"])*/`(AIM)：从另一个模块复制
-  input/output/inout 声明——写空壳模块的主力。
-- `/*AUTOINOUTCOMP("Mod"[,"re"[,"not-re"]])*/`(AIC)：同上但方向
-  取反（input 变 output）——写 testbench 用。
-- `/*AUTOINOUTIN("Mod"[,"re"])*/`(AII)：同上但全部声明为 input
-  ——写 monitor 用。
-- `/*AUTOINOUTMODPORT("If","mp-re"[,"re"[,"prefix"]])*/`(AIMP)：从
-  interface 的 modport 复制 I/O。
-- `/*AUTOINOUTPARAM("Mod"[,"re"])*/`(AIP)：复制 `parameter` 声明
-  （不带值，SystemVerilog-2009 风格）。
+其余 AUTO 命令没有默认按键，各在上方命令表里占一行，标记语法如下：
 
-标记放在模块头括号内时按 Verilog-2001 逗号风格展开，否则是 1995
-的 `;` 声明。正则带 `?!` 前缀表示排除。
+| 命令 | 标记 | 作用 |
+|---|---|---|
+| `AIM` / `AIC` / `AII` | `/*AUTOINOUTMODULE("Mod"[,"re"])*/`、`...COMP(...)`、`...IN(...)` | 从另一模块复制 I/O 声明（AIC 方向取反，AII 全部 input） |
+| `AIMP` / `AIP` | `/*AUTOINOUTMODPORT("If","mp-re"[,"re"[,"prefix"]])*/`、`/*AUTOINOUTPARAM("Mod"[,"re"])*/` | 从 interface modport 复制 I/O / 从模块复制 `parameter` 声明 |
+| `AAMP` | `/*AUTOASSIGNMODPORT("If","mp-re","inst"[,"re"[,"prefix"]])*/` | 生成 modport 与 interface 实例互连的 `assign`（方向关键字对后续逗号条目有效） |
+| `AOE` | `/*AUTOOUTPUTEVERY[("re")]*/` | 把每个已声明的非 input 信号声明为 output |
+| `ARI` | `/*AUTOREGINPUT*/` | 为喂给 AUTOINST input 引脚的未声明线网声明 `reg` |
+| `AASC` | `/*AUTOASCIIENUM("sig","ascii_sig"[,"prefix"[,"onehot"]])*/` | 枚举状态向量的 ASCII 解码寄存器 + `case`（`// auto enum` 参数、`/* auto state_vector */` 信号） |
+| `ALGC` | `/*AUTOLOGIC*/` | 声明 `logic` 的 AUTOWIRE（同 `// verilog-auto-wire-type: "logic"`） |
+| `AUNU` | `/*AUTOUNUSED*/` | 就地列出未连到任何实例引脚的 input/inout —— 供 `wire _unused_ok = &{1'b0, /*AUTOUNUSED*/ 1'b0};` |
+| `AUND` | `/*AUTOUNDEF[("re")]*/` | 把上一个 AUTOUNDEF 以来所有 `` `define `` 都 `` `undef `` |
+| `AIL` / `AILL` | `/*AUTOINSERTLISP(!shell-cmd)*/` | 在所有其他 AUTO 之前（AIL）/之后（AILL）插入 shell 命令的输出 |
+| `ATLINT` | — | 报告没有任何实例消费的 AUTO_TEMPLATE 条目（quickfix） |
+| `APM` / `AFM` | `/*autopara*/ (A, B=2, C)`、`/*autofsm*/ (S...) cur nxt` | 对齐的 `parameter` 声明 / FSM localparam + 两段式骨架 |
+| `AH` / `ATpl {file}` | — | 插入 `// +FHDR` 文件头 / 按工程骨架建新文件（`_tb` 后缀 = testbench） |
+| `KADT` / `KAR` | — | 把 `/*autodef*/` / `/*autoarg*/` 区域折叠回标记 |
 
-AIM 例子——空壳模块加上 AIU 例子的 `sub` 定义：
-
-```verilog
-module shell;
-/*AUTOINOUTMODULE("sub")*/
-endmodule
-```
-
-变为：
-
-```verilog
-module shell;
-/*AUTOINOUTMODULE("sub")*/
-// Beginning of automatic in/out/inouts (from specific module)
-output [7:0]            dout;
-output                  done;
-input                   clk;
-input [7:0]             din;
-// End of automatics
-endmodule
-```
-
-### AAMP —— AUTOASSIGNMODPORT
-
-`/*AUTOASSIGNMODPORT("If","mp-re","inst"[,"re"[,"prefix"]])*/` 生成
-把 modport 信号与 interface 实例互连的 `assign` 语句——UVM 验证
-模块常用。`bus_if.v` 定义：
-
-```verilog
-interface bus_if;
-    logic       req;
-    logic       gnt;
-    logic [7:0] data;
-    modport master (output req, data, input gnt);
-endinterface
-```
-
-则：
-
-```verilog
-module top;
-    bus_if u_bus ();
-    /*AUTOASSIGNMODPORT("bus_if", "master", "u_bus")*/
-endmodule
-```
-
-变为（先 modport 的 output 再 input，各自按名排序；方向关键字对
-其后所有逗号条目有效，所以 `data` 也是 output）：
-
-```verilog
-    /*AUTOASSIGNMODPORT("bus_if", "master", "u_bus")*/
-    // Beginning of automatic assignments from modport
-    assign data = u_bus.data;
-    assign req = u_bus.req;
-    assign u_bus.gnt = gnt;
-    // End of automatics
-```
-
-### AOE / ARI —— AUTOOUTPUTEVERY / AUTOREGINPUT
-
-`/*AUTOOUTPUTEVERY[("re")]*/` 把每个非 input 信号声明为 output
-（防综合优化掉）。作用于模块内已声明的信号：
-
-```verilog
-module top (
-    input wire clk
-);
-    /*AUTOOUTPUTEVERY*/
-    wire [7:0] dout_w;
-    wire       done_w;
-    sub u_sub (/*autoinst*/
-        .clk  (clk),
-        .din  (din),
-        .dout (dout_w),
-        .done (done_w)
-    );
-endmodule
-```
-
-变为：
-
-```verilog
-    /*AUTOOUTPUTEVERY*/
-    // Beginning of automatic outputs (every signal)
-    output              done_w;
-    output [7:0]        dout_w;
-    // End of automatics
-```
-
-`/*AUTOREGINPUT*/` 为喂给 AUTOINST input 引脚的未声明线网声明
-`reg`（注释 `// To <inst> of <Mod>.v`），写顶层测试壳常用：
-
-```verilog
-    /*AUTOREGINPUT*/
-    // Beginning of automatic reg inputs (for undeclared instantiated-module inputs)
-    reg                 clk;                    // To u_sub of sub.v
-    reg [7:0]           din;                    // To u_sub of sub.v
-    // End of automatics
-```
-
-### AASC —— AUTOASCIIENUM
-
-`/*AUTOASCIIENUM("sig", "ascii_sig"[,"prefix"[,"onehot"]])*/` 为
-枚举状态向量生成 ASCII 解码寄存器：以 `// auto enum <名>`（或
-`synopsys enum`）标记的参数定义状态，被
-`/* auto state_vector <sig> */` 标记的信号选定向量。生成
-`reg [8*N-1:0] ascii_sig; // Decode of sig` 加一个
-`always @(sig)` 的 case 解码器（默认 `"%Err"`）。
-
-规范写法（注意状态变量自身也要带 enum 标记，把它和参数组关联
-起来）：
-
-```verilog
-module fsm;
-    //== State enumeration
-    parameter [2:0] // auto enum state_info
-        SM_IDLE  = 3'b001,
-        SM_SEND  = 3'b010,
-        SM_WAIT1 = 3'b100;
-    //== State variables
-    reg [2:0] /* auto enum state_info */
-        state_r; /* auto state_vector state_r */
-    /*AUTOASCIIENUM("state_r", "state_ascii_r", "SM_")*/
-endmodule
-```
-
-变为：
-
-```verilog
-    /*AUTOASCIIENUM("state_r", "state_ascii_r", "SM_")*/
-    // Beginning of automatic ASCII enum decoding
-    reg [39:0]          state_ascii_r;          // Decode of state_r
-    always @(state_r) begin
-       case ({state_r})
-         SM_IDLE:  state_ascii_r = "idle ";
-         SM_SEND:  state_ascii_r = "send ";
-         SM_WAIT1: state_ascii_r = "wait1";
-         default:  state_ascii_r = "%Erro";
-       endcase
-    end
-    // End of automatics
-```
-
-（`"SM_"` 前缀会从解码名中去掉，名字按最宽的状态名补空格对齐。）
-
-### ALGC —— AUTOLOGIC
-
-`/*AUTOLOGIC*/` 是声明 `logic` 而非 `wire` 的 AUTOWIRE。文件局部
-变量 `// verilog-auto-wire-type: "logic"` 可让 `/*AUTOWIRE*/` 起
-同样作用：
-
-```verilog
-    /*AUTOLOGIC*/
-    // Beginning of automatic wires (for undeclared instantiated-module outputs)
-    logic                                   done_w; // From u_sub of sub.v
-    logic        [7:0]                      dout_w; // From u_sub of sub.v
-    // End of automatics
-```
+AIM 家族在模块头内按 Verilog-2001 逗号风格展开，在模块体内是 1995
+的 `;` 声明；正则带 `?!` 前缀表示排除。
 
 ### ATIE —— AUTOTIEOFF
 
@@ -644,97 +493,6 @@ endmodule
     wire [7:0]          o_data                  = 8'h0;
     wire                o_vld_n                 = ~1'h0;
     // End of automatics
-```
-
-### AUNU —— AUTOUNUSED
-
-`/*AUTOUNUSED*/` 就地展开为未使用的 input/inout 信号的逗号列表
-——设计用途是 `wire _unused_ok = &{1'b0, /*AUTOUNUSED*/ 1'b0};`，
-一条语句消掉全部未用信号告警。
-`verilog-auto-unused-ignore-regexp` 可排除名字。
-
-这里的"未使用"指**没有连到任何实例的 input/inout 引脚**（藏在
-`{...}`/`(...)` 里的连接算已用）；只被 `assign` 读取并不能让信号
-脱离列表。下例中 `spare_a`/`spare_b` 什么都不喂：
-
-```verilog
-module top (
-    input  wire       clk,
-    input  wire [7:0] din,
-    input  wire       spare_a,
-    input  wire       spare_b,
-    output wire [7:0] dout
-);
-    sub u_sub (/*autoinst*/
-        .clk (clk),
-        .din (din),
-        .dout(dout));
-    wire unused_ok = &{1'b0,
-                       /*AUTOUNUSED*/
-                       1'b0};
-endmodule
-```
-
-变为：
-
-```verilog
-    wire unused_ok = &{1'b0,
-                       /*AUTOUNUSED*/
-                       // Beginning of automatic unused inputs
-                       spare_a,
-                       spare_b,
-                       // End of automatics
-                       1'b0};
-```
-
-### AUND —— AUTOUNDEF
-
-`/*AUTOUNDEF[("re")]*/` 把上一个 AUTOUNDEF 以来见过的所有
-`` `define `` 都 `` `undef `` 掉（已经 undef 的跳过，所以
-`` `ifdef NEVER `` 守卫能工作），排序输出，可选正则过滤——防
-文件局部宏污染全局命名空间：
-
-```verilog
-`define FOO 8
-`define BAR 16
-module top;
-    /*AUTOUNDEF*/
-endmodule
-```
-
-变为：
-
-```verilog
-    /*AUTOUNDEF*/
-    // Beginning of automatic undefs
-`undef BAR
-`undef FOO
-    // End of automatics
-```
-
-### AIL / AILL —— AUTOINSERTLISP / AUTOINSERTLAST
-
-`/*AUTOINSERTLISP(!command args)*/` 执行 shell 命令并把 stdout
-插入 `// Beginning of automatic insert lisp` 区域，AIL 在所有其他
-AUTO 之前、AILL 在之后。Emacs 在这里求值 elisp，本移植版改为执行
-shell——这是有记载的差异（不支持 elisp `defun`，与
-AUTO_TEMPLATE `@"..."` 的子集规则一致）：
-
-```verilog
-module top;
-    /*AUTOINSERTLISP(!echo // inserted by shell)*/
-endmodule
-```
-
-变为：
-
-```verilog
-module top;
-    /*AUTOINSERTLISP(!echo // inserted by shell)*/
-    // Beginning of automatic insert lisp
-// inserted by shell
-    // End of automatics
-endmodule
 ```
 
 ### AINJ —— 给 legacy 代码注入 AUTO 标记
@@ -815,27 +573,6 @@ lint/回归检查。过时的 `.stale(stale)` 引脚加待重展开会显示为�
  endmodule
 ```
 
-### ATLINT —— 未使用的 AUTO_TEMPLATE 行
-
-带命中追踪地跑一次 EAI/EAP 展开，把从未被任何实例消费的模板条目
-列到 quickfix 窗口（`verilog-auto-template-warn-unused`）。下例中
-`.nosuch` 匹配不上 `sub` 的任何端口，会被报告；`.din` 被消费，
-保持沉默：
-
-```verilog
-module top;
-    /* sub AUTO_TEMPLATE (
-        .din (data_in),
-        .nosuch (nosuch),
-    ) */
-    sub u_sub (/*autoinst*/);
-endmodule
-```
-
-```
-top.v:2: AUTO_TEMPLATE line unused: ".nosuch (nosuch)"
-```
-
 ### AF 家族 —— 对齐
 
 只在当前 buffer 内做对齐（不需要模块文件）：
@@ -899,126 +636,6 @@ fifo  u0_fifo(/*autoinst*/);
   ); */
 fifo #(/*autoinstparam*/)   u0_fifo(/*autoinst*/);
 ```
-
-### APM / AFM —— 参数 / 状态机骨架
-
-`/*autopara*/ (A, B=2, C)` 展开为对齐的 `parameter` 声明：
-
-```verilog
-    /*autopara*/ (A, B=2, C)
-// Define parameter here
-parameter A = 2'd0;
-parameter B = 2'd2;
-parameter C = 2'd3;
-// End of automatic parameter
-```
-
-`/*autofsm*/ (IDLE,RUN,DONE) state nstate` 展开为状态 localparam
-加两段式 FSM 骨架（状态寄存器 + 次态组合逻辑），状态位宽按状态数
-自动推导：
-
-```verilog
-    /*autofsm*/ (IDLE,RUN,DONE) state nstate
-// Define fsm here
-// Define FSM parameter here
-localparam IDLE = 2'd0;
-localparam RUN  = 2'd1;
-localparam DONE = 2'd2;
-// End of automatic parameter for FSM
-always @(posedge clk or negedge rst_n) begin
-    if(!rst_n) begin
-        state[1:0] <= #`RD IDLE;
-    end else begin
-        state[1:0] <= #`RD nstate[1:0];
-    end
-end
-always @(*) begin
-    nstate[1:0] = state[1:0];
-    case(state[1:0])
-        IDLE: begin
-        end
-        RUN: begin
-        end
-        DONE: begin
-        end
-        default: begin
-        end
-    endcase
-end
-// End of automatic fsm
-```
-
-### AH / ATpl —— 文件头与新文件
-
-`AH` 在文件开头插入文件头注释块（`// +FHDR`）：
-
-```verilog
-// +FHDR----------------------------------------------------------------------
-//                 Copyright (c) 2026 .
-//                     ALL RIGHTS RESERVED
-//  This source file is the property of   Technology Co., Ltd. and
-//  may not be copied or distributed in any isomorphic form without the prior
-//  written consent of  Technology Co., Ltd.
-// ---------------------------------------------------------------------------
-// Filename      : hdr.v
-// Author        :
-// Created On    : 2026-10-08 18:47
-// Last Modified :
-// ---------------------------------------------------------------------------
-// Description:
-//
-//
-// -FHDR----------------------------------------------------------------------
-```
-
-`ATpl foo.v` 按工程骨架创建新文件（同样以 +FHDR 块开头）并打
-开——文件名带 `_tb`/`tb` 后缀时生成 testbench 骨架：
-
-```verilog
-//`timescale 1ns/1ps
-
-module foo_tb(/*autoarg*/);
-/*autoreginput*/
-
-
-reg                                     clk;
-reg                                     rst_n;
-/*autodef off*/
-initial begin
-    clk = 1'b0;
-    forever #10 clk = ~clk;
-end
-initial begin
-    rst_n = 1'b0;
-    #52 rst_n = 1'b1;
-end
-initial begin
-    $fsdbDumpfile("main.fsdb") ;
-    $fsdbDumpvars(0,foo_tb,"+mda");
-end
-initial begin
-    #1000;
-    $finish;
-end
-/*autodef on*/
-
-//{{{
-/*autodef*/
-/*autowire*/
-/*autoreg*/
-//}}}
-
-//inst u_inst(/*autoinst*/);
-
-// Local Variables:
-// verilog-auto-inst-param-value:t
-// verilog-library-flags:("-y  <文件所在目录>" )
-// verilog-library-directories:("<文件所在目录>" )
-// End:
-```
-
-（两个库路径写的是新文件自己的目录。）新建空的 `.v`/`.sv`
-buffer 时会自动套骨架（BufNewFile）。
 
 ### BPN / BP / BA —— always 块片段
 
@@ -1336,6 +953,62 @@ def shout(sig):
 - 手写声明保留（数值上可证明过时的位宽会原地扩大）；在声明后加
   `//DT`(don't touch）可豁免
 - 全面支持 SystemVerilog 的 `logic`
+
+for 循环提取全例——循环变量、按循环边界得出的 unpacked 维度、
+以及从索引 part-select 长出的位宽：
+
+```verilog
+module top (
+    input  wire       clk,
+    input  wire [7:0] din,
+    output wire [7:0] dout
+);
+    /*autodef*/
+    generate
+        for (g = 0; g < 4; g = g + 1) begin: gen_ch
+            always @(posedge clk) begin
+                ch_data[g] <= din;
+            end
+        end
+    endgenerate
+    always @(posedge clk) begin
+        for (i = 0; i < 4; i = i + 1) begin
+            for (j = 0; j < 8; j = j + 1) begin
+                mem[i][j] <= din;
+            end
+            fifo[i*8 +: 8] <= din;
+        end
+    end
+    assign dout = ch_data[0];
+endmodule
+```
+
+生成：
+
+```verilog
+    /*autodef*/
+// Define io wire here
+// Define flip-flop registers here
+reg                                     ch_data [0:3];
+reg          [31:0]                     fifo;
+reg                                     mem [0:3] [0:7];
+// Define combination registers here
+// Define wires here
+// Define inst wires here
+// Define integer here
+genvar g;
+integer                                 i;
+integer                                 j;
+// Unresolved define signals here
+// End of automatic define
+```
+
+读法：`g` 成了 `genvar`（generate 循环）、`i`/`j` 成了 `integer`
+（过程循环）；`g`、`i`、`j` 身为索引给出了 unpacked 维度
+`[0:3]`、`[0:3] [0:7]`；`fifo[i*8 +: 8]` 把 packed 位宽长到
+`[31:0]`（最大索引 24 + 8）；而纯循环变量元素（`ch_data[g]`、
+`mem[i][j]`）保持标量元素——只有显式带尾巴的 part-select
+（`[7:0]`、`[i*8 +: 8]`）才构成元素位宽证据。
 
 ## AUTOWIRE / AUTOREG (AW/AREG)
 
