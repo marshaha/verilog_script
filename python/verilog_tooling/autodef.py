@@ -1664,6 +1664,21 @@ def _classify_lhs(
                 # msb expression as the width
                 elem = re.sub(r"\s+", "", g)
                 continue
+            pm = re.fullmatch(r"(.+?)\s*([+-])\s*:\s*(.+)", g)
+            if pm:
+                # indexed part-select [BASE +: W] / [BASE -: W]: the span
+                # tops out at max(BASE)+W-1 (+:) or max(BASE) (-:) over
+                # the loop bounds — the same formula
+                # _record_inst_part_select uses for instance connections.
+                hi = _eval_index(pm.group(1), bounds, sym_hi)
+                if hi is None:
+                    elem = None  # base not resolvable: no fabricated width
+                elif pm.group(2) == "+":
+                    msb = _combine_width(hi, pm.group(3).strip())
+                    elem = "0:0" if msb == "c0" else f"{msb}:0"
+                else:
+                    elem = f"{hi}:0"
+                continue
             # a loop-variable expression used as a bit select: j*2, j*2+1, j+1
             hi = _eval_index(g, bounds, sym_hi)
             if isinstance(hi, str):
