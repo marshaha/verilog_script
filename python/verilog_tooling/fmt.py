@@ -294,6 +294,15 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         if _top_level_comma(body_ns):
             out.append(line)
             continue
+        # A port declaration with an initializer (``output logic [W-1:0]
+        # cx = START_X,``) is not a plain declaration: the name
+        # extraction below assumes the name is the last token and would
+        # rebuild the port as ``START_X``, dropping the real name and
+        # the default value.  Leave it untouched (ADF already guards
+        # the same shape for wire/reg declarations).
+        if _INIT_ASSIGN_RE.search(body):
+            out.append(line)
+            continue
         # an optional reg/wire/logic after the direction must be kept
         # (output reg [DW-1:0] Q — dropping it turns the port into a wire)
         dir_m = re.match(r"\s*(?:input|output|inout)\s*", body_ns)
@@ -313,9 +322,7 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         # the name is the identifier at the end of the declaration,
         # optionally followed by unpacked dimensions (``arr_i [2]``):
         # the dims are kept with the name — end-anchored ``\w+\s*$``
-        # alone loses the name entirely when a dim is present.  Any
-        # other trailing text (e.g. an initializer) keeps the old
-        # last-word behaviour.
+        # alone loses the name entirely when a dim is present.
         nm = re.search(r"(\w+)((?:\s*\[[^\]]*\])*)\s*$", body_ns)
         if nm:
             port_name = nm.group(1) + re.sub(r"\s+", " ", nm.group(2))

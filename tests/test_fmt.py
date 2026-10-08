@@ -136,6 +136,21 @@ def test_apf_keeps_udt_when_name_glued_to_range():
     assert out[0].rstrip().endswith("mst_reqs_o,"), out
 
 
+def test_apf_leaves_port_with_initializer_untouched():
+    # hdmi: ``output logic [BIT_WIDTH-1:0] cx = START_X,`` — a port
+    # default.  The last-token name extraction used to rebuild this as
+    # a port named START_X, deleting cx and the initializer (and
+    # colliding with the START_X parameter: Verilator duplicate).
+    lines = [
+        "    output logic [BIT_WIDTH-1:0] cx = START_X,",
+        "    output logic [BIT_HEIGHT-1:0] cy = START_Y,",
+        "    input logic clk,",
+    ]
+    out = auto_port_format(lines)
+    assert out[:2] == lines[:2]
+    assert "cx = START_X" in out[0] and "cy = START_Y" in out[1]
+
+
 def test_apf_aligns_ports_and_preserves_terminator_and_comment():
     out = auto_port_format(APF_BUF)
     assert out == [
