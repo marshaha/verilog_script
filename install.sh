@@ -2,7 +2,7 @@
 # verilog_script one-click installer.
 #
 #   ./install.sh            install into ~/.vim (plugin + python package)
-#   ./install.sh --check    only check the environment (vim + python>=3.8)
+#   ./install.sh --check    only check the environment (vim + python>=3.7)
 #   ./install.sh --manager  print plugin-manager snippets, install nothing
 #
 # Plugin-manager users (vim-plug / Vundle / packer / dein) do NOT need this
@@ -11,7 +11,7 @@ set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MIN_PY_MAJOR=3
-MIN_PY_MINOR=8
+MIN_PY_MINOR=7
 
 err() { echo "[verilog_script] ERROR: $*" >&2; exit 1; }
 info() { echo "[verilog_script] $*"; }
@@ -52,7 +52,7 @@ Plugin-manager snippets (add to your vimrc):
   " dein.vim
   call dein#add('marshaha/verilog_script')
 
-Requirements: Python >= 3.8 in PATH (or set g:verilog_tooling_python).
+Requirements: Python >= 3.7 in PATH (or set g:verilog_tooling_python).
 EOF
         exit 0
         ;;
