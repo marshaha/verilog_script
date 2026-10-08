@@ -1326,6 +1326,37 @@ def _always_regions(lines: Sequence[str]) -> list[tuple[int, int]]:
     return regions
 
 
+_FN_HEADER = re.compile(
+    r"\b(?:function|task)\s+(?:automatic\s+)?(?:\[[^\]]*\]\s*)?(?:signed\s+)?([A-Za-z_]\w*)"
+)
+
+
+def _function_names(lines: Sequence[str]) -> set[str]:
+    """Names of the buffer's function/task definitions themselves."""
+    names: set[str] = set()
+    for raw in lines:
+        m = _FN_HEADER.search(re.sub(r"//.*$", "", raw))
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+def _only_in_regions(
+    name: str, lines: Sequence[str], regions: Sequence[tuple[int, int]]
+) -> bool:
+    """True when every whole-word occurrence of NAME sits inside REGIONS
+    (1-based line ranges) — a function/task-local identifier by usage."""
+    pat = re.compile(r"\b" + re.escape(name) + r"\b")
+    hits = [
+        ln
+        for ln, raw in enumerate(lines, start=1)
+        if pat.search(re.sub(r"//.*$", "", raw))
+    ]
+    return bool(hits) and all(
+        any(s <= ln <= e for s, e in regions) for ln in hits
+    )
+
+
 def _loop_var_decls(lines: Sequence[str]) -> list[tuple[str, str]]:
     """(name, kind) for each for-loop variable that needs a declaration:
     kind is ``genvar`` only for a PURE generate-for (header inside a
@@ -2779,6 +2810,16 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     ):
         for name in excluded:
             unresolved.pop(name, None)
+    fn_regions = _function_regions(lines)
+    if fn_regions:
+        # function/task scope: the callable's own name, plus every
+        # identifier whose occurrences all live inside a function/task
+        # body (its ports, locals and loop variables), are not module
+        # signals and never unresolved at module level
+        fn_names = _function_names(lines)
+        for name in list(unresolved):
+            if name in fn_names or _only_in_regions(name, lines, fn_regions):
+                unresolved.pop(name, None)
     inst_headers = _instance_headers(lines, modules)
     orphan_idxs = _waived_orphan_lines(lines)
 
@@ -2852,6 +2893,11 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             if region_start is not None:
                 in_auto_region = True
         i = j
+        if any(s <= i + 1 <= e for s, e in fn_regions):
+            # function/task bodies are a separate scope: their ports,
+            # locals and loop variables are not module signals
+            i += 1
+            continue
         line = _strip_line(lines[i])
         if _PORT_LINE.match(line) or _DATA_LINE.match(line) or _is_typedef_decl(line):
             # a declaration may span lines (name on the next line, etc.) and

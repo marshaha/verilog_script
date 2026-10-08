@@ -2365,3 +2365,52 @@ endmodule
     fifo_lines = [l for l in out.splitlines() if "fifo" in l and "assign" not in l]
     assert fifo_lines and all("[" not in l.split("fifo")[0] or True for l in fifo_lines)
     assert decl("reg", "", "fifo") in out
+
+
+# ---------------------------------------------------------------------------
+# function/task bodies are their own scope, not module signals
+
+
+def test_function_locals_not_module_signals():
+    text = """\
+module top (input clk, input [7:0] din, output [7:0] dout);
+/*autodef*/
+function [7:0] f;
+    input [7:0] x;
+    begin
+        for (i = 0; i < 8; i = i + 1) begin
+            acc[i] = x;
+        end
+        f = acc[0];
+    end
+endfunction
+assign dout = f(din);
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # no module-level wire for the function's input port, no unresolved
+    # noise for its loop variable, accumulator or the function itself
+    assert "unresolved" not in out
+    assert not re.search(r"(?m)^(wire|reg|integer)\s+(\[7:0\]\s+)?(x|acc|f|i);", out)
+
+
+def test_module_signal_used_in_function_stays():
+    text = """\
+module top (input clk, output [7:0] dout);
+/*autodef*/
+function [7:0] f;
+    input [7:0] x;
+    begin
+        f = x + cfg;
+    end
+endfunction
+assign dout = f(cfg);
+assign cfg = 8'd3;
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # cfg is driven at module level (and only read inside the function):
+    # it must still be declared; the function's own input must not be
+    assert re.search(r"(?m)^wire\s+(\[7:0\]\s+)?cfg;", out)
+    assert not re.search(r"(?m)^wire\s+(\[7:0\]\s+)?x;", out)
+    assert "unresolved" not in out
