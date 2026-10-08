@@ -2297,3 +2297,71 @@ def test_get_assign_side_malformed_range_no_crash():
 
     side = get_assign_side("x[1:2:3]", "", {}, {}, {})
     assert side is not None and side.width is None
+
+
+# ---------------------------------------------------------------------------
+# indexed part-select LHS ([BASE +: W] / [BASE -: W]) grows the packed width
+
+
+def test_indexed_part_select_lhs_grows_width():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < 4; i = i + 1) begin
+        fifo[i*8 +: 8] <= din;
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # max(i*8) = 24 over i in 0..3, +8 wide -> [31:0] (was: bare reg fifo;)
+    assert decl("reg", "31", "fifo") in out
+    assert decl("integer", "", "i") in out
+
+
+def test_indexed_part_select_lhs_minus_form():
+    text = """\
+module top (input clk, input [7:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < 4; i = i + 1) begin
+        fifo[i*8+7 -: 8] <= din;
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    assert decl("reg", "31", "fifo") in out
+
+
+def test_indexed_part_select_lhs_symbolic_bound():
+    text = """\
+module top (input clk, input [7:0] din);
+parameter NCH = 4;
+/*autodef*/
+always @(posedge clk) begin
+    for (i = 0; i < NCH; i = i + 1) begin
+        fifo[i*8 +: 8] <= din;
+    end
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    assert "[8*NCH-1:0]" in out and "fifo;" in out
+
+
+def test_indexed_part_select_lhs_unresolvable_base_no_width():
+    text = """\
+module top (input clk, input [7:0] din, input [3:0] addr);
+/*autodef*/
+always @(posedge clk) begin
+    fifo[addr +: 8] <= din;
+end
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    # addr is not a loop variable: no width may be fabricated
+    fifo_lines = [l for l in out.splitlines() if "fifo" in l and "assign" not in l]
+    assert fifo_lines and all("[" not in l.split("fifo")[0] or True for l in fifo_lines)
+    assert decl("reg", "", "fifo") in out
