@@ -859,39 +859,109 @@ def _build_gen(sections, indent_pt: int, col_eff: int, closer: str) -> str:
     emits by default, at column col_eff + 24 (col_eff + 16 when deeper).
     A star (.*) expansion instead tags non-templated pins with
     ``// Implicit .*`` so they can be deleted again on save.
+
+    Entries are (name, conn, comment, guard); GUARD is a port's
+    preprocessor condition tuple from the submodule header (empty for
+    unconditional pins).  Guarded pins are re-emitted inside their
+    `` `ifdef ``/`` `ifndef ``/`` `endif `` directives.  Commas must be
+    right in every macro branch: between two adjacent pins the
+    separator rides on the earlier pin when the later pin is present
+    whenever the earlier is, on the later pin (leading comma) when the
+    earlier is present whenever the later is, and on its own line
+    under the intersection guard when the two guards are incomparable.
+    The final pin never carries a trailing comma; when it is guarded
+    the closer goes on its own line after the closing `` `endif ``.
     """
     # verilog-mode: indent-to(col_eff + 24) then insert " // ..." (leading
     # space), so the comment text starts at col_eff + 24 + 1.
     comment_col = col_eff + (24 if col_eff < 48 else 16) + 1
-    out = []
-    last_comma = -1  # comma position of the last port line (always out[-1])
-    last_comment = None
-    for header, entries in sections:
-        out.append(" " * indent_pt + header)
-        for name, conn, comment in entries:
-            line = " " * indent_pt + "." + name
-            if conn is not None:  # None => SystemVerilog .name syntax
-                # indent-to col_eff: no padding when the name already reaches
-                # or passes the column (matches verilog-mode).
-                line += " " * max(col_eff - len(line), 0) + "(" + conn + ")"
-            line += ","
-            last_comma = len(line) - 1
-            last_comment = comment
-            if comment:
-                line += " " * max(comment_col - len(line), 1) + comment
-            out.append(line)
-    if last_comma < 0:
+    if not any(entries for _h, entries in sections):
         return ""  # no ports at all
-    # strip the comment off the last line, replace the trailing "," with the
-    # closer, then re-add the comment padded to the same target column.
-    last = out[-1]
-    if last_comment:
-        last = last[: last.index(last_comment)].rstrip()
-    last = last[:last_comma] + closer
-    if last_comment:
-        last += " " * max(comment_col - len(last), 1) + last_comment
-    out[-1] = last
+    if not any(guard for _h, entries in sections for *_e, guard in entries):
+        out = []
+        last_comma = -1  # comma position of the last port line (always out[-1])
+        last_comment = None
+        for header, entries in sections:
+            out.append(" " * indent_pt + header)
+            for name, conn, comment, _guard in entries:
+                line = " " * indent_pt + "." + name
+                if conn is not None:  # None => SystemVerilog .name syntax
+                    # indent-to col_eff: no padding when the name already reaches
+                    # or passes the column (matches verilog-mode).
+                    line += " " * max(col_eff - len(line), 0) + "(" + conn + ")"
+                line += ","
+                last_comma = len(line) - 1
+                last_comment = comment
+                if comment:
+                    line += " " * max(comment_col - len(line), 1) + comment
+                out.append(line)
+        if last_comma < 0:
+            return ""  # no ports at all
+        # strip the comment off the last line, replace the trailing "," with
+        # the closer, then re-add the comment padded to the same target column.
+        last = out[-1]
+        if last_comment:
+            last = last[: last.index(last_comment)].rstrip()
+        last = last[:last_comma] + closer
+        if last_comment:
+            last += " " * max(comment_col - len(last), 1) + last_comment
+        out[-1] = last
+        return "\n" + "\n".join(out)
+
+    flat = [
+        (si, name, conn, comment, guard)
+        for si, (_h, entries) in enumerate(sections)
+        for (name, conn, comment, guard) in entries
+    ]
+    guards = [g for *_x, g in flat]
+    from .inst import guard_separator_plan
+
+    trailing, leading, bridges = guard_separator_plan(guards)
+    n = len(flat)
+
+    out: list[str] = []
+    cur: tuple = ()
+
+    def guard_to(target: tuple) -> None:
+        nonlocal cur
+        while cur != target[: len(cur)]:
+            out.append(" " * indent_pt + "`endif")
+            cur = cur[:-1]
+        for macro, pol in target[len(cur) :]:
+            out.append(" " * indent_pt + ("`ifdef " if pol else "`ifndef ") + macro)
+        cur = target
+
+    def pin_line(idx: int, last: bool) -> str:
+        _si, name, conn, comment, _g = flat[idx]
+        line = " " * indent_pt + (", ." if leading[idx] else ".") + name
+        if conn is not None:  # None => SystemVerilog .name syntax
+            line += " " * max(col_eff - len(line), 0) + "(" + conn + ")"
+        if trailing[idx]:
+            line += ","
+        if last and not flat[idx][4]:
+            line += closer
+        if comment:
+            line += " " * max(comment_col - len(line), 1) + comment
+        return line
+
+    prev_si = -1
+    for idx in range(n):
+        si = flat[idx][0]
+        if idx > 0 and (idx - 1) in bridges:
+            guard_to(bridges[idx - 1])
+            out.append(" " * indent_pt + ",")
+            guard_to(())
+        if si != prev_si:
+            guard_to(())  # a guard never spans a section header
+            out.append(" " * indent_pt + sections[si][0])
+            prev_si = si
+        guard_to(flat[idx][4])
+        out.append(pin_line(idx, idx == n - 1))
+    guard_to(())
+    if flat[-1][4]:
+        out.append(" " * indent_pt + closer)
     return "\n" + "\n".join(out)
+
 
 def _replace_region(
     text: str,
@@ -1297,7 +1367,7 @@ def _auto_inst_one(
                 comment = "// Implicit .*"
             else:
                 comment = None
-            entries.append((port.name, conn, comment))
+            entries.append((port.name, conn, comment, port.guard))
         if entries:
             sections.append((header, entries))
     if not sections:
@@ -1423,7 +1493,7 @@ def _auto_param_one(
             # are reset, not preserved
             conn = param.name
         entries.append((param.name, conn,
-                        "// Templated" if templated else None))
+                        "// Templated" if templated else None, ()))
     if not entries:
         return text
     indent_pt = _indent_pt(text, open_idx)

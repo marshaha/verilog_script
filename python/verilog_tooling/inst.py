@@ -43,7 +43,7 @@ import os
 import sys
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence, Union
 
@@ -155,6 +155,13 @@ class Port:
     is_interface: bool = False
     modport: str | None = None
     iface: str | None = None
+    # preprocessor guard conditions enclosing this port in the
+    # submodule header: (("MACRO", True),) = inside `ifdef MACRO;
+    # (("MACRO", False),) = its `else branch (or `ifndef MACRO).
+    # Empty for an unconditional port.  Instance expansions re-emit
+    # the guards around the pin connection so a conditionally
+    # compiled port stays conditional in the parent.
+    guard: tuple[tuple[str, bool], ...] = ()
 
     def __post_init__(self):
         # positional construction Port(name, dir, width) implies one packed dim
@@ -182,6 +189,151 @@ class Keep:
 
 
 Entry = Union[Port, Keep]
+
+_PP_BRANCH = re.compile(r"^\s*`(ifdef|ifndef|elsif|else|endif)\b\s*([A-Za-z_]\w*)?")
+
+
+def _guard_stack_after(stack: "list[list[tuple[str, bool]]]", line: str) -> None:
+    """Apply a preprocessor directive LINE to the guard frame STACK.
+
+    A frame is the condition list of one `` `ifdef `` nesting level:
+    `` `ifdef X `` opens ``[(X, True)]`` (`` `ifndef `` opens
+    ``[(X, False)]``); `` `elsif Y `` negates the frame's last
+    condition and appends ``(Y, True)``; `` `else `` negates the last
+    condition; `` `endif `` closes the frame.  Directives that do not
+    parse (or arrive with no open frame) are ignored.
+    """
+    m = _PP_BRANCH.match(line)
+    if not m:
+        return
+    kind, macro = m.group(1), m.group(2) or ""
+    if kind in ("ifdef", "ifndef"):
+        stack.append([(macro, kind == "ifdef")])
+    elif kind == "elsif":
+        if stack and stack[-1]:
+            name, pol = stack[-1][-1]
+            stack[-1][-1] = (name, not pol)
+            stack[-1].append((macro, True))
+    elif kind == "else":
+        if stack and stack[-1]:
+            name, pol = stack[-1][-1]
+            stack[-1][-1] = (name, not pol)
+    elif kind == "endif":
+        if stack:
+            stack.pop()
+
+
+def _flat_guard(stack: "list[list[tuple[str, bool]]]") -> tuple[tuple[str, bool], ...]:
+    """The active guard conditions, outermost first."""
+    return tuple(cond for frame in stack for cond in frame)
+
+
+def guard_separator_plan(
+    guards: "list[tuple[tuple[str, bool], ...]]",
+) -> "tuple[list[bool], list[bool], dict[int, tuple]]":
+    """Comma placement for a pin sequence with preprocessor guards.
+
+    A separator between two pins that end up consecutive in some macro
+    branch must exist exactly in the branches where both are present.
+    A trailing comma on pin i is safe when some later pin is present
+    whenever i is (its conditions are a subset of i's); a leading
+    comma on pin j is safe when some earlier pin is present whenever
+    j is.  When neither holds for an adjacent pair, the comma goes on
+    its own line under the two guards combined (it fires only where
+    both pins are present).  Returns (trailing, leading, bridges);
+    the last pin never carries a trailing comma.  Pairs of
+    non-adjacent pins are covered whenever an unguarded (or
+    condition-subset) pin exists on the far side; sequences of
+    mutually incomparable guards with no such anchor remain a known
+    limitation.
+    """
+    gsets = [set(g) for g in guards]
+    n = len(guards)
+    trailing = [False] * n  # pin i carries the separator after it
+    leading = [False] * n  # pin i carries the separator before it
+    bridges: dict[int, tuple] = {}  # after pin i: comma under this guard
+    for i in range(n - 1):
+        trailing[i] = any(gsets[j] <= gsets[i] for j in range(i + 1, n))
+    for j in range(1, n):
+        leading[j] = not trailing[j - 1] and any(
+            gsets[i] <= gsets[j] for i in range(j)
+        )
+    for i in range(n - 1):
+        if not trailing[i] and not leading[i + 1]:
+            bridges[i] = tuple(dict.fromkeys([*guards[i], *guards[i + 1]]))
+    return trailing, leading, bridges
+
+
+def _set_trailing_comma(line: str, want: bool) -> str:
+    """Force the pin-line separator comma on or off; the comma sits
+    after the connection ``)``, before any ``//`` comment."""
+    head, sep, tail = line.partition("//")
+    head = head.rstrip()
+    if want and not head.endswith(","):
+        head += ","
+    elif not want and head.endswith(","):
+        head = head[:-1]
+    return head + (sep + tail if sep else "")
+
+
+def _render_new_pin_lines(
+    items: "list[tuple[Port, str]]",
+    prefix_max_len: int,
+    suffix_max_len: int,
+    date: str,
+    anchor: bool,
+) -> "tuple[bool | None, list[str]]":
+    """Render INST_NEW pin lines for ITEMS [(Port, conn)].
+
+    Returns (anchor_trailing, lines): ANCHOR_TRAILING tells the caller
+    whether a kept pin line right before these must carry a trailing
+    comma (None when there is no anchor or no guarded item, meaning
+    the caller's legacy rule applies).  Guarded ports are wrapped in
+    their `` `ifdef ``/`` `ifndef ``/`` `endif `` directives with
+    commas placed per :func:`guard_separator_plan` over the sequence
+    [anchor] + items, so both macro branches keep exactly the commas
+    they need.
+    """
+    suffix = f" // INST_NEW {date}"
+    if not items:
+        return None, []
+    guards = [p.guard for p, _c in items]
+    if not any(guards):
+        last_name = items[-1][0].name
+        return None, [
+            format_connection(p, c, prefix_max_len, suffix_max_len, p.name == last_name)
+            + suffix
+            for p, c in items
+        ]
+    seq = ([()] if anchor else []) + guards
+    off = 1 if anchor else 0
+    trailing, leading, bridges = guard_separator_plan(seq)
+    lines: list[str] = []
+    cur: tuple = ()
+
+    def guard_to(target: tuple) -> None:
+        nonlocal cur
+        while cur != target[: len(cur)]:
+            lines.append("    `endif")
+            cur = cur[:-1]
+        for macro, pol in target[len(cur) :]:
+            lines.append("    " + ("`ifdef " if pol else "`ifndef ") + macro)
+        cur = target
+
+    for k, (port, conn) in enumerate(items):
+        idx = k + off
+        if idx > 0 and (idx - 1) in bridges:
+            guard_to(bridges[idx - 1])
+            lines.append("    ,")
+            guard_to(())
+        guard_to(port.guard)
+        line = format_connection(port, conn, prefix_max_len, suffix_max_len, False)
+        line = _set_trailing_comma(line, trailing[idx])
+        if leading[idx]:
+            line = "    , " + line[4:]
+        lines.append(line + suffix)
+    guard_to(())
+    return (trailing[0] if anchor else None), lines
 
 
 @dataclass(frozen=True)
@@ -611,6 +763,7 @@ def parse_module_ports(
     _hdr_depth = 0
     _param_next = False
     decl_open = False  # the previous declaration ended mid-list (trailing ,)
+    guard_stack: list[list[tuple[str, bool]]] = []  # `ifdef frames, port list only
     mod_name = name
     in_block_comment = False
     n_lines = len(lines)
@@ -682,6 +835,7 @@ def parse_module_ports(
         ):
             if portlist_closed or not (portlist_opened or have_port):
                 continue  # outside the module's port list
+            _guard_stack_after(guard_stack, line)
             if (
                 _BLANK.match(line)
                 and entries
@@ -706,6 +860,9 @@ def parse_module_ports(
                 joined += " " + nxt
             ports_here = _parse_port_line_multi(joined)
             if ports_here:
+                g = _flat_guard(guard_stack)
+                if g:
+                    ports_here = [replace(p, guard=g) for p in ports_here]
                 entries.extend(ports_here)
                 have_port = True
                 # a join (j > idx) already swallowed the following lines;
@@ -735,6 +892,7 @@ def parse_module_ports(
                             direction=proto.direction,
                             width=proto.width,
                             packed=proto.packed,
+                            guard=_flat_guard(guard_stack),
                         )
                     )
             decl_open = _strip_lc(line).rstrip().endswith(",")
@@ -749,6 +907,7 @@ def parse_module_ports(
                         is_interface=True,
                         modport=im.group(2),
                         iface=im.group(1),
+                        guard=_flat_guard(guard_stack),
                     )
                 )
                 have_port = True
@@ -1260,7 +1419,11 @@ class VerilogBuffer:
             at_value = template_at_value(template, inst) if template else ""
             prefix_max_len, suffix_max_len = get_port_max_len(moddef.entries, sort=sort)
             opener = re.sub(r"\);\s*", "", line, count=1)
-            if "--oneline" in line:
+            if "--oneline" in line and not any(
+                isinstance(e, Port) and e.guard for e in moddef.entries
+            ):
+                # guarded ports need directive lines of their own: the
+                # one-line form falls back to the multi-line emission
                 parts = [opener]
                 for entry in moddef.entries:
                     if not isinstance(entry, Port):
@@ -1291,15 +1454,30 @@ class VerilogBuffer:
                 (k for k, (e, _) in enumerate(emitted) if isinstance(e, Port)),
                 default=-1,
             )
+            port_rows: list[tuple[int, Port]] = []
             for k, (entry, conn) in enumerate(emitted):
                 if isinstance(entry, Keep):
                     out.append(self._emit_keep(entry))
                     continue
+                port_rows.append((len(out), entry))
                 out.append(
                     format_connection(
                         entry, conn, prefix_max_len, suffix_max_len, k == last_idx
                     )
                 )
+            if len(port_rows) > 1 and port_rows[-1][1].guard:
+                # the last port is conditionally compiled: the previous
+                # pin's trailing comma would dangle when the guard is
+                # off, so the separator moves inside the guard as a
+                # leading comma (safe when the previous pin is present
+                # whenever this one is)
+                lrow, lport = port_rows[-1]
+                prow, pport = port_rows[-2]
+                out[prow] = _set_trailing_comma(out[prow], False)
+                if not pport.guard or set(pport.guard) <= set(lport.guard):
+                    out[lrow] = "    , " + out[lrow][4:]
+                else:  # incomparable guards: keep the previous comma
+                    out[prow] = _set_trailing_comma(out[prow], True)
             out.append(");")
         return VerilogBuffer(out)
 
@@ -1365,19 +1543,18 @@ class VerilogBuffer:
             if self.stub(i):
                 # stub instance: nothing to preserve; every port is new
                 out.append(re.sub(r"\);\s*", "", line, count=1))
-                last_name = moddef.last_port_name()
+                new_items = []
                 for port in moddef.ports:
                     conn = self._templated_or_identity(
                         template, port, at_value, template_required, inst_vector
                     )
                     if conn is None:
                         continue
-                    out.append(
-                        format_connection(
-                            port, conn, prefix_max_len, suffix_max_len, port.name == last_name
-                        )
-                        + f" // INST_NEW {date}"
-                    )
+                    new_items.append((port, conn))
+                _at, new_lines = _render_new_pin_lines(
+                    new_items, prefix_max_len, suffix_max_len, date, anchor=False
+                )
+                out.extend(new_lines)
                 out.append(");")
                 i += 1
                 continue
@@ -1391,7 +1568,7 @@ class VerilogBuffer:
                     raise ValueError(f"instance at line {i + 1} not terminated by ');'")
                 line = lines[i]
                 if _INST_END.search(line):
-                    new_lines = []
+                    new_items = []
                     for port in moddef.ports:
                         if port.name in seen:
                             continue
@@ -1400,14 +1577,22 @@ class VerilogBuffer:
                         )
                         if conn is None:
                             continue
-                        new_lines.append(
-                            format_connection(
-                                port, conn, prefix_max_len, suffix_max_len, port.name == last_name
-                            )
-                            + f" // INST_NEW {date}"
-                        )
+                        new_items.append((port, conn))
+                    anchor = bool(
+                        out and out[-1].lstrip().startswith(".")
+                    )
+                    anchor_trailing, new_lines = _render_new_pin_lines(
+                        new_items,
+                        prefix_max_len,
+                        suffix_max_len,
+                        date,
+                        anchor=anchor,
+                    )
+                    if anchor_trailing is not None and anchor:
+                        out[-1] = _set_trailing_comma(out[-1], anchor_trailing)
                     if (
-                        new_lines
+                        anchor_trailing is None
+                        and new_lines
                         and out
                         and out[-1].lstrip().startswith(".")
                         and not out[-1].rstrip().endswith(",")
