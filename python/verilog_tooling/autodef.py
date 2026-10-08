@@ -2976,7 +2976,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
                 inst_io = {p.name: p for p in moddef.ports}
                 i = _scan_inst_body(
                     lines, i + 1, inst_io, signals, loop_bounds, sym_hi,
-                    param_by_line.get(i),
+                    _emacs.effective_param_values(moddef, param_by_line.get(i)),
                 )
                 continue
         elif i in inst_headers:
@@ -2989,7 +2989,10 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             # the pin-list open paren: last '(' of the header's final line
             hl = hdr_end if hdr_end >= 0 else i
             pin_off = _line_off[hl] + lines[hl].rfind("(")
-            pvals = _emacs.read_inst_param_values(_text, pin_off) if pin_off >= 0 else {}
+            pvals = _emacs.effective_param_values(
+                moddef,
+                _emacs.read_inst_param_values(_text, pin_off) if pin_off >= 0 else {},
+            )
             i = _scan_inst_body(lines, start, inst_io, signals, loop_bounds, sym_hi, pvals)
             continue
         elif _ENDMODULE.match(line):

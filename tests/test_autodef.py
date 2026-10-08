@@ -2365,3 +2365,72 @@ endmodule
     fifo_lines = [l for l in out.splitlines() if "fifo" in l and "assign" not in l]
     assert fifo_lines and all("[" not in l.split("fifo")[0] or True for l in fifo_lines)
     assert decl("reg", "", "fifo") in out
+
+
+# ---------------------------------------------------------------------------
+# instance parameter defaults: driver-side width declares the net
+
+_MODA_P = """\
+module moda #(parameter W = 8) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+
+_MODB_P = """\
+module modb #(parameter BW = 16) (
+    input wire          clk,
+    input wire [BW-1:0] din
+);
+endmodule
+"""
+
+
+def _pmods():
+    out = {}
+    for t in (_MODA_P, _MODB_P):
+        d = parse_module_ports(t.splitlines(), with_params=True)
+        out[d.name] = d
+    return out
+
+
+def test_inst_param_default_width_declares_from_driver():
+    text = """\
+module top (input wire clk);
+/*autodef*/
+moda u_a (
+    .clk  (clk),
+    .dout (mid)
+);
+modb u_b (
+    .clk (clk),
+    .din (mid)
+);
+endmodule
+"""
+    out = "\n".join(_adt(text, _pmods()))
+    # no #(...) override: the net takes the DRIVER's default width
+    # (moda W=8) — not modb's BW=16, and not "unresolved" (was:
+    # width 'W-1' references symbol(s) not visible in this module)
+    assert re.search(r"(?m)^wire\s+\[7:0\]\s+mid;", out)
+    assert "unresolved" not in out
+
+
+def test_inst_param_override_still_wins_over_default():
+    text = """\
+module top (input wire clk);
+/*autodef*/
+moda #(.W(16)) u_a (
+    .clk  (clk),
+    .dout (mid)
+);
+modb u_b (
+    .clk (clk),
+    .din (mid)
+);
+endmodule
+"""
+    out = "\n".join(_adt(text, _pmods()))
+    assert re.search(r"(?m)^wire\s+\[15:0\]\s+mid;", out)
+    assert "unresolved" not in out

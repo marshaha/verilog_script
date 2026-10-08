@@ -420,7 +420,9 @@ def _inst_driven_nets(
             }
         else:
             inst_io = {p.name: p for p in moddef.ports if p.direction in directions}
-        param_values = emacs.read_inst_param_values(text, open_idx)
+        param_values = emacs.effective_param_values(
+            moddef, emacs.read_inst_param_values(text, open_idx)
+        )
         for pin, expr in emacs.inst_pin_connections(text, open_idx):
             if pin not in inst_io:
                 continue
