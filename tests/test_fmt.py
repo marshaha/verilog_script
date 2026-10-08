@@ -104,11 +104,12 @@ def test_aif_leaves_multiline_param_value_untouched():
     assert auto_inst_format(out) == out
 
 
-def test_aif_leaves_handwritten_param_block_untouched():
-    # veer-el2 el2_veer: a hand-written multi-line #(...) header with a
-    # `.*` tail and no AUTO markers.  The parameter overrides used to
-    # be re-aligned as pin connections, dragging `.pt(pt)` out of the
-    # header and orphaning the instance (Verilator syntax errors).
+def test_aif_aligns_handwritten_param_block_as_pins():
+    # veer-el2 el2_veer: a hand-written multi-line #(...) header.  The
+    # parameter overrides ARE aligned like pin connections (user-facing
+    # behaviour), but the ``)) inst (`` closer line must never be folded
+    # into the last parameter — that used to behead the instance
+    # (Verilator syntax errors).
     lines = [
         "  el2_pmp #(",
         "      .PMP_CHANNELS(3),",
@@ -120,10 +121,32 @@ def test_aif_leaves_handwritten_param_block_untouched():
         "  );",
     ]
     out = auto_inst_format(lines)
-    assert out[:4] == lines[:4]  # header verbatim
+    assert out[0] == "  el2_pmp #("
+    assert out[1].lstrip().startswith(".PMP_CHANNELS") and "(3" in out[1]
+    assert out[2].lstrip().startswith(".pt") and "(pt" in out[2]
+    assert out[3] == "  ) pmp ("  # header close verbatim
     assert "active_l2clk" in out[4] and out[4].lstrip().startswith(".clk")
     assert out[6] == "      .*"  # implicit tail untouched
     assert out[7] == "  );"
+    assert auto_inst_format(out) == out
+
+
+def test_aif_keeps_param_line_with_instance_header_tail():
+    # el2_veer's axi4_to_ahb shape: the last parameter override shares
+    # its line with the #(...) close and the instance header.  Folding
+    # ``)) lsu_axi4_to_ahb (`` into the connection text beheads the
+    # instance; the line must pass through verbatim.
+    lines = [
+        "      axi4_to_ahb #(.pt(pt),",
+        "                    .TAG(pt.LSU_BUS_TAG)) lsu_axi4_to_ahb (",
+        "        .clk(clk),",
+        "      );",
+    ]
+    out = auto_inst_format(lines)
+    assert out[0] == lines[0]
+    assert out[1] == lines[1]  # not beheaded
+    assert out[2].lstrip().startswith(".clk")
+    assert out[3] == lines[3]
     assert auto_inst_format(out) == out
 
 
