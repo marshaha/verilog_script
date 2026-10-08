@@ -689,6 +689,100 @@ def test_auto_arg_ansi_header_wrapped_multi_name_decl():
     assert auto_arg(out) == out  # idempotent
 
 
+def test_auto_arg_ansi_header_ranged_ports_get_bare_name_list():
+    """A converted ANSI header holds bare names only (ibex shape): typed or
+    ranged entries left in the regenerated list are duplicated by the body
+    declarations emitted for the same ports, and Verilator rejects ranges
+    in a port list as unsupported."""
+    lines = [
+        "module m (/*autoarg*/",
+        "    output logic [31:0] data_o,",
+        "    output logic [15:0] pair_a_o, pair_b_o,",
+        "    input logic [7:0] data_i,",
+        "    output logic done_o",
+        ");",
+        "endmodule",
+    ]
+    out = auto_arg(lines)
+    close = out.index(");")
+    header = "\n".join(out[: close + 1])
+    assert "logic" not in header and "[31:0]" not in header and "[15:0]" not in header
+    for name in ("data_o", "pair_a_o", "pair_b_o", "data_i", "done_o"):
+        assert name in header
+    body = out[close + 1 :]
+    assert "    output logic [31:0] data_o;" in body
+    assert "    output logic [15:0] pair_a_o, pair_b_o;" in body
+    assert "    input logic [7:0] data_i;" in body
+    assert auto_arg(out) == out  # idempotent
+
+
+def test_auto_arg_ansi_header_inline_comment_keeps_next_port():
+    """An inline comment on one ANSI port must not swallow the next port
+    into comment text when the declarations move to the body (ibex's
+    irq_nm_i / irq_pending_o shape)."""
+    lines = [
+        "module m (/*autoarg*/",
+        "    input logic irq_i, // non-maskable interrupt",
+        "    output logic irq_pending_o,",
+        "    input logic clk_i",
+        ");",
+        "endmodule",
+    ]
+    out = auto_arg(lines)
+    body = out[out.index(");") + 1 :]
+    assert "    output logic irq_pending_o;" in body
+    assert not any("interrupt output logic" in ln for ln in body)
+    assert "    input logic irq_i;" in "\n".join(body)
+    assert "    input logic clk_i;" in "\n".join(body)
+    assert auto_arg(out) == out  # idempotent
+
+
+def test_auto_arg_preprocessor_gated_header_left_unchanged(capsys):
+    """Preprocessor-gated ANSI ports (ibex's RVFI group) are left exactly
+    as written: a name-list regeneration cannot preserve the directive's
+    association with only the ports it gates, and shredding the directive
+    into a port-name entry corrupts both interfaces."""
+    lines = [
+        "module m (/*autoarg*/",
+        "    output logic a_o,",
+        "`ifdef RVFI",
+        "    output logic rvfi_o,",
+        "`endif",
+        "    input logic clk_i",
+        ");",
+        "endmodule",
+    ]
+    out = auto_arg(lines)
+    assert out == lines
+    assert "preprocessor directives" in capsys.readouterr().err
+    assert auto_arg(out) == out  # the skip is stable across re-runs
+
+
+def test_auto_arg_rerun_with_body_directives_keeps_port_list():
+    """A re-run on an already-expanded file whose BODY carries directives
+    (wbuart32 shape) must regenerate the same list: the header-region
+    scan stops at the header's own ``);``, and the collapsed stub left by
+    the kill pass must never be mistaken for the module."""
+    lines = [
+        "module m (/*autoarg*/",
+        "    //Outputs",
+        "    y_o, ",
+        "",
+        "    //Inputs",
+        "    a_i",
+        ");",
+        "input logic a_i;",
+        "output logic y_o;",
+        "`ifdef FAST",
+        "assign y_o = a_i;",
+        "`endif",
+        "endmodule",
+    ]
+    out = auto_arg(lines)
+    assert out == lines
+    assert "y_o" in "\n".join(out) and "a_i" in "\n".join(out)
+
+
 def test_auto_arg_ansi_single_line_header():
     lines = ["module m (/*autoarg*/ input a, output wire [3:0] b);", "endmodule"]
     out = auto_arg(lines)
