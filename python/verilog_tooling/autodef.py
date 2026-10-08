@@ -2740,6 +2740,58 @@ def _is_typedef_decl(line: str) -> bool:
     return is_udt_decl_line(line)
 
 
+def _comma_separated_header(expanded: list[str], original: Sequence[str]) -> list[str]:
+    """Re-comma the ANSI header _expand_ansi_header split apart.
+
+    _expand_ansi_header rewrites a single-line ANSI port list into one
+    comma-less port per line so the header parses like a multi-line
+    one.  autoarg rebuilds the header afterwards, but autodef passes
+    the expanded form through to its output, emitting
+
+        module top (
+        input clk
+        input [7:0] din
+        );
+
+    -- a syntax error.  When (and only when) the original header was
+    the single-line form the expansion fires on, put the commas back:
+    every expanded port line but the last gets its trailing comma,
+    yielding the ordinary multi-line header.  Headers the user
+    already wrote across lines are returned untouched (the expansion
+    passes them through, and their commas are already present).
+    """
+    from .inst import _balanced_close
+
+    text = "\n".join(original)
+    m = re.search(r"\bmodule\s+\w+", text)
+    if not m:
+        return expanded
+    pos = m.end()
+    if re.match(r"\s*#\s*\(", text[pos:]):
+        j = _balanced_close(text, text.index("(", pos))
+        if j < 0:
+            return expanded
+        pos = j + 1
+    if not re.match(r"\s*\(", text[pos:]):
+        return expanded
+    open_paren = pos + text[pos:].index("(")
+    close_paren = _balanced_close(text, open_paren)
+    if close_paren < 0 or "\n" in text[open_paren + 1 : close_paren].strip():
+        return expanded  # no single-line port list: expansion did not fire
+    head_lines = text[: open_paren + 1].count("\n") + 1
+    out = list(expanded)
+    i = head_lines
+    ports = []
+    while i < len(out) and not out[i].lstrip().startswith(")"):
+        if out[i].strip():
+            ports.append(i)
+        i += 1
+    for k in ports[:-1]:
+        if not out[k].rstrip().endswith(","):
+            out[k] = out[k].rstrip() + ","
+    return out
+
+
 def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = None) -> list[str]:
     """Regenerate the /*autodef*/ declarations of a module.
 
@@ -2758,7 +2810,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     lines = kill_auto_def_t(lines)
     from .inst import _expand_ansi_header
 
-    lines = _expand_ansi_header(list(lines))
+    lines = _comma_separated_header(_expand_ansi_header(list(lines)), lines)
     alldefs = get_all_defs(lines)
     allparas = get_all_paras(lines)
     loop_ranges = _loop_ranges(lines)

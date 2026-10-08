@@ -2365,3 +2365,75 @@ endmodule
     fifo_lines = [l for l in out.splitlines() if "fifo" in l and "assign" not in l]
     assert fifo_lines and all("[" not in l.split("fifo")[0] or True for l in fifo_lines)
     assert decl("reg", "", "fifo") in out
+
+
+# ---------------------------------------------------------------------------
+# single-line ANSI header must survive autodef with its commas
+
+
+def test_single_line_ansi_header_keeps_commas():
+    text = """\
+module top (input clk, input [7:0] din, output [7:0] dout);
+/*autodef*/
+always @(posedge clk) begin
+    cnt <= cnt + 1;
+end
+assign dout = cnt;
+endmodule
+"""
+    out = _adt(text)
+    head = out[: out.index(");") + 1]
+    assert head == [
+        "module top (",
+        "input clk,",
+        "input [7:0] din,",
+        "output [7:0] dout",
+        ");",
+    ]
+
+
+def test_multi_line_header_untouched():
+    text = """\
+module top (
+    input  wire       clk,
+    input  wire [7:0] din
+);
+/*autodef*/
+always @(posedge clk) begin
+    cnt <= cnt + 1;
+end
+endmodule
+"""
+    out = _adt(text)
+    assert out[1] == "    input  wire       clk,"
+    assert out[2] == "    input  wire [7:0] din"
+    assert out[3] == ");"
+
+
+def test_header_with_parameter_block_keeps_commas():
+    text = """\
+module top #(parameter W = 8) (input clk, input [W-1:0] din);
+/*autodef*/
+always @(posedge clk) begin
+    cnt <= cnt + 1;
+end
+endmodule
+"""
+    out = _adt(text)
+    assert out[0] == "module top #(parameter W = 8) ("
+    assert out[1] == "input clk,"
+    assert out[2] == "input [W-1:0] din"
+    assert out[3] == ");"
+
+
+def test_portless_module_passes_through():
+    text = """\
+module top;
+/*autodef*/
+always @(posedge clk) begin
+    cnt <= cnt + 1;
+end
+endmodule
+"""
+    out = _adt(text)
+    assert out[0] == "module top;"
