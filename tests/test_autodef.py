@@ -2456,7 +2456,7 @@ module top (input clk, input [7:0] din);
 always @(posedge clk) begin
     for (i = 0; i < 4; i = i + 1) begin
         for (j = 0; j <= i; j = j + 1) begin
-            tri[i][j] <= din;
+            trim[i][j] <= din;
         end
     end
 end
@@ -2464,7 +2464,7 @@ endmodule
 """
     out = "\n".join(_adt(text))
     # j's extent follows i's range edge (was: only [0:3], one dim)
-    assert "tri [0:3] [0:3];" in out
+    assert "trim [0:3] [0:3];" in out
 
 
 def test_index_times_symbolic_coefficient():
