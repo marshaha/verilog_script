@@ -358,6 +358,28 @@ def read_inst_param_values(text: str, open_idx: int) -> dict[str, str]:
     return values
 
 
+def param_default_values(moddef) -> dict[str, str]:
+    """Submodule parameter name -> default value text: the bindings an
+    instance carries before any ``#(...)`` override is applied."""
+    out: dict[str, str] = {}
+    for p in getattr(moddef, "params", ()) or ():
+        if p.value:
+            out[p.name] = p.value
+    return out
+
+
+def effective_param_values(moddef, overrides) -> dict[str, str]:
+    """Instance-effective parameter bindings: the submodule's defaults
+    with the instance's own ``#(...)`` overrides winning.  A port width
+    like ``[W-1:0]`` resolves against THESE, so an instance without an
+    override declares its nets at the submodule's default width
+    instead of leaving the width naming a submodule-local parameter
+    the parent cannot see."""
+    merged = param_default_values(moddef)
+    merged.update(overrides or {})
+    return merged
+
+
 def _apply_param_values(expr: str, param_values: Mapping[str, str]) -> str:
     """Replace whole-word parameter names with their instance values, then
     fold what becomes purely numeric — ``$clog2(8)`` → ``3`` and

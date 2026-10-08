@@ -2428,3 +2428,36 @@ endmodule
     # belongs to always-block LHS classification, on every inst path)
     assert re.search(r"(?m)^wire\s+\[7:0\]\s+w;", out)
     assert "unresolved" not in out
+
+
+def test_single_line_instance_param_default_width():
+    text = """\
+module top (input wire clk);
+/*autodef*/
+moda u_a (.clk(clk), .dout(mid));
+modb u_b (.clk(clk), .din(mid));
+endmodule
+"""
+    moda = """\
+module moda #(parameter W = 8) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+    modb = """\
+module modb #(parameter BW = 16) (
+    input wire          clk,
+    input wire [BW-1:0] din
+);
+endmodule
+"""
+    defs = {}
+    for t in (moda, modb):
+        d = parse_module_ports(t.splitlines(), with_params=True)
+        defs[d.name] = d
+    out = "\n".join(_adt(text, defs))
+    # the single-line instance path resolves widths with the same
+    # default+override bindings as the line-oriented path
+    assert re.search(r"(?m)^wire\s+\[7:0\]\s+mid;", out)
+    assert "unresolved" not in out

@@ -2510,6 +2510,7 @@ def _scan_inst_body_text(
     signals: SignalTable,
     loop_bounds: Mapping[str, tuple[int, int]] | None = None,
     sym_hi: Mapping[str, str] | None = None,
+    param_values: Mapping[str, str] | None = None,
 ) -> int:
     """Consume an instance whose pin list opens on the header line
     (``sub u_sub (.clk(clk), .dout(w));``), possibly spanning lines.
@@ -2552,7 +2553,7 @@ def _scan_inst_body_text(
                 inst_io,
                 loop_bounds,
                 sym_hi,
-                None,
+                param_values,
             )
     return start + text[:close_idx].count("\n") + 1
 
@@ -3048,9 +3049,20 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
             inst_io = {p.name: p for p in moddef.ports}
             if hdr_end == -2:
                 # pins begin on the header line itself (single-line
-                # instance): scan the balanced pin-list text
+                # instance): scan the balanced pin-list text, with the
+                # same default+override parameter bindings as the
+                # line-oriented path
+                try:
+                    pin_off = _line_off[i] + lines[i].index(
+                        "(", lines[i].index(_inst) + len(_inst)
+                    )
+                    pvals = _emacs.effective_param_values(
+                        moddef, _emacs.read_inst_param_values(_text, pin_off)
+                    )
+                except ValueError:
+                    pvals = _emacs.param_default_values(moddef)
                 i = _scan_inst_body_text(
-                    lines, i, inst_io, signals, loop_bounds, sym_hi
+                    lines, i, inst_io, signals, loop_bounds, sym_hi, pvals
                 )
                 continue
             start = (hdr_end + 1) if hdr_end >= 0 else (i + 1)
