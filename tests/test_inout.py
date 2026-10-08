@@ -454,9 +454,10 @@ endmodule
     assert "q2_net;" in out_lines[0]
 
 
-def test_foreign_width_symbols_skipped():
-    """A width naming submodule-local symbols not mapped by #(...) cannot
-    compile here — skipped, same rule as AUTOWIRE."""
+def test_foreign_width_promoted_at_pin_dimension():
+    """A width naming symbols the parent does not define is declared as
+    written (the pin's dimension), per the driver-dimension rule —
+    supersedes the older skip-it policy."""
     sub = """\
 module subf (
     input  wire [SUBW-1:0] din,
@@ -476,8 +477,10 @@ subf u_f (/*autoinst*/
 endmodule
 """
     out = auto_io(top.splitlines(), m)
-    assert _INPUT_HEADER not in out
-    assert _OUTPUT_HEADER not in out
+    text = "\n".join(out)
+    assert _INPUT_HEADER in out
+    assert _OUTPUT_HEADER in out
+    assert "din" in text and "[SUBW-1:0]" in text
 
 
 # ---------------------------------------------------------------------------
@@ -677,3 +680,29 @@ endmodule
 def test_kill_auto_inout():
     lines = ["/*AUTOINOUT*/", _INOUT_HEADER, "inout a;", CLOSER]
     assert kill_auto_inout(lines) == ["/*AUTOINOUT*/"]
+
+
+def test_output_promoted_with_symbolic_driver_dimension():
+    modc = """\
+module modc #(parameter W = D*K, parameter D = 4) (
+    input  wire         clk,
+    output wire [W-1:0] dout
+);
+endmodule
+"""
+    m = {"modc": parse_module_ports(modc.splitlines(), with_params=True)}
+    top = """\
+module top;
+/*AUTOOUTPUT*/
+modc u_a (/*autoinst*/
+    .clk  (clk),
+    .dout (mid)
+);
+endmodule
+"""
+    out = auto_output(top.splitlines(), m)
+    text = "\n".join(out)
+    # D folds to 4, K stays symbolic: the net is promoted at the
+    # driver's dimension instead of being silently skipped
+    (line,) = [ln for ln in out if ln.startswith("output") and "mid" in ln]
+    assert "K" in line

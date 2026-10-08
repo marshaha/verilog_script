@@ -153,20 +153,17 @@ def _local_syms(lines: Sequence[str]) -> set[str]:
     return set(get_all_paras(lines)) | set(_const_symbols(lines))
 
 
-def _widths_ok(net, local_syms: set[str]) -> bool:
-    """A declaration compiles only when every width/dim names local symbols
-    (same rule as AUTOWIRE).  Unpacked dims are declarable when their
-    symbols are local (whole-array port) or the connected element indexes
-    merge into a range."""
-    from .autodef import _merge_unpacked_indexes, _width_syms_known
+def _declarable(net, local_syms: set[str]) -> bool:
+    """A candidate can be declared unless its unpacked element indexes
+    do not merge into a range (then no array form exists).  Widths are
+    NOT visibility-checked: an instance-derived width (an output's
+    driver dimension, or the dimension of the pin a net feeds) is
+    declared as written when it does not fold to local constants."""
+    from .autodef import _merge_unpacked_indexes
 
     if net.unpacked_idx:
         return _merge_unpacked_indexes(net.unpacked_idx, local_syms) is not None
-    if net.unpacked_dims:
-        return all(_width_syms_known(d, local_syms) for d in net.unpacked_dims)
-    if net.packed_dims:
-        return all(_width_syms_known(d, local_syms) for d in net.packed_dims)
-    return net.width in ("", "c0") or _width_syms_known(net.width, local_syms)
+    return True
 
 
 def _sig_dims(net, local_syms: set[str]) -> tuple:
@@ -222,7 +219,7 @@ def _input_sigs(
         if typedef_re and re.search(typedef_re, name):
             continue
         net = in_nets[name]
-        if not _widths_ok(net, local_syms):
+        if not _declarable(net, local_syms):
             continue
         sigs.append(
             Signal(
@@ -267,7 +264,7 @@ def _output_sigs(
         if typedef_re and re.search(typedef_re, name):
             continue
         net = out_nets[name]
-        if not _widths_ok(net, local_syms):
+        if not _declarable(net, local_syms):
             continue
         sigs.append(
             Signal(
@@ -311,7 +308,7 @@ def _inout_sigs(
         if typedef_re and re.search(typedef_re, name):
             continue
         net = inout_nets[name]
-        if not _widths_ok(net, local_syms):
+        if not _declarable(net, local_syms):
             continue
         sigs.append(
             Signal(
