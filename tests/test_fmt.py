@@ -155,6 +155,24 @@ def test_apf_semicolon_terminator_and_inout():
     assert out == ["inout" + " " * 26 + "pad;// pad ring", "wire w;"]
 
 
+def test_apf_keeps_name_and_terminator_with_unpacked_dimensions():
+    # ibex_core: ``input logic [TagSizeECC-1:0] ic_tag_rdata_i
+    # [IC_NUM_WAYS],`` — the line ends in `]` so the old end-anchored
+    # ``\w+`` name/terminator extraction found neither and APF emitted
+    # a nameless, comma-less declaration (Verilator syntax error).
+    out = auto_port_format([
+        "    input  logic [7:0] plain_i,",
+        "    input  logic [7:0] arr_i [2],",
+        "    output logic [7:0] arr_o [2][3],",
+        "    output logic [7:0] glued_o[4]",
+    ])
+    assert out[0].startswith("input logic [7:0]"), out
+    assert out[0].rstrip().endswith("plain_i,"), out
+    assert out[1].rstrip().endswith("arr_i [2],"), out
+    assert out[2].rstrip().endswith("arr_o [2][3],"), out
+    assert out[3].rstrip().endswith("glued_o[4]"), out
+
+
 # ---------------------------------------------------------------------------
 # auto_define_format (ADF)
 

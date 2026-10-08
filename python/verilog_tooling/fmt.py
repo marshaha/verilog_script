@@ -279,7 +279,10 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         if re.search(r"\)\s*;?\s*$", body):
             terminator = ");"
         else:
-            tm = re.search(r"\w+\s*([;|,])\s*$", body)
+            # the token before the terminator may be `]` when the port
+            # carries an unpacked dimension (``arr_i [2],``): an
+            # end-anchored ``\w+`` misses it and drops the punctuation.
+            tm = re.search(r"[\w\]]\s*([;|,])\s*$", body)
             terminator = tm.group(1) if tm else ""
         width = _extract_width(body)
         body_ns = re.sub(r"\s*$", "", body)
@@ -307,8 +310,18 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
             )
             if tm:
                 kw = tm.group(1) + " "
-        nm = re.search(r"\w+\s*$", body_ns)
-        port_name = nm.group(0).strip() if nm else ""
+        # the name is the identifier at the end of the declaration,
+        # optionally followed by unpacked dimensions (``arr_i [2]``):
+        # the dims are kept with the name — end-anchored ``\w+\s*$``
+        # alone loses the name entirely when a dim is present.  Any
+        # other trailing text (e.g. an initializer) keeps the old
+        # last-word behaviour.
+        nm = re.search(r"(\w+)((?:\s*\[[^\]]*\])*)\s*$", body_ns)
+        if nm:
+            port_name = nm.group(1) + re.sub(r"\s+", " ", nm.group(2))
+        else:
+            nm2 = re.search(r"\w+\s*$", body_ns)
+            port_name = nm2.group(0).strip() if nm2 else ""
         space_max = 20 + max_len + (1 if m.group(1) == "output" else 2)
         out.append(
             m.group(1)
