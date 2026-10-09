@@ -728,7 +728,8 @@ def _auto_wire_single(
                     name,
                     f"skip-declared "
                     + (
-                        f"decl_width={u.width} decl_pdims={list(u.packed_dims)}"
+                        f"decl_width={u.width} decl_pdims={list(u.packed_dims)} "
+                        f"line={u.line.strip()!r}"
                         if u is not None
                         else "decl=port/param/define"
                     ),

@@ -631,6 +631,14 @@ class SignalTable:
             return seq
         sig.seq = f"{seq:05d}"
         self.signals[name] = sig
+        from ._trace import trace_sig, tracing
+
+        if tracing(name):
+            trace_sig(
+                name,
+                f"decl-seen line={sig.line.strip()!r} width={sig.width} "
+                f"pdims={list(sig.packed_dims)}",
+            )
         seq += 1
         for extra in extras:
             if extra in self.signals:
@@ -640,6 +648,12 @@ class SignalTable:
             # line_idx stays -1: the physical line is printed once via
             # the first name's record; extras exist for name exclusion.
             self.signals[extra] = esig
+            if tracing(extra):
+                trace_sig(
+                    extra,
+                    f"decl-seen line={sig.line.strip()!r} width={sig.width} "
+                    f"pdims={list(sig.packed_dims)}",
+                )
             seq += 1
         return seq
 
@@ -659,6 +673,9 @@ class SignalTable:
             # evidence (_update_usrdef_packed_dims): growing just its FIRST
             # range from a single-dim driver would corrupt it
             # ([1:0][35:0] -> [35:0][35:0])
+            from ._trace import trace_sig
+
+            trace_sig(name or sig.name, "update-skip reason=multidim-decl cmd=update-width")
             return
         if re.search(r"//\s*DT\s*$", sig.line, re.IGNORECASE):
             from ._trace import trace_sig
@@ -689,6 +706,10 @@ class SignalTable:
         declaration already carrying exactly PDIMS is left alone
         (idempotent)."""
         if sig.type != "usrdef" or not pdims:
+            if sig.type == "usrdef" and not pdims:
+                from ._trace import trace_sig
+
+                trace_sig(name or sig.name, "update-skip reason=no-evidence")
             return
         if re.search(r"//\s*DT\b", sig.line, re.IGNORECASE):
             from ._trace import trace_sig
@@ -696,7 +717,15 @@ class SignalTable:
             trace_sig(name or sig.name, "dt-exempt cmd=update-dims")
             return  # user said don't touch
         rewritten = _rewrite_usrdef_packed_dims(sig.line, pdims)
-        if rewritten is None or rewritten == sig.line:
+        if rewritten is None:
+            from ._trace import trace_sig
+
+            trace_sig(
+                name or sig.name,
+                f"update-skip reason=not-simple line={sig.line.strip()!r}",
+            )
+            return
+        if rewritten == sig.line:
             return
         from ._trace import trace_sig
 
@@ -943,7 +972,7 @@ class SignalTable:
             elif sig.type == "usrdef":
                 # instance output port wider than the hand-written net
                 self._update_usrdef_width(sig, port_width, net)
-            if sig.type == "usrdef" and pdims:
+            if sig.type == "usrdef":
                 # the driving port's packed shape proves the hand-written
                 # declaration wrong (e.g. a missing packed dim): fix it
                 self._update_usrdef_packed_dims(sig, pdims, net)
@@ -2179,7 +2208,8 @@ def div_signals(signals: SignalTable) -> Divided:
                 trace_sig(
                     name,
                     f"skip-declared bucket=io has_defined={sig.has_defined} "
-                    f"multidim={is_multidim}",
+                    f"multidim={is_multidim} width={sig.width} "
+                    f"pdims={list(sig.packed_dims)}",
                 )
         elif sig.type == "freg":
             if sig.width == "":

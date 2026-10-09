@@ -3423,3 +3423,42 @@ def test_trace_key_is_net_name(monkeypatch, capsys):
     assert lines and all(l.startswith("[vt-trace] net:") for l in lines)
     assert any("update-dims" in l for l in lines)
     assert any("port=rdata" in l for l in lines)  # pin name is a field
+
+
+def test_trace_decl_seen_and_update_skip_events(monkeypatch, capsys):
+    """The rejection paths are traceable: decl-seen shows the declaration
+    the tool registered (with the extracted width), update-skip explains a
+    refused correction (not-simple for a multi-name declaration)."""
+    _trace_run(monkeypatch, "dout")
+    auto_def_t(_multidim_top("wire [35:0] a, dout;"), multidim_mods())
+    err = capsys.readouterr().err
+    assert any(
+        l.startswith("[vt-trace] dout: decl-seen")
+        and "wire [35:0] a, dout;" in l and "width=35" in l
+        for l in err.splitlines()
+    )
+    assert any(
+        l.startswith("[vt-trace] dout: update-skip reason=not-simple")
+        for l in err.splitlines()
+    )
+
+
+def test_trace_update_skip_no_evidence(monkeypatch, capsys):
+    """A usrdef net driven only by single-dim ports reports no-evidence."""
+    _trace_run(monkeypatch, "net")
+    mods = {"dbuf1": parse_module_ports(DBUF_1D.splitlines())}
+    auto_def_t(
+        [
+            "module top(input clk);",
+            "wire [31:0] net;",
+            "  dbuf1 u11 (.rdata(net), /*autoinst*/ .clk(clk));",
+            "/*autodef*/",
+            "endmodule",
+        ],
+        mods,
+    )
+    err = capsys.readouterr().err
+    assert any(
+        l.startswith("[vt-trace] net: update-skip reason=no-evidence")
+        for l in err.splitlines()
+    )
