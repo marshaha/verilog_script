@@ -2173,9 +2173,23 @@ def _cli_resolve(args, lines: list[str]) -> tuple[list[str], dict[str, str], lis
             extensions.extend(e for e in parsed["extensions"] if e not in extensions)
     if not libdirs:
         libdirs = ["."]
-    from .libdirs import set_include_dirs
+    from .libdirs import set_filelist_files, set_include_dirs
 
-    set_include_dirs(libdirs)
+    set_filelist_files(vc_entries)
+
+    # Files named on a -f filelist are part of the project: their
+    # directories join the `include search path (analysis-only
+    # expansion).  Without this, `include "fab_params.svh"` fails
+    # whenever the header is only listed as a file (not sitting in a
+    # -y/+incdir+ dir), and every parameter it defines goes invisible:
+    # parameter names surface as unresolved signals and widths naming
+    # them are dropped as not-visible-here.
+    include_dirs = list(libdirs)
+    for f in vc_entries:
+        d = os.path.dirname(os.path.abspath(f))
+        if d not in include_dirs:
+            include_dirs.append(d)
+    set_include_dirs(include_dirs)
     return libdirs, lv["inst_files"], vc_entries, extensions
 
 

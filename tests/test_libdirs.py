@@ -243,6 +243,156 @@ def test_expand_includes_inline_param_block(tmp_path):
     set_include_dirs([])
 
 
+def test_filelist_file_dirs_join_include_path(tmp_path):
+    """A header present ONLY as a -f filelist FILE entry must be
+    findable by `include: _cli_resolve puts the listed files'
+    directories on the include search path.  Regression: such headers
+    failed to resolve, so every parameter they defined stayed
+    invisible (param names reported as unresolved signals; widths
+    naming them dropped as not-visible-here)."""
+    from types import SimpleNamespace
+
+    from verilog_tooling.autodef import get_all_paras
+    from verilog_tooling.inst import _cli_resolve
+    from verilog_tooling.libdirs import expand_includes, include_dirs, set_include_dirs
+
+    rtl = tmp_path / "rtl"
+    inc = tmp_path / "inc"
+    rtl.mkdir()
+    inc.mkdir()
+    (inc / "p.svh").write_text("parameter P_WIDTH = 32,\n")
+    (tmp_path / "files.f").write_text("inc/p.svh\n")
+    top = rtl / "top.v"
+    top.write_text(
+        'module chip_top #(\n  `include "p.svh"\n) (input wire clk);\n'
+        "endmodule\n\n"
+        "// Local Variables:\n"
+        '// verilog-library-flags: ("-f ../files.f")\n'
+        "// End:\n"
+    )
+    lines = top.read_text().splitlines()
+    args = SimpleNamespace(libdir=[], in_file=str(top), ref_file=None)
+    _cli_resolve(args, lines)
+    try:
+        assert str(inc) in [str(d) for d in include_dirs()]
+        assert any("parameter P_WIDTH" in ln for ln in expand_includes(lines))
+        assert "P_WIDTH" in get_all_paras(lines)
+    finally:
+        set_include_dirs([])
+
+
+def test_filelist_file_suffix_match_for_subpath_include(tmp_path):
+    """`` `include "defs/p.svh"`` resolves when the filelist lists the
+    header as ``inc/defs/p.svh`` (listed under a different root): the
+    include name matches the listed file by path suffix."""
+    from types import SimpleNamespace
+
+    from verilog_tooling.autodef import get_all_paras
+    from verilog_tooling.inst import _cli_resolve
+    from verilog_tooling.libdirs import expand_includes, set_include_dirs
+
+    rtl = tmp_path / "rtl"
+    defs = tmp_path / "inc" / "defs"
+    rtl.mkdir(parents=True)
+    defs.mkdir(parents=True)
+    (defs / "p.svh").write_text("parameter P_WIDTH = 32,\n")
+    (tmp_path / "files.f").write_text("inc/defs/p.svh\n")
+    top = rtl / "top.v"
+    top.write_text(
+        'module chip_top #(\n  `include "defs/p.svh"\n) (input wire clk);\n'
+        "endmodule\n\n"
+        "// Local Variables:\n"
+        '// verilog-library-flags: ("-f ../files.f")\n'
+        "// End:\n"
+    )
+    lines = top.read_text().splitlines()
+    args = SimpleNamespace(libdir=[], in_file=str(top), ref_file=None)
+    _cli_resolve(args, lines)
+    try:
+        assert any("parameter P_WIDTH" in ln for ln in expand_includes(lines))
+        assert "P_WIDTH" in get_all_paras(lines)
+    finally:
+        set_include_dirs([])
+
+
+def test_chip_top_include_params_through_adt_cli(tmp_path):
+    """End-to-end adoption case: chip_top takes its parameter block
+    from `include headers that exist ONLY on a -f filelist (one under
+    a defs/ subpath, listed from a different root).  Before the fix,
+    adt reported every header parameter as an unresolved signal and
+    dropped assign-propagated widths naming them; after it, the run
+    is warning-free with no unresolved lines."""
+    from verilog_tooling import autodef
+
+    rtl = tmp_path / "rtl"
+    defs = tmp_path / "inc" / "defs"
+    inc = tmp_path / "inc"
+    rtl.mkdir(parents=True)
+    defs.mkdir(parents=True)
+    inc.mkdir(parents=True, exist_ok=True)
+    (defs / "fab_cpu_params.svh").write_text(
+        "parameter FAB_CPU_DATA_PTR_WIDTH_AR = 32,\n"
+        "parameter FAB_CPU_DATA_PTR_WIDTH_AW = 32,\n"
+        "parameter FAB_CPU_DATA_PTR_WIDTH_B  = 32,\n"
+    )
+    (inc / "fab_periph_params.svh").write_text(
+        "parameter FAB_PERIPH_MM_DATA_PTR_WIDTH_R = 16,\n"
+    )
+    (rtl / "sub.v").write_text(
+        "module sub #(parameter W = 8) (\n"
+        "    input  wire         clk,\n"
+        "    output wire [W-1:0] ar_data,\n"
+        "    output wire [W-1:0] aw_data,\n"
+        "    output wire [W-1:0] b_data\n"
+        ");\n"
+        "endmodule\n"
+    )
+    (tmp_path / "files.f").write_text(
+        "inc/defs/fab_cpu_params.svh\ninc/fab_periph_params.svh\nrtl/sub.v\n"
+    )
+    top = rtl / "chip_top.v"
+    top.write_text(
+        "module chip_top #(\n"
+        '  `include "defs/fab_cpu_params.svh",\n'
+        '  `include "fab_periph_params.svh"\n'
+        ") (\n"
+        "    input wire clk\n"
+        ");\n"
+        "/*autodef*/\n"
+        "sub #(.W(FAB_CPU_DATA_PTR_WIDTH_AR)) u_ar (\n"
+        "    .clk     (clk),\n"
+        "    .ar_data (fab_cpu_periph_rd_addr_ar_data)\n"
+        ");\n"
+        "sub #(.W(FAB_CPU_DATA_PTR_WIDTH_AW)) u_aw (\n"
+        "    .clk     (clk),\n"
+        "    .aw_data (fab_cpu_periph_rd_addr_aw_data)\n"
+        ");\n"
+        "sub #(.W(FAB_CPU_DATA_PTR_WIDTH_B)) u_b (\n"
+        "    .clk    (clk),\n"
+        "    .b_data (b_raw)\n"
+        ");\n"
+        "assign fab_cpu_periph_rd_addr_b_data = b_raw;\n"
+        "endmodule\n"
+        "\n"
+        "// Local Variables:\n"
+        '// verilog-library-flags: ("-f ../files.f")\n'
+        "// End:\n"
+    )
+    out = tmp_path / "chip_out.v"
+    autodef.main(
+        ["adt", "-i", str(top), "-o", str(out), "--ref_file", str(top), "-y", str(rtl)]
+    )
+    text = out.read_text()
+    assert "unresolved" not in text
+    for sig in (
+        "fab_cpu_periph_rd_addr_ar_data;",
+        "fab_cpu_periph_rd_addr_aw_data;",
+        "fab_cpu_periph_rd_addr_b_data;",
+    ):
+        assert sig in text
+    assert "(FAB_CPU_DATA_PTR_WIDTH_B)-1:0" in text
+
+
 def test_expand_includes_missing_keeps_line(tmp_path, capsys):
     from verilog_tooling.libdirs import set_include_dirs, expand_includes
 

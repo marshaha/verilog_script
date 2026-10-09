@@ -254,16 +254,39 @@ def include_dirs() -> tuple[str, ...]:
     return _INCLUDE_DIRS
 
 
+_FILELIST_FILES: tuple[str, ...] = ()
+
+
+def set_filelist_files(files: Sequence[str]) -> None:
+    """Register the files named on ``-f`` filelists (absolute paths).
+    An `` `include`` whose name is a PATH SUFFIX of a listed file
+    resolves to that file: headers are commonly listed under a
+    different root than the including text assumes (the filelist
+    carries ``inc/defs/p.svh`` while the source says
+    `` `include "defs/p.svh"``)."""
+    global _FILELIST_FILES, _INCLUDE_MISS
+    new = tuple(dict.fromkeys(os.path.abspath(f) for f in files if f))
+    if new != _FILELIST_FILES:
+        _FILELIST_FILES = new
+        _INCLUDE_MISS = set()  # the negative cache is registry-dependent
+
+
 def _find_include(name: str) -> "str | None":
-    """First readable ``name`` under the include dirs, or None — negative
-    results are cached (a missing include would otherwise cost one stat per
-    search dir on EVERY expand call)."""
+    """First readable ``name`` under the include dirs, else the first
+    filelist-listed file whose path ends with NAME (suffix match);
+    None when neither hits — negative results are cached (a missing
+    include would otherwise cost one stat per search dir on EVERY
+    expand call)."""
     if name in _INCLUDE_MISS:
         return None
     for d in _INCLUDE_DIRS:
         cand = os.path.join(d, name)
         if os.path.isfile(cand):
             return os.path.realpath(cand)
+    tail = "/" + name.lstrip("/")
+    for f in _FILELIST_FILES:
+        if f.endswith(tail):
+            return f
     _INCLUDE_MISS.add(name)
     return None
 
