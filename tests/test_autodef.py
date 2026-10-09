@@ -3328,3 +3328,98 @@ def test_trace_unset_is_silent(monkeypatch, capsys):
     _trace._reset_for_tests()
     auto_def_t(_multidim_top("wire [35:0] dout;"), multidim_mods())
     assert "[vt-trace]" not in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# dual-driver nets: pin scan before the /*autoinst*/ marker + dim merge
+
+
+DBUF = """\
+module dbuf (
+    input  wire        clk,
+    output wire [1:0][35:0] rdata
+);
+endmodule
+"""
+
+DBUF_1D = """\
+module dbuf1 (
+    input  wire        clk,
+    output wire [35:0] rdata
+);
+endmodule
+"""
+
+
+def _dual_top(decl, m2="dbuf"):
+    return [
+        "module top(input clk);",
+        decl,
+        "  dbuf u10 (.rdata(net), /*autoinst*/ .clk(clk));",
+        f"  {m2} u11 (.rdata(net), /*autoinst*/ .clk(clk));",
+        "/*autodef*/",
+        "endmodule",
+    ]
+
+
+def test_dual_driver_same_dims_updates_decl():
+    """Two instances drive the same net through the same multidim port: the
+    wrong hand-written width is corrected (pins BEFORE the /*autoinst*/
+    marker count as drivers)."""
+    mods = {"dbuf": parse_module_ports(DBUF.splitlines())}
+    out = auto_def_t(_dual_top("wire [35:0] net;"), mods)
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "net" in l]
+    assert decls == ["wire [1:0][35:0] net;"]
+
+
+def test_dual_driver_mixed_dims_no_last_dim_overwrite():
+    """A single-dim driver arriving after the multidim one must not grow the
+    declaration's FIRST range with its msb ([1:0][35:0] -> [35:0][35:0] was
+    the live bug); the corrected dims stay."""
+    mods = {
+        "dbuf": parse_module_ports(DBUF.splitlines()),
+        "dbuf1": parse_module_ports(DBUF_1D.splitlines()),
+    }
+    for first, second in (("dbuf", "dbuf1"), ("dbuf1", "dbuf")):
+        lines = [
+            "module top(input clk);",
+            "wire [35:0] net;",
+            f"  {first} u10 (.rdata(net), /*autoinst*/ .clk(clk));",
+            f"  {second} u11 (.rdata(net), /*autoinst*/ .clk(clk));",
+            "/*autodef*/",
+            "endmodule",
+        ]
+        out = auto_def_t(lines, mods)
+        decls = [l for l in out if re.match(r"^\s*wire\b", l) and "net" in l]
+        assert decls == ["wire [1:0][35:0] net;"], (first, second, decls)
+
+
+def test_marker_line_pins_scanned_as_drivers():
+    """A pin on the /*autoinst*/ marker line itself registers its net as
+    inst-driven (previously the whole marker line was skipped)."""
+    mods = {"dbuf": parse_module_ports(DBUF.splitlines())}
+    out = auto_def_t(
+        [
+            "module top(input clk);",
+            "  dbuf u10 (.rdata(net), /*autoinst*/ .clk(clk));",
+            "/*autodef*/",
+            "endmodule",
+        ],
+        mods,
+    )
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "net" in l]
+    assert decls == ["wire         [1:0][35:0]                net;"]
+
+
+def test_trace_key_is_net_name(monkeypatch, capsys):
+    """Every conn-dims/first-driven/update-dims event is keyed by the NET
+    name (the pin/port name rides as a field), so VERILOG_TOOLING_TRACE=net
+    catches the whole story."""
+    _trace_run(monkeypatch, "net")
+    mods = {"dbuf": parse_module_ports(DBUF.splitlines())}
+    auto_def_t(_dual_top("wire [35:0] net;"), mods)
+    err = capsys.readouterr().err
+    lines = [l for l in err.splitlines() if l.startswith("[vt-trace]")]
+    assert lines and all(l.startswith("[vt-trace] net:") for l in lines)
+    assert any("update-dims" in l for l in lines)
+    assert any("port=rdata" in l for l in lines)  # pin name is a field

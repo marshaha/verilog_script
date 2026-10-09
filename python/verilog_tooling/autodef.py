@@ -654,6 +654,12 @@ class SignalTable:
         emission time (only its range changes; formatting/comments preserved)."""
         if sig.type != "usrdef":
             return
+        if _usrdef_packed_dims(sig.line) is not None:
+            # a multi-dim packed declaration is owned by the dim-level
+            # evidence (_update_usrdef_packed_dims): growing just its FIRST
+            # range from a single-dim driver would corrupt it
+            # ([1:0][35:0] -> [35:0][35:0])
+            return
         if re.search(r"//\s*DT\s*$", sig.line, re.IGNORECASE):
             from ._trace import trace_sig
 
@@ -2805,6 +2811,10 @@ def _scan_inst_body_text(
         return start + 1
     inner = text[open_idx + 1 : close_idx]
     for part in _split_top_commas(inner):
+        # an AUTO marker / section comment may lead a part (hand-written
+        # single-line instances put /*autoinst*/ between pins); the pin's
+        # own packed-dims note lives INSIDE the connection and survives
+        part = re.sub(r"^\s*(?:(?:/\*[\s\S]*?\*/|//[^\n]*)\s*)+", "", part)
         pm = re.match(r"\s*\.(\w+)\s*\((.*)\)\s*$", part, re.S)
         if pm:
             signals.extend_inst_wire_from_line(
@@ -3285,6 +3295,13 @@ def _auto_def_t_single(
             param_by_line[_text.count("\n", 0, _mk.offset)] = _emacs.read_inst_param_values(
                 _text, _st[-1]
             )
+    # pin-list '(' offset per /*autoinst*/ marker line (whole-instance scan:
+    # hand-written connections BEFORE the marker drive nets too)
+    open_by_marker_line: dict[int, int] = {
+        _text.count("\n", 0, _mk.offset): _stacks[_mk.offset][-1]
+        for _mk in _markers
+        if _stacks[_mk.offset]
+    }
     _line_off = [0]
     for _l in lines:
         _line_off.append(_line_off[-1] + len(_l) + 1)
@@ -3476,10 +3493,33 @@ def _auto_def_t_single(
             moddef = modules.get(module)
             if moddef is not None:
                 inst_io = {p.name: p for p in moddef.ports}
-                i = _scan_inst_body(
-                    lines, i + 1, inst_io, signals, loop_bounds, sym_hi,
-                    _emacs.effective_param_values(moddef, param_by_line.get(i)),
-                )
+                pvals = _emacs.effective_param_values(moddef, param_by_line.get(i))
+                open_idx = open_by_marker_line.get(i)
+                done = False
+                if open_idx is not None:
+                    # scan the WHOLE balanced pin list (both sides of the
+                    # marker): a hand-written connection before /*autoinst*/
+                    # (same line or above) drives its net too
+                    try:
+                        for pin, expr in _emacs.inst_pin_connections(_text, open_idx):
+                            # match the line scan's gate: expression must
+                            # start with an identifier (no `{...}` concats,
+                            # no literals)
+                            if not re.match(r"\s*[A-Za-z_]", expr):
+                                continue
+                            signals.extend_inst_wire_from_line(
+                                pin + " " + expr + ")",
+                                inst_io, loop_bounds, sym_hi, pvals,
+                            )
+                        close_idx = _emacs._matching_paren(_text, open_idx)
+                        i = _text.count("\n", 0, close_idx) + 1
+                        done = True
+                    except ValueError:
+                        done = False
+                if not done:
+                    i = _scan_inst_body(
+                        lines, i + 1, inst_io, signals, loop_bounds, sym_hi, pvals,
+                    )
                 continue
         elif i in inst_headers:
             # marker-less instantiation (module resolved in MODULES): scan
