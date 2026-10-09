@@ -1562,12 +1562,37 @@ adds:
 | `--sort` | sort EAI/EAP pins within each direction group |
 | `--dot-name` | emit SystemVerilog `.name` shorthand connections |
 | `--param-value` | substitute `#(...)` parameter values into port widths |
+| `--debug` | field-debug decision log (same as `VERILOG_TOOLING_DEBUG=1`; autodef has it too) |
 | `--star-expand` / `--star-save` | expand `.*` instances / keep the expansion tagged |
 | `--date S` | override the INST_NEW/INST_DEL timestamp |
 
 ```bash
 PYTHONPATH=python python3 -m verilog_tooling.inst eai -i top.v -o top.out.v -y rtl -y ip
 ```
+
+### When something goes wrong: progress and debug logs
+
+Two stderr switches, inherited by every command above:
+
+- **Progress log (on by default)** — `[verilog_tooling] <stage> (+dt)`
+  stage lines from the inst/aall pipeline. Silence with
+  `VERILOG_TOOLING_QUIET=1`.
+- **Field-debug log (opt-in)** — `VERILOG_TOOLING_DEBUG=1`, or
+  `--debug` on the inst/autodef CLIs. This prints the DECISIONS, not
+  just the stages: the filelists actually read (or `NOT FOUND`), the
+  module library dirs and `` `include`` search dirs in force, each
+  module's resolution (`module X -> file`, or `NOT FOUND` after the
+  inst-file map, filelist and libdirs), each `` `include`` resolution
+  (`include a.svh -> path`), and the final count of unresolved
+  entries. It is the log to attach to a field bug report —
+  `VERILOG_TOOLING_QUIET` does not silence it.
+
+```bash
+VERILOG_TOOLING_DEBUG=1 PYTHONPATH=python python3 -m verilog_tooling.autodef adt -i chip_top.v -o /tmp/out.v -y rtl 2>/tmp/debug.log
+```
+
+In Vim, `let $VERILOG_TOOLING_DEBUG=1` before the command does the
+same (the plugin streams stderr into `:messages`).
 
 ## Layout
 

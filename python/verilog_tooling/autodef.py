@@ -3487,6 +3487,11 @@ def create_by_args(args_l=None):
         default=[],
         help="user-known SystemVerilog interface type name (repeatable)",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="field-debug decision log on stderr (same as VERILOG_TOOLING_DEBUG=1)",
+    )
     return parser.parse_args(args_l)
 
 
@@ -3494,6 +3499,18 @@ def main(argv=None) -> None:
     from .inst import _resolve_module_files, _cli_resolve, buffer_module_defs, _module_lines, find_interfaces
 
     args = create_by_args(argv)
+    if getattr(args, "debug", False):
+        import os
+
+        os.environ["VERILOG_TOOLING_DEBUG"] = "1"
+    from .libdirs import _dbg
+
+    import os
+
+    _dbg(
+        f"{args.command}: cwd={os.getcwd()} in={args.in_file} "
+        f"ref={args.ref_file or args.in_file} out={args.out_file} libdir={args.libdir}"
+    )
     lines = Path(args.in_file).read_text().splitlines()
     if args.command == "kill":
         out = kill_auto_def_t(lines)
@@ -3524,6 +3541,10 @@ def main(argv=None) -> None:
                         src, with_params=True, typedef_regexp=td_re, interfaces=interfaces
                     )
         out = auto_def_t(lines, modules)
+    from .libdirs import _dbg
+
+    _n_unres = sum(1 for ln in out if ln.lstrip().startswith("// unresolved:"))
+    _dbg(f"{args.command}: unresolved entries in output: {_n_unres}")
     Path(args.out_file).write_text("\n".join(out) + "\n")
 
 

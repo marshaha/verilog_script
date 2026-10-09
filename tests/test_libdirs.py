@@ -462,3 +462,65 @@ def test_parse_module_ports_sees_through_include(tmp_path):
     ifaces = find_interfaces([str(tmp_path)], read_includes=False)
     assert "odd_if" not in ifaces
     set_include_dirs([])
+
+
+# ---------------------------------------------------------------------------
+# field-debug log
+
+
+def test_dbg_silent_without_env_and_loud_with_it(monkeypatch, capsys):
+    from verilog_tooling.libdirs import _dbg
+
+    monkeypatch.delenv("VERILOG_TOOLING_DEBUG", raising=False)
+    _dbg("marker-off")
+    assert "marker-off" not in capsys.readouterr().err
+    monkeypatch.setenv("VERILOG_TOOLING_DEBUG", "1")
+    _dbg("marker-on")
+    err = capsys.readouterr().err
+    assert "[verilog_tooling:debug] marker-on" in err
+
+
+def test_find_include_logs_resolution_once(monkeypatch, tmp_path, capsys):
+    from verilog_tooling.libdirs import _find_include, set_include_dirs
+
+    (tmp_path / "p.svh").write_text("parameter W = 8,\n")
+    set_include_dirs([str(tmp_path)])
+    try:
+        monkeypatch.setenv("VERILOG_TOOLING_DEBUG", "1")
+        assert _find_include("p.svh") is not None
+        _find_include("p.svh")  # second ask is cached: no second line
+        err = capsys.readouterr().err
+        assert err.count("include p.svh ->") == 1
+        monkeypatch.delenv("VERILOG_TOOLING_DEBUG")
+        assert _find_include("missing_xyz.svh") is None
+        assert "missing_xyz" not in capsys.readouterr().err
+    finally:
+        set_include_dirs([])
+
+
+def test_cli_resolve_debug_summary(monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+
+    from verilog_tooling.inst import _cli_resolve
+
+    (tmp_path / "files.f").write_text("top.v\n")
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top; endmodule\n\n"
+        "// Local Variables:\n"
+        '// verilog-library-flags: ("-f ./files.f")\n'
+        "// End:\n"
+    )
+    from verilog_tooling.libdirs import set_filelist_files
+
+    args = SimpleNamespace(libdir=[], in_file=str(top), ref_file=None)
+    lines = top.read_text().splitlines()
+    monkeypatch.setenv("VERILOG_TOOLING_DEBUG", "1")
+    try:
+        _cli_resolve(args, lines)
+    finally:
+        set_filelist_files([])
+    err = capsys.readouterr().err
+    assert "filelist:" in err and "files.f (read)" in err
+    assert "module libdirs:" in err
+    assert "include dirs:" in err

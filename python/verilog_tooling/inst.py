@@ -2132,6 +2132,17 @@ def _resolve_module_files(
                 if hit is not None:
                     files[name] = Path(d) / (name + hit)
                     break
+    if names:
+        from .libdirs import _dbg
+
+        for name in names:
+            if name in files:
+                _dbg(f"module {name} -> {files[name]}")
+            else:
+                _dbg(
+                    f"module {name} -> NOT FOUND (inst-file map, "
+                    f"{len(vc_by_stem)} filelist entries, {len(libdirs)} libdirs)"
+                )
     return files
 
 
@@ -2190,6 +2201,12 @@ def _cli_resolve(args, lines: list[str]) -> tuple[list[str], dict[str, str], lis
         if d not in include_dirs:
             include_dirs.append(d)
     set_include_dirs(include_dirs)
+    from .libdirs import _dbg
+
+    for vc in lv["vc_files"]:
+        _dbg(f"filelist: {vc} ({'read' if Path(vc).is_file() else 'NOT FOUND'})")
+    _dbg(f"module libdirs: {libdirs}")
+    _dbg(f"include dirs: {include_dirs} (+ {len(vc_entries)} filelist file(s) by suffix)")
     return libdirs, lv["inst_files"], vc_entries, extensions
 
 
@@ -2309,6 +2326,11 @@ def create_by_args(args_l=None):
         "with --which",
     )
     parser.add_argument("--date", default=None, help="override the INST_NEW/INST_DEL timestamp")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="field-debug decision log on stderr (same as VERILOG_TOOLING_DEBUG=1)",
+    )
     parser.add_argument(
         "--sort",
         action="store_true",
@@ -2684,6 +2706,17 @@ def _main_emacs(command: str, text: str, lines: list[str], args) -> list[str]:
 
 def main(argv=None) -> None:
     args = create_by_args(argv)
+    if getattr(args, "debug", False):
+        os.environ["VERILOG_TOOLING_DEBUG"] = "1"
+    from .libdirs import _dbg
+
+    _dbg(
+        f"{args.command}: cwd={os.getcwd()} in={args.in_file} "
+        f"ref={getattr(args, 'ref_file', None) or args.in_file} out={args.out_file} "
+        f"libdir={args.libdir}"
+        + (f" line={args.line}" if getattr(args, "line", None) is not None else "")
+        + (f" which={args.which}" if getattr(args, "which", None) is not None else "")
+    )
     text = Path(args.in_file).read_text()
     lines = text.splitlines()
     _LINE_CMDS = ("ait", "aiu", "aiu1")

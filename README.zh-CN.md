@@ -1499,6 +1499,7 @@ Variables 相对路径）。`verilog_tooling.inst` 另有：
 | `--param-value` | 把 `#(...)` 参数值代入引脚位宽 |
 | `--star-expand` / `--star-save` | 展开 `.*` 实例 / 展开并保留标记 |
 | `--date S` | 覆盖 INST_NEW/INST_DEL 的时间戳 |
+| `--debug` | 现场调试日志（等同 `VERILOG_TOOLING_DEBUG=1`；autodef 也有） |
 
 ```bash
 PYTHONPATH=python python3 -m verilog_tooling.inst eai -i top.v -o top.out.v -y rtl -y ip
@@ -1546,6 +1547,21 @@ VERILOG_TOOLING_QUIET=1 python3 -m verilog_tooling.inst aall -i top.v -o out.v -
 ```
 
 静音后只保留插件自己的 `running ...` 和完成摘要两行消息。
+
+**现场出问题时开 debug 日志**（进度日志回答“跑到哪一步”，debug
+日志回答“为什么这么判定”，两个都要才会留够证据）：
+
+```bash
+VERILOG_TOOLING_DEBUG=1 python3 -m verilog_tooling.autodef adt -i chip_top.v -o /tmp/out.v -y rtl 2>/tmp/debug.log
+```
+
+或给 inst/autodef 加 `--debug`，Vim 里 `let $VERILOG_TOOLING_DEBUG=1`
+后运行命令（插件会把 stderr 送进 `:messages`）。debug 模式会打印：
+实际读到的 filelist（或 `NOT FOUND`）、模块库目录与 `include` 搜索
+目录、每个模块解析到哪个文件（`module X -> file` / `NOT FOUND`）、
+每个 `include` 展开到哪个文件、以及输出中 unresolved 的条数。
+报现场问题时请把这份日志一并附上。`VERILOG_TOOLING_QUIET` 不
+静音 debug 日志。
 
 `g:verilog_tooling_interfaces` 列出库扫描找不到的 SystemVerilog
 interface 类型名（文件不在任何 `-y` 目录下）。这样

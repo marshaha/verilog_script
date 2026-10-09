@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from typing import Iterable, Mapping, Sequence
 
 _LIBDIRS_LINE = re.compile(r"^\s*//\s*verilog-library-directories\s*:(.*)$")
@@ -254,6 +255,26 @@ def include_dirs() -> tuple[str, ...]:
     return _INCLUDE_DIRS
 
 
+# ---------------------------------------------------------------------------
+# field-debug log (VERILOG_TOOLING_DEBUG=1, or --debug on the main CLIs)
+#
+# The progress log in inst.py says WHICH STAGE ran; this says WHY a
+# resolution came out the way it did — which file a module/include
+# actually loaded from, or that nothing matched.  That is the evidence
+# a field bug report needs.  Lives here (stdlib-only, imported by every
+# engine) so all verbs share one switch; VERILOG_TOOLING_QUIET does
+# NOT silence it (asking for debug output is explicit).
+
+def _debug_on() -> bool:
+    return bool(os.environ.get("VERILOG_TOOLING_DEBUG"))
+
+
+def _dbg(msg: str) -> None:
+    """One debug line on stderr when field-debug is on."""
+    if _debug_on():
+        print(f"[verilog_tooling:debug] {msg}", file=sys.stderr)
+
+
 _FILELIST_FILES: tuple[str, ...] = ()
 
 
@@ -282,13 +303,28 @@ def _find_include(name: str) -> "str | None":
     for d in _INCLUDE_DIRS:
         cand = os.path.join(d, name)
         if os.path.isfile(cand):
+            _note_include_hit(name, cand)
             return os.path.realpath(cand)
     tail = "/" + name.lstrip("/")
     for f in _FILELIST_FILES:
         if f.endswith(tail):
+            _note_include_hit(name, f)
             return f
     _INCLUDE_MISS.add(name)
     return None
+
+
+_INCLUDE_LOGGED: set[str] = set()
+
+
+def _note_include_hit(name: str, path: str) -> None:
+    """Log an `include resolution once per name (expansion re-asks for
+    every call site; the decision only needs stating once).  Only
+    counts as logged when the line actually went out — resolutions
+    seen while debug is off must not suppress a later debug run."""
+    if _debug_on() and name not in _INCLUDE_LOGGED:
+        _INCLUDE_LOGGED.add(name)
+        _dbg(f"include {name} -> {path}")
 
 
 def expand_includes(lines: Iterable[str], _seen: frozenset = frozenset()) -> list[str]:
