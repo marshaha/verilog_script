@@ -3149,3 +3149,132 @@ endmodule
     assert "// unresolved: rsyt " in text
     assert "// unresolved: val0 " not in text
     assert "// unresolved: val1 " not in text
+
+
+# ---------------------------------------------------------------------------
+# updating hand-written declarations whose width the driving instance
+# disproves (user-approved AALL/AD behavior; //DT exempt)
+
+
+MULTIDIM_SUB = """\
+module sub (
+    input  wire        clk,
+    output wire [1:0][35:0] dout,
+    output reg  [7:0]  w
+);
+endmodule
+"""
+
+
+def multidim_mods():
+    return {"sub": parse_module_ports(MULTIDIM_SUB.splitlines())}
+
+
+def _multidim_top(decl_line):
+    return [
+        "module top;",
+        "input clk;",
+        "/*autodef*/",
+        "",
+        decl_line,
+        "sub u_sub (/*autoinst*/",
+        "    .dout (dout/*[1:0][35:0]*/),",
+        "    .w    (w)",
+        ");",
+        "endmodule",
+    ]
+
+
+def test_wrong_width_handwritten_decl_updated_in_place():
+    """wire [35:0] dout; fed by output [1:0][35:0]: the missing packed dim
+    is added in place (position and trailing comment preserved)."""
+    out = auto_def_t(_multidim_top("wire [35:0] dout;  // mine"), multidim_mods())
+    decls = [l for l in out if "dout" in l and ";" in l and ".dout" not in l]
+    assert decls == ["wire [1:0][35:0] dout;  // mine"]
+    assert not any("// unresolved: dout " in l for l in out)
+
+
+def test_duplicated_dim_decl_fixed():
+    """The historical merge bug wire[35:0] [35:0] dout; (last dim overwrote
+    the first) is corrected to wire [1:0][35:0], never re-derived as
+    [35:0][35:0]."""
+    out = auto_def_t(_multidim_top("wire[35:0] [35:0] dout;"), multidim_mods())
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "dout" in l]
+    assert decls == ["wire [1:0][35:0] dout;"]
+
+
+def test_dt_comment_exempts_width_update():
+    """//DT anywhere on the declaration line: never touched."""
+    out = auto_def_t(_multidim_top("wire [35:0] dout; //DT"), multidim_mods())
+    assert "wire [35:0] dout; //DT" in out
+    out = auto_def_t(_multidim_top("wire [35:0] dout;  // DT don't touch"), multidim_mods())
+    assert "wire [35:0] dout;  // DT don't touch" in out
+
+
+def test_correct_width_decl_untouched_and_idempotent():
+    lines = _multidim_top("wire [1:0][35:0] dout;")
+    once = auto_def_t(lines, multidim_mods())
+    assert "wire [1:0][35:0] dout;" in once
+    assert auto_def_t(once, multidim_mods()) == once
+
+
+def test_multi_name_decl_not_touched():
+    """wire [3:0] a, dout; is conservatively skipped (multi-name list)."""
+    out = auto_def_t(_multidim_top("wire [3:0] a, dout;"), multidim_mods())
+    assert "wire [3:0] a, dout;" in out
+
+
+def test_reg_decl_wrong_dims_updated():
+    out = auto_def_t(_multidim_top("reg [35:0] dout;"), multidim_mods())
+    decls = [l for l in out if re.match(r"^\s*reg\b", l) and "dout" in l]
+    assert decls == ["reg [1:0][35:0] dout;"]
+
+
+def test_rewrite_usrdef_packed_dims_unit():
+    from verilog_tooling.autodef import _rewrite_usrdef_packed_dims
+
+    rw = _rewrite_usrdef_packed_dims
+    assert rw("wire [35:0] dout;", ("1:0", "35:0")) == "wire [1:0][35:0] dout;"
+    assert rw("  reg signed [7:0] x; // c", ("1:0", "7:0")) == "  reg signed [1:0][7:0] x; // c"
+    # already correct: returned unchanged
+    assert rw("wire [1:0][35:0] dout;", ("1:0", "35:0")) == "wire [1:0][35:0] dout;"
+    # unpacked dims after the name are preserved
+    assert rw("wire [35:0] mem [0:3];", ("1:0", "35:0")) == "wire [1:0][35:0] mem [0:3];"
+    # multi-name / initialised declarations are not simple decls
+    assert rw("wire [3:0] a, b;", ("1:0", "3:0")) is None
+    assert rw("wire [3:0] a = 4'h0;", ("1:0", "3:0")) is None
+
+
+def test_aall_wrong_width_decl_updated_end_to_end(tmp_path):
+    """End-to-end aall (the /tmp/a_wrong.v scenario): the hand-written
+    one-dim declaration of a two-dim instance output is updated in place,
+    and a second aall run is a no-op."""
+    from verilog_tooling import inst
+
+    libdir = tmp_path / "lib"
+    libdir.mkdir()
+    (libdir / "sub.v").write_text(MULTIDIM_SUB)
+    top = tmp_path / "top.v"
+    top.write_text("""\
+module top;
+input clk;
+/*autodef*/
+/*autowire*/
+
+wire [35:0] dout;  // 手动声明,位宽错误
+
+sub u_sub (/*autoinst*/
+    .dout (dout/*[1:0][35:0]*/),
+    .w    (w),
+    .clk  (clk)
+);
+endmodule
+""")
+    o1 = tmp_path / "o1.v"
+    o2 = tmp_path / "o2.v"
+    inst.main(["aall", "-i", str(top), "-o", str(o1), "--ref_file", str(top), "-y", str(libdir)])
+    t1 = o1.read_text()
+    assert re.search(r"^wire ?\[1:0\]\[35:0\] +dout;  // 手动声明,位宽错误$", t1, re.M)
+    assert "[35:0] [35:0]" not in t1 and "[35:0][35:0]" not in t1
+    inst.main(["aall", "-i", str(o1), "-o", str(o2), "--ref_file", str(top), "-y", str(libdir)])
+    assert o2.read_text() == t1  # idempotent

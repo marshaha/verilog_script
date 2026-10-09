@@ -665,6 +665,29 @@ class SignalTable:
         sig.width = new_msb
         sig.width_updated = True
 
+    def _update_usrdef_packed_dims(self, sig: Signal, pdims: tuple) -> None:
+        """Rewrite a hand-written declaration whose packed shape the driving
+        instance disproves — a missing, extra or wrong packed dimension
+        (``wire [35:0] x;`` fed by ``output [1:0][35:0] x``).  PDIMS are the
+        port's own packed dims (or the EAI ``/*[D1][D2]*/`` note), already
+        param-value substituted, so they are authoritative.  Only a simple
+        one-line single-name ``wire``/``reg``/``logic`` declaration is
+        eligible (multi-name lists and initialised declarations are never
+        touched), a ``//DT`` comment anywhere on the line exempts it, and a
+        declaration already carrying exactly PDIMS is left alone
+        (idempotent)."""
+        if sig.type != "usrdef" or not pdims:
+            return
+        if re.search(r"//\s*DT\b", sig.line, re.IGNORECASE):
+            return  # user said don't touch
+        rewritten = _rewrite_usrdef_packed_dims(sig.line, pdims)
+        if rewritten is None or rewritten == sig.line:
+            return
+        sig.line = rewritten
+        sig.width = pdims[0].split(":")[0].strip()
+        sig.packed_dims = tuple(pdims[1:])
+        sig.width_updated = True
+
     def extend_from_side(self, side: "Side | None", stype: str) -> None:
         """automatic.vim s:ExtendFromSide: insert/update the LHS signal.
 
@@ -880,6 +903,10 @@ class SignalTable:
             elif sig.type == "usrdef":
                 # instance output port wider than the hand-written net
                 self._update_usrdef_width(sig, port_width)
+            if sig.type == "usrdef" and pdims:
+                # the driving port's packed shape proves the hand-written
+                # declaration wrong (e.g. a missing packed dim): fix it
+                self._update_usrdef_packed_dims(sig, pdims)
         else:
             self.signals[net] = Signal(width=port_width, type="inst_wire", packed_dims=pdims)
 
@@ -2175,6 +2202,35 @@ def _rewrite_usrdef_range(line: str, new_msb: str) -> str | None:
     return f"{indent}{kw} [{new_msb}:0] {name}{tail}"
 
 
+_USRDEF_SIMPLE_DECL = re.compile(
+    r"^(?P<indent>\s*)(?P<kw>wire|reg|logic)\b"
+    r"(?P<sgn>\s+signed\b)?"
+    r"(?P<dims>(?:\s*\[[^\]]*\])*)"
+    r"\s+"
+    r"(?P<name>[A-Za-z_]\w*)"
+    r"(?P<udims>(?:\s*\[[^\]]*\])*)"
+    r"(?P<end>\s*;.*)$"
+)
+
+
+def _rewrite_usrdef_packed_dims(line: str, pdims: tuple) -> str | None:
+    """Rewrite the packed-dimension prefix of a simple one-line
+    ``wire [A:0] x;`` declaration to PDIMS, preserving indent, keyword,
+    ``signed``, the name, any unpacked dims, ``;`` and the trailing comment.
+    None when the line is not a simple single-name declaration (a
+    multi-name list or an initialised declaration is never touched).
+    Returns LINE unchanged when it already carries exactly PDIMS."""
+    m = _USRDEF_SIMPLE_DECL.match(line)
+    if not m:
+        return None
+    cur = tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group("dims")))
+    if cur == tuple(pdims):
+        return line
+    head = m.group("indent") + m.group("kw") + (m.group("sgn") or "")
+    head += " " + "".join(f"[{d}]" for d in pdims) + " "
+    return head + m.group("name") + m.group("udims") + m.group("end")
+
+
 def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = False) -> str:
     # head: the leading keyword — a typedef or an explicit net type from the
     # submodule port REPLACES a bare ``wire`` (``foo_t x;``, ``logic signed
@@ -2304,6 +2360,11 @@ def _absorb_waived_usrdef(sig: Signal, pdims: tuple, new_type: str) -> bool:
     lines are eligible: a hand-written multi-dim declaration anywhere else
     keeps its usrdef status verbatim."""
     if sig.type != "usrdef" or not sig.orphan or not pdims or sig.drop_line:
+        return False
+    if "//" in sig.line:
+        # a comment-carrying line is user-owned (region-generated multi-dim
+        # declarations never carry comments — e.g. a hand-written decl whose
+        # width AALL just corrected in place): keep it where it is, verbatim
         return False
     dims = _usrdef_packed_dims(sig.line)
     if dims is None or tuple(_clean_dim(d) for d in pdims) != dims:
