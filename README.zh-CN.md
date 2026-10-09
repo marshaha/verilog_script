@@ -1547,6 +1547,37 @@ VERILOG_TOOLING_QUIET=1 python3 -m verilog_tooling.inst aall -i top.v -o out.v -
 
 静音后只保留插件自己的 `running ...` 和完成摘要两行消息。
 
+### 信号维度追踪（`VERILOG_TOOLING_TRACE`）
+
+某个 net 生成的位宽不对时，可以用它追踪维度从何而来：把
+`VERILOG_TOOLING_TRACE` 设为逗号分隔的信号名（大小写敏感；`*`
+追踪全部），这些信号在 AUTOWIRE/AUTODEF 中的每个决策都会输出到
+stderr，一个事件一行：
+
+```bash
+VERILOG_TOOLING_TRACE=ram_rdata vim a.v        " 然后 :AALL
+# 或终端/批处理：
+VERILOG_TOOLING_TRACE=ram_rdata python3 -m verilog_tooling.inst aall -i a.v -o out.v -y .
+```
+
+输出样例：
+
+```
+[vt-trace] ram_rdata: first-driven inst=u0_b module=b width=c0 pdims=['1:0', '35:0']
+[vt-trace] ram_rdata: skip-declared decl_width=35 decl_pdims=[]
+[vt-trace] ram_rdata: update-dims before=wire [35:0] ram_rdata; after=wire [1:0][35:0] ram_rdata;
+```
+
+事件动词固定，方便 grep——`first-driven`（首次记录驱动，带
+inst/module/width/pdims）、`conn-dims`（从连接注释/端口 packed
+提取到的维度）、`skip-declared`（已声明跳过，带现有声明的维度）、
+`emit-decl`（最终决定声明的宽度/维度）、`extend-from-side` /
+`merge-dims`（赋值侧宽度/维度证据与 unpacked 维度合并）、
+`update-width` / `update-dims`（原地纠正手写声明）、`dt-exempt`
+（`//DT` 豁免阻止了更新）、`absorb` / `waive-keep`（kill 豁免
+orphan 处理）、`multi-driver`。未设置/为空时只有一次缓存的环境
+变量读取；trace 是调试开关，**不受** `VERILOG_TOOLING_QUIET` 抑制。
+
 `g:verilog_tooling_interfaces` 列出库扫描找不到的 SystemVerilog
 interface 类型名（文件不在任何 `-y` 目录下）。这样
 `axera_apb_interface.master apb` 这类端口在 EAI/AIT/AIU 中被识别为

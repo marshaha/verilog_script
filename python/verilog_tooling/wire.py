@@ -277,10 +277,21 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
     prev = nets.get(rec.name)
     if prev is None:
         nets[rec.name] = rec
+        from ._trace import trace_sig, tracing
+
+        if tracing(rec.name):
+            trace_sig(
+                rec.name,
+                f"first-driven inst={rec.inst} module={rec.module} "
+                f"width={rec.width} pdims={list(rec.packed_dims)}",
+            )
     elif (prev.inst, prev.module) != (rec.inst, rec.module) and not prev.multi:
         from dataclasses import replace
 
         nets[rec.name] = replace(prev, multi=True)
+        from ._trace import trace_sig
+
+        trace_sig(prev.name, f"multi-driver inst={rec.inst} module={rec.module}")
 
 
 def _primitive_nets(
@@ -470,6 +481,14 @@ def _inst_driven_nets(
                 pdims = tuple(
                     _clean_dim(emacs._apply_param_values(d, const_map))
                     for d in pdims
+                )
+            from ._trace import trace_sig, tracing
+
+            if tracing(net):
+                trace_sig(
+                    net,
+                    f"conn-dims pin={pin} pdims={list(pdims)} width={width} "
+                    f"inst={inst} module={module}",
                 )
             _note_net(
                 nets,
@@ -699,8 +718,21 @@ def _auto_wire_single(
 
     sigs: list[Signal] = []
     comments: dict[str, str] = {}
+    from ._trace import trace_sig, tracing
+
     for name in sorted(driven):
         if name in declared:
+            if tracing(name):
+                u = usrdef.signals.get(name)
+                trace_sig(
+                    name,
+                    f"skip-declared "
+                    + (
+                        f"decl_width={u.width} decl_pdims={list(u.packed_dims)}"
+                        if u is not None
+                        else "decl=port/param/define"
+                    ),
+                )
             continue
         if typedef_re and re.search(typedef_re, name):
             continue  # a typedef, not a net (verilog-typedef-regexp)
@@ -724,6 +756,12 @@ def _auto_wire_single(
                 net_type=net.net_type, data_type=net.data_type, dims=dims,
             )
         )
+        if tracing(name):
+            trace_sig(
+                name,
+                f"emit-decl width={net.width} packed_dims={list(net.packed_dims)} "
+                f"dims={list(dims)} signed={net.signed}",
+            )
         # an inout-driven net is commented To/From (verilog-mode), an
         # output-driven one From
         direction = "To/From" if net.direction == "inout" else "From"
@@ -772,14 +810,29 @@ def _auto_reg_single(
     driven = set(_inst_driven_nets(lines, modules or {}, concat_ok=True))
     excluded = set(usrdef.signals) | assigns | driven
     excluded |= get_all_defs(full) | get_all_paras(lines)
-    sigs = [
-        Signal(
-            width=sig.width, type="io_reg", name=name, signed=sig.signed,
-            net_type=sig.net_type, data_type=sig.data_type,
+    from ._trace import trace_sig, tracing
+
+    sigs = []
+    for name, sig in ports.signals.items():
+        if sig.io_dir != "output" or sig.has_defined:
+            continue
+        if name in excluded:
+            if tracing(name):
+                why = (
+                    "usrdef" if name in usrdef.signals
+                    else "driven" if name in driven
+                    else "assign" if name in assigns
+                    else "param/define"
+                )
+                trace_sig(name, f"skip-declared cmd=areg why={why}")
+            continue
+        sigs.append(
+            Signal(
+                width=sig.width, type="io_reg", name=name, signed=sig.signed,
+                net_type=sig.net_type, data_type=sig.data_type,
+            )
         )
-        for name, sig in ports.signals.items()
-        if sig.io_dir == "output" and not sig.has_defined and name not in excluded
-    ]
+        trace_sig(name, f"emit-decl cmd=areg width={sig.width}")
     sigs.sort(key=lambda s: s.name)
     return _regen(lines, _AUTOREG_MARK_FULL, _REG_HEADER, "reg  ", sigs, {})
 

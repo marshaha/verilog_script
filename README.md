@@ -1613,6 +1613,39 @@ VERILOG_TOOLING_QUIET=1 python3 -m verilog_tooling.inst aall -i top.v -o out.v -
 With logs quieted, only the plugin's own `running ...` / completion summary
 messages remain.
 
+### Signal-dimension tracing (`VERILOG_TOOLING_TRACE`)
+
+When a net comes out with the wrong width, trace where its dimensions came
+from: set `VERILOG_TOOLING_TRACE` to a comma-separated list of signal names
+(case-sensitive; `*` traces everything) and the AUTOWIRE/AUTODEF decisions
+for those signals go to stderr, one line per event:
+
+```bash
+VERILOG_TOOLING_TRACE=ram_rdata vim a.v        # then :AALL
+# or terminal/batch:
+VERILOG_TOOLING_TRACE=ram_rdata python3 -m verilog_tooling.inst aall -i a.v -o out.v -y .
+```
+
+Sample output:
+
+```
+[vt-trace] ram_rdata: first-driven inst=u0_b module=b width=c0 pdims=['1:0', '35:0']
+[vt-trace] ram_rdata: skip-declared decl_width=35 decl_pdims=[]
+[vt-trace] ram_rdata: update-dims before=wire [35:0] ram_rdata; after=wire [1:0][35:0] ram_rdata;
+```
+
+Events use fixed verbs — `first-driven` (first recorded driver, with
+inst/module/width/pdims), `conn-dims` (dims extracted from a connection
+note / port packed dims), `skip-declared` (already declared, with the
+existing declaration's dims), `emit-decl` (final declared width/dims),
+`extend-from-side` / `merge-dims` (assignment-side width/dim evidence and
+unpacked-dim merges), `update-width` / `update-dims` (a hand-written
+declaration corrected in place), `dt-exempt` (a `//DT` waiver blocked an
+update), `absorb` / `waive-keep` (kill-waiver orphan handling),
+`multi-driver`. Unset/empty variable costs one cached environment read;
+the trace is a debugging switch and is **not** suppressed by
+`VERILOG_TOOLING_QUIET`.
+
 `g:verilog_tooling_interfaces` lists SystemVerilog interface type names the
 library scan cannot find (the file is not under any `-y` dir). Ports like
 `axera_apb_interface.master apb` then parse as interface ports for

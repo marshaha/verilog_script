@@ -643,7 +643,7 @@ class SignalTable:
             seq += 1
         return seq
 
-    def _update_usrdef_width(self, sig: Signal, new_msb: str) -> None:
+    def _update_usrdef_width(self, sig: Signal, new_msb: str, name: str = "") -> None:
         """Grow a hand-written declaration whose width is provably STALE:
         the driver-derived NEW_MSB is strictly larger than the declared msb
         and both are numerically comparable (integers), or the declaration
@@ -655,17 +655,23 @@ class SignalTable:
         if sig.type != "usrdef":
             return
         if re.search(r"//\s*DT\s*$", sig.line, re.IGNORECASE):
+            from ._trace import trace_sig
+
+            trace_sig(name or sig.name, "dt-exempt cmd=update-width")
             return  # user said don't touch
         if not _usrdef_wider(new_msb, sig.width):
             return
         rewritten = _rewrite_usrdef_range(sig.line, new_msb)
         if rewritten is None:
             return  # declaration text is not a simple one-line wire/reg
+        from ._trace import trace_sig
+
+        trace_sig(name or sig.name, f"update-width before={sig.width} after={new_msb}")
         sig.line = rewritten
         sig.width = new_msb
         sig.width_updated = True
 
-    def _update_usrdef_packed_dims(self, sig: Signal, pdims: tuple) -> None:
+    def _update_usrdef_packed_dims(self, sig: Signal, pdims: tuple, name: str = "") -> None:
         """Rewrite a hand-written declaration whose packed shape the driving
         instance disproves — a missing, extra or wrong packed dimension
         (``wire [35:0] x;`` fed by ``output [1:0][35:0] x``).  PDIMS are the
@@ -679,10 +685,19 @@ class SignalTable:
         if sig.type != "usrdef" or not pdims:
             return
         if re.search(r"//\s*DT\b", sig.line, re.IGNORECASE):
+            from ._trace import trace_sig
+
+            trace_sig(name or sig.name, "dt-exempt cmd=update-dims")
             return  # user said don't touch
         rewritten = _rewrite_usrdef_packed_dims(sig.line, pdims)
         if rewritten is None or rewritten == sig.line:
             return
+        from ._trace import trace_sig
+
+        trace_sig(
+            name or sig.name,
+            f"update-dims before={sig.line.strip()} after={rewritten.strip()}",
+        )
         sig.line = rewritten
         sig.width = pdims[0].split(":")[0].strip()
         sig.packed_dims = tuple(pdims[1:])
@@ -697,6 +712,14 @@ class SignalTable:
         if side is None:
             return
         name = side.name
+        from ._trace import trace_sig, tracing
+
+        if tracing(name):
+            trace_sig(
+                name,
+                f"extend-from-side stype={stype} width={side.width} "
+                f"dims={list(side.dims)} elem_range={side.elem_range}",
+            )
         if side.width is None:
             # scalar index LHS (name[..]) or a link: only the type is stored
             width = ""
@@ -754,7 +777,7 @@ class SignalTable:
             sig.width = ""  # let the packed width below take effect
         if side.width is not None and sig.type == "usrdef":
             # hand-written declaration whose driver is wider: grow it in place
-            self._update_usrdef_width(sig, width)
+            self._update_usrdef_width(sig, width, side.name)
         if side.width is not None and sig.width == "":
             sig.width = width
         elif side.width is not None and not side.dims and width not in ("", "c0"):
@@ -785,7 +808,10 @@ class SignalTable:
         if side.dims and sig.dims:
             # element writes at different indexes (val1[0][7:0], val1[1][7:0]):
             # the declared unpacked range must cover the widest index seen
-            sig.dims = _merge_unpacked_dims(sig.dims, side.dims)
+            merged = _merge_unpacked_dims(sig.dims, side.dims)
+            if tracing(name) and merged != sig.dims:
+                trace_sig(name, f"merge-dims before={list(sig.dims)} after={list(merged)}")
+            sig.dims = merged
         if side.dims and not sig.dims:
             # loop-var selects on an already-packed vector are bit-selects,
             # not unpacked dims; true multidim sides carry a packed range too
@@ -882,8 +908,16 @@ class SignalTable:
             from .emacs import _apply_param_values
 
             pdims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in pdims)
+        from ._trace import trace_sig, tracing
+
+        if tracing(net):
+            trace_sig(
+                net,
+                f"conn-dims port={port_name} dir={port.direction} "
+                f"pdims={list(pdims)} port_width={port_width}",
+            )
         if sig is not None:
-            if pdims and _absorb_waived_usrdef(sig, pdims, "inst_wire"):
+            if pdims and _absorb_waived_usrdef(sig, pdims, "inst_wire", net):
                 return  # orphan absorbed into the region as inst_wire
             if sig.type == "inst_in_wire":
                 sig.type = "inst_wire"  # a real driver trumps the input-port hint
@@ -902,11 +936,11 @@ class SignalTable:
                 sig.width = port_width
             elif sig.type == "usrdef":
                 # instance output port wider than the hand-written net
-                self._update_usrdef_width(sig, port_width)
+                self._update_usrdef_width(sig, port_width, net)
             if sig.type == "usrdef" and pdims:
                 # the driving port's packed shape proves the hand-written
                 # declaration wrong (e.g. a missing packed dim): fix it
-                self._update_usrdef_packed_dims(sig, pdims)
+                self._update_usrdef_packed_dims(sig, pdims, net)
         else:
             self.signals[net] = Signal(width=port_width, type="inst_wire", packed_dims=pdims)
 
@@ -954,7 +988,7 @@ class SignalTable:
         if sig is None:
             self.signals[net] = Signal(width=width, type="inst_in_wire", packed_dims=pdims)
         elif sig.type == "usrdef" and pdims:
-            _absorb_waived_usrdef(sig, pdims, "inst_in_wire")
+            _absorb_waived_usrdef(sig, pdims, "inst_in_wire", net)
         elif sig.type == "inst_in_wire":
             if sig.width in ("", "c0") or (width and _wider(width, sig.width)):
                 if width:
@@ -996,7 +1030,7 @@ class SignalTable:
         if sig is None:
             self.signals[net] = Signal(width=new_msb, type="inst_wire")
         elif sig.type == "usrdef":
-            self._update_usrdef_width(sig, new_msb)
+            self._update_usrdef_width(sig, new_msb, net)
         else:
             if sig.type == "inst_in_wire":
                 sig.type = "inst_wire"  # a real driver trumps the input-port hint
@@ -2032,7 +2066,7 @@ def update_define(
             for name in group:
                 sig = signals.get(name)
                 if sig is not None and sig.type == "usrdef":
-                    signals._update_usrdef_width(sig, width)
+                    signals._update_usrdef_width(sig, width, name)
     for name, sig in signals.signals.items():
         if sig.type in ("io_wire", "io_reg", "io_inout", "usrdef", "inst_wire"):
             unresolved.pop(name, None)
@@ -2114,6 +2148,8 @@ class Divided:
 
 def div_signals(signals: SignalTable) -> Divided:
     """Bucket signals for emission and compute the name-column width."""
+    from ._trace import trace_sig, tracing
+
     div = Divided([], [], [], [], [], _MAX_LEN_FLOOR)
     for name, sig in signals.signals.items():
         if sig.type in ("io_wire", "io_reg"):
@@ -2127,25 +2163,50 @@ def div_signals(signals: SignalTable) -> Divided:
             if not sig.has_defined and not is_multidim:
                 sig.name = name
                 div.io_wire.append(sig)
+                if tracing(name):
+                    trace_sig(
+                        name,
+                        f"emit-decl bucket=io_wire width={sig.width} "
+                        f"packed_dims={list(sig.packed_dims)} dims={list(sig.dims)}",
+                    )
+            elif tracing(name):
+                trace_sig(
+                    name,
+                    f"skip-declared bucket=io has_defined={sig.has_defined} "
+                    f"multidim={is_multidim}",
+                )
         elif sig.type == "freg":
             if sig.width == "":
                 sig.width = "c0"  # no width source: default to scalar (1 bit)
             sig.name = name
             div.ff_reg.append(sig)
+            trace_sig(name, f"emit-decl bucket=freg width={sig.width}")
         elif sig.type == "creg":
             if sig.width == "":
                 sig.width = "c0"
             sig.name = name
             div.comb_reg.append(sig)
+            trace_sig(name, f"emit-decl bucket=creg width={sig.width}")
         elif sig.type == "wire":
             if sig.width == "":
                 sig.width = "c0"
             sig.name = name
             div.wire.append(sig)
+            if tracing(name):
+                trace_sig(
+                    name,
+                    f"emit-decl bucket=wire width={sig.width} dims={list(sig.dims)}",
+                )
         elif sig.type in ("inst_wire", "inst_in_wire"):
             if sig.width != "" or sig.packed_dims:
                 sig.name = name
                 div.inst_wire.append(sig)
+                if tracing(name):
+                    trace_sig(
+                        name,
+                        f"emit-decl bucket=inst_wire width={sig.width} "
+                        f"packed_dims={list(sig.packed_dims)}",
+                    )
         if sig.type != "usrdef" and (sig.width != "" or sig.packed_dims):
             div.max_len = max(div.max_len, _sig_decl_len(sig))
     div.io_wire.sort(key=lambda s: s.seq)
@@ -2351,7 +2412,7 @@ def _usrdef_unpacked_dims(line: str) -> "tuple[str, ...] | None":
     return tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
 
 
-def _absorb_waived_usrdef(sig: Signal, pdims: tuple, new_type: str) -> bool:
+def _absorb_waived_usrdef(sig: Signal, pdims: tuple, new_type: str, name: str = "") -> bool:
     """A waived orphan (kill's unregenerable waiver left it right after the
     /*autodef*/ marker) whose declaration the current evidence re-derives
     IDENTICALLY: convert it to the derived signal type so the region
@@ -2365,10 +2426,16 @@ def _absorb_waived_usrdef(sig: Signal, pdims: tuple, new_type: str) -> bool:
         # a comment-carrying line is user-owned (region-generated multi-dim
         # declarations never carry comments — e.g. a hand-written decl whose
         # width AALL just corrected in place): keep it where it is, verbatim
+        from ._trace import trace_sig
+
+        trace_sig(name or sig.name, "waive-keep reason=trailing-comment")
         return False
     dims = _usrdef_packed_dims(sig.line)
     if dims is None or tuple(_clean_dim(d) for d in pdims) != dims:
         return False
+    from ._trace import trace_sig
+
+    trace_sig(name or sig.name, f"absorb new_type={new_type} pdims={list(pdims)}")
     sig.type = new_type
     sig.packed_dims = tuple(_clean_dim(d) for d in pdims)
     sig.drop_line = True

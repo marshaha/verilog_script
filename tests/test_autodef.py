@@ -3278,3 +3278,53 @@ endmodule
     assert "[35:0] [35:0]" not in t1 and "[35:0][35:0]" not in t1
     inst.main(["aall", "-i", str(o1), "-o", str(o2), "--ref_file", str(top), "-y", str(libdir)])
     assert o2.read_text() == t1  # idempotent
+
+
+# ---------------------------------------------------------------------------
+# VERILOG_TOOLING_TRACE signal-dimension tracing
+
+
+def _trace_run(monkeypatch, value):
+    from verilog_tooling import _trace
+
+    monkeypatch.setenv("VERILOG_TOOLING_TRACE", value)
+    _trace._reset_for_tests()
+    return _trace
+
+
+def test_trace_hit_emits_events(monkeypatch, capsys):
+    """A traced signal prints [vt-trace] lines on stderr; events include the
+    conn-dims extraction and the update-dims correction."""
+    _trace_run(monkeypatch, "dout")
+    out = auto_def_t(_multidim_top("wire [35:0] dout;  // mine"), multidim_mods())
+    err = capsys.readouterr().err
+    lines = [l for l in err.splitlines() if l.startswith("[vt-trace] dout:")]
+    assert any("conn-dims" in l and "'1:0', '35:0'" in l for l in lines)
+    assert any("update-dims" in l for l in lines)
+    # tracing is pure observation: behavior is unchanged
+    assert "wire [1:0][35:0] dout;  // mine" in out
+
+
+def test_trace_miss_is_silent(monkeypatch, capsys):
+    """A signal not in the filter produces no output."""
+    _trace_run(monkeypatch, "some_other_net")
+    auto_def_t(_multidim_top("wire [35:0] dout;"), multidim_mods())
+    assert "[vt-trace]" not in capsys.readouterr().err
+
+
+def test_trace_star_wildcard(monkeypatch, capsys):
+    """'*' traces every signal."""
+    _trace_run(monkeypatch, "*")
+    auto_def_t(_multidim_top("wire [35:0] dout;"), multidim_mods())
+    err = capsys.readouterr().err
+    assert "[vt-trace] dout:" in err
+
+
+def test_trace_unset_is_silent(monkeypatch, capsys):
+    """Unset variable: no output at all."""
+    monkeypatch.delenv("VERILOG_TOOLING_TRACE", raising=False)
+    from verilog_tooling import _trace
+
+    _trace._reset_for_tests()
+    auto_def_t(_multidim_top("wire [35:0] dout;"), multidim_mods())
+    assert "[vt-trace]" not in capsys.readouterr().err
