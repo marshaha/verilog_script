@@ -3074,3 +3074,78 @@ def test_interface_instance_from_include_registered(tmp_path):
     finally:
         set_include_dirs([])
     assert {"axera_apb_interface", "apb_sys_cfg"} <= names
+
+
+# ---------------------------------------------------------------------------
+# tt/unre_test/a.v regressions: multi-line assign statement and unpacked-dim
+# widening across element writes
+
+
+def test_multiline_assign_rhs_concat_lhs_declared():
+    """assign val0[1:0] = {a,\n b}; — the multi-line concat sits on the RHS;
+    the LHS is still an assignment and must be declared as a wire."""
+    out = auto_def_t(
+        [
+            "module m;",
+            "/*autodef*/",
+            "assign val0[1:0] = {clk&rsyt,",
+            "                         vld};",
+            "endmodule",
+        ],
+        {},
+    )
+    decl = [l for l in out if re.search(r"\bval0\b\s*;", l)]
+    assert len(decl) == 1 and decl[0].startswith("wire") and "[1:0]" in decl[0]
+    # the genuinely undriven RHS name stays unresolved; val0 does not
+    assert any("// unresolved: rsyt " in l for l in out)
+    assert not any("// unresolved: val0 " in l for l in out)
+
+
+def test_unpacked_dim_widens_across_element_writes():
+    """val1[0][7:0] and val1[1][7:0] are element writes of one array: the
+    declared unpacked range covers the widest index seen ([0:1])."""
+    out = auto_def_t(
+        [
+            "module m;",
+            "/*autodef*/",
+            "assign val1[0][7:0] = data[7:0];",
+            "assign val1[1][7:0] = data[7:0];",
+            "endmodule",
+        ],
+        {},
+    )
+    decl = [l for l in out if re.match(r"^\s*wire\b", l) and "val1" in l]
+    assert len(decl) == 1 and "[7:0]" in decl[0] and "[0:1]" in decl[0]
+    assert not any("// unresolved: val1 " in l for l in out)
+
+
+def test_aall_unre_test_regressions_end_to_end(tmp_path):
+    """End-to-end aall on the tt/unre_test/a.v shapes: val0 from a
+    multi-line-RHS assign, val1 widened to [0:1], both in the wires
+    section; rsyt stays unresolved."""
+    from verilog_tooling import inst
+
+    top = tmp_path / "a.v"
+    top.write_text("""\
+module a(/*autoarg*/);
+input              clk;
+input              vld;
+input       [7:0]  data;
+/*autodef*/
+
+assign val0[1:0] = {clk&rsyt,
+                         vld};
+
+assign val1[0][7:0] = data[7:0];
+assign val1[1][7:0] = data[7:0];
+endmodule
+""")
+    out = tmp_path / "o.v"
+    inst.main(["aall", "-i", str(top), "-o", str(out), "--ref_file", str(top), "-y", str(tmp_path)])
+    text = out.read_text()
+    wires = text.split("// Define wires here")[1].split("// End of automatic define")[0]
+    assert re.search(r"wire\s*\[1:0\]\s+val0;", wires)
+    assert re.search(r"wire\s*\[7:0\]\s+val1\s*\[0:1\];", wires)
+    assert "// unresolved: rsyt " in text
+    assert "// unresolved: val0 " not in text
+    assert "// unresolved: val1 " not in text

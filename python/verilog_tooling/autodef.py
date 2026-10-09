@@ -759,6 +759,10 @@ class SignalTable:
             elif not width.isdigit() and not sig.width.isdigit():
                 if _sym_const_term(width) > _sym_const_term(sig.width):
                     sig.width = width
+        if side.dims and sig.dims:
+            # element writes at different indexes (val1[0][7:0], val1[1][7:0]):
+            # the declared unpacked range must cover the widest index seen
+            sig.dims = _merge_unpacked_dims(sig.dims, side.dims)
         if side.dims and not sig.dims:
             # loop-var selects on an already-packed vector are bit-selects,
             # not unpacked dims; true multidim sides carry a packed range too
@@ -1017,6 +1021,29 @@ def _merge_to_width(hi: str, w: str) -> str:
         return body
     sign = "+" if total > 0 else "-"
     return f"{body}{sign}{abs(total)}"
+
+
+def _merge_unpacked_dims(a: tuple[str, ...], b: tuple[str, ...]) -> tuple[str, ...]:
+    """Element-wise union of two ``lo:hi`` unpacked-dimension tuples: equal
+    entries pass through, numeric ranges widen to min(lo):max(hi), anything
+    else keeps A's entry (symbolic extents are not comparable)."""
+    if len(a) != len(b):
+        return a
+    out = []
+    for x, y in zip(a, b):
+        if x == y:
+            out.append(x)
+            continue
+        mx = re.fullmatch(r"(-?\d+):(-?\d+)", x)
+        my = re.fullmatch(r"(-?\d+):(-?\d+)", y)
+        if mx and my:
+            out.append(
+                f"{min(int(mx.group(1)), int(my.group(1)))}"
+                f":{max(int(mx.group(2)), int(my.group(2)))}"
+            )
+        else:
+            out.append(x)
+    return tuple(out)
 
 
 def _wider(new_msb: str, old_msb: str) -> bool:
@@ -3294,7 +3321,16 @@ def _auto_def_t_single(
                     i = next_i
                     continue
             elif next_i != i + 1:
-                i = next_i  # continuation joined but not an assignment
+                # the statement spans lines with the concat on the RHS
+                # (``assign x = {a,\n b};``): the joined text is still a
+                # valid assignment — classify it instead of dropping it
+                sides = _split_assign(line, "=")
+                if sides:
+                    side = get_assign_side(*sides, loop_ranges, loop_bounds, sym_hi)
+                    signals.extend_from_side(side, "wire")
+                    if side is not None and side.link is not None:
+                        update_link_dict(link_dict, allparas, side.name, side.link)
+                i = next_i
                 continue
             sides = _split_assign(line, "=")
             if sides:
