@@ -230,7 +230,7 @@ def _flat_guard(stack: "list[list[tuple[str, bool]]]") -> tuple[tuple[str, bool]
 
 def guard_separator_plan(
     guards: "list[tuple[tuple[str, bool], ...]]",
-) -> "tuple[list[bool], list[bool], dict[int, tuple]]":
+) -> "tuple[list[bool], list[bool], dict[int, list[tuple]]]":
     """Comma placement for a pin sequence with preprocessor guards.
 
     A separator between two pins that end up consecutive in some macro
@@ -238,29 +238,66 @@ def guard_separator_plan(
     A trailing comma on pin i is safe when some later pin is present
     whenever i is (its conditions are a subset of i's); a leading
     comma on pin j is safe when some earlier pin is present whenever
-    j is.  When neither holds for an adjacent pair, the comma goes on
-    its own line under the two guards combined (it fires only where
-    both pins are present).  Returns (trailing, leading, bridges);
-    the last pin never carries a trailing comma.  Pairs of
-    non-adjacent pins are covered whenever an unguarded (or
-    condition-subset) pin exists on the far side; sequences of
-    mutually incomparable guards with no such anchor remain a known
-    limitation.
+    j is.  When neither holds for a pair (i, j), the comma goes on
+    its own line, emitted just before pin j, under the direct-
+    predecessor condition Gi AND Gj AND NOT G(i+1) AND ... AND
+    NOT G(j-1): it fires exactly where i is the pin immediately
+    before j.  Adjacent pairs are the special case with no pins in
+    between.  Returns (trailing, leading, bridges) where bridges
+    maps a pin index j to the list of bridge guards to emit before
+    that pin; the last pin never carries a trailing comma.
+
+    Direct-predecessor bridges cover every intermediate pin whose
+    guard is a single literal (the negation is one literal).  An
+    intermediate pin with a multi-literal guard (`elsif chains,
+    nested guards) still blocks that pair: negating a conjunction
+    would need one bridge per disjunct, which is not emitted yet.
     """
     gsets = [set(g) for g in guards]
     n = len(guards)
     trailing = [False] * n  # pin i carries the separator after it
     leading = [False] * n  # pin i carries the separator before it
-    bridges: dict[int, tuple] = {}  # after pin i: comma under this guard
+    bridges: dict[int, list[tuple]] = {}  # before pin j: bridge guards
+
+    def combine(*parts: "tuple[tuple[str, bool], ...]") -> "tuple | None":
+        seen: dict[str, bool] = {}
+        out: list[tuple[str, bool]] = []
+        for part in parts:
+            for macro, pol in part:
+                if macro in seen:
+                    if seen[macro] != pol:
+                        return None  # contradictory condition
+                    continue
+                seen[macro] = pol
+                out.append((macro, pol))
+        return tuple(out)
+
     for i in range(n - 1):
         trailing[i] = any(gsets[j] <= gsets[i] for j in range(i + 1, n))
     for j in range(1, n):
         leading[j] = not trailing[j - 1] and any(
             gsets[i] <= gsets[j] for i in range(j)
         )
-    for i in range(n - 1):
-        if not trailing[i] and not leading[i + 1]:
-            bridges[i] = tuple(dict.fromkeys([*guards[i], *guards[i + 1]]))
+    for j in range(1, n):
+        for i in range(j):
+            if trailing[i] or leading[j]:
+                continue  # separator already carried by a pin line
+            parts: list[tuple[tuple[str, bool], ...]] = [guards[i], guards[j]]
+            blocked = False
+            for k in range(i + 1, j):
+                if len(guards[k]) != 1:
+                    # Unguarded pins are always present (no bridge can
+                    # ever fire past them); multi-literal guards cannot
+                    # be negated into a single bridge yet.
+                    blocked = True
+                    break
+                macro, pol = guards[k][0]
+                parts.append(((macro, not pol),))
+            if blocked:
+                continue
+            cond = combine(*parts)
+            if cond is not None:
+                bridges.setdefault(j, []).append(cond)
     return trailing, leading, bridges
 
 
@@ -322,8 +359,8 @@ def _render_new_pin_lines(
 
     for k, (port, conn) in enumerate(items):
         idx = k + off
-        if idx > 0 and (idx - 1) in bridges:
-            guard_to(bridges[idx - 1])
+        for cond in bridges.get(idx, []):
+            guard_to(cond)
             lines.append("    ,")
             guard_to(())
         guard_to(port.guard)

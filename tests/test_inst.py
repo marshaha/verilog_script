@@ -1,5 +1,7 @@
 """Week 4: automatic.vim instance commands rewritten in Python (inst.py)."""
 
+import itertools
+
 import pytest
 
 from verilog_tooling.inst import (
@@ -12,6 +14,7 @@ from verilog_tooling.inst import (
     auto_inst_update_order,
     find_autoinst_markers,
     find_interfaces,
+    guard_separator_plan,
     kill_auto_inst,
     main,
     modify_emacs_inst_format,
@@ -1366,3 +1369,72 @@ def test_aiu_new_multidim_pin_carries_dim_note():
     assert default_connection(ports["rdata"]) == "rdata/*[1:0][35:0]*/"
     assert default_connection(ports["mem"]) == "mem/*[35:0].[1:0]*/"
     assert default_connection(ports["clk"]) == "clk"
+
+
+def _assert_plan_separates_all_combos(guards):
+    """Every macro combo: consecutive present pins get exactly 1 comma."""
+    trailing, leading, bridges = guard_separator_plan(guards)
+    macros = sorted({m for g in guards for m, _ in g})
+    for combo in itertools.product([False, True], repeat=len(macros)):
+        env = dict(zip(macros, combo))
+
+        def present(guard):
+            return all(env[m] == pol for m, pol in guard)
+
+        alive = [i for i, g in enumerate(guards) if present(g)]
+        for a, b in zip(alive, alive[1:]):
+            seps = 0
+            if trailing[a]:
+                seps += 1
+            if leading[b]:
+                seps += 1
+            seps += sum(1 for cond in bridges.get(b, []) if present(cond))
+            assert seps == 1, f"combo {env}: pins {a}->{b} have {seps} seps"
+
+
+def test_incomparable_guards_all_combinations():
+    # Three mutually incomparable single-literal guards, no anchor pin.
+    # On the old adjacent-only bridge plan the X+Z combo (Y off) lost
+    # the comma between px and pz.
+    guards = [
+        (("HAS_X", True),),
+        (("HAS_Y", True),),
+        (("HAS_Z", True),),
+    ]
+    _assert_plan_separates_all_combos(guards)
+
+
+def test_incomparable_guards_with_unguarded_anchor_still_ok():
+    guards = [(("HAS_X", True),), (), (("HAS_Z", True),)]
+    _assert_plan_separates_all_combos(guards)
+
+
+@pytest.mark.parametrize("n", [2, 4, 5])
+def test_longer_incomparable_sequences(n):
+    guards = [((f"HAS_{i}", True),) for i in range(n)]
+    _assert_plan_separates_all_combos(guards)
+
+
+def test_eai_incomparable_guards_emit_direct_predecessor_bridge():
+    sub = parse_module_ports(
+        [
+            "module gsub3 (",
+            "`ifdef HAS_X",
+            "    input wire [7:0] px,",
+            "`endif",
+            "`ifdef HAS_Y",
+            "    input wire [7:0] py,",
+            "`endif",
+            "`ifdef HAS_Z",
+            "    input wire [7:0] pz",
+            "`endif",
+            ");",
+            "endmodule",
+        ]
+    )
+    from verilog_tooling.emacs import auto_inst as emacs_auto_inst
+
+    out = emacs_auto_inst(["gsub3 u_g (/*autoinst*/);"], {"gsub3": sub})
+    joined = "\n".join(out)
+    # bridge for px -> pz skipping py: HAS_X + HAS_Z + not HAS_Y
+    assert "`ifndef HAS_Y" in joined

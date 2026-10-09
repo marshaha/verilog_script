@@ -991,8 +991,8 @@ def _build_gen(sections, indent_pt: int, col_eff: int, closer: str) -> str:
     prev_si = -1
     for idx in range(n):
         si = flat[idx][0]
-        if idx > 0 and (idx - 1) in bridges:
-            guard_to(bridges[idx - 1])
+        for cond in bridges.get(idx, []):
+            guard_to(cond)
             out.append(" " * indent_pt + ",")
             guard_to(())
         if si != prev_si:
