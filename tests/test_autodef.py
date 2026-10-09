@@ -2933,3 +2933,60 @@ def test_comma_header_ignores_marker_only_single_line_header():
     for ln in out:
         assert not ln.rstrip().endswith(";,") and not ln.rstrip().endswith("*/,"), ln
     assert "input clk;" in out and "reg ack;" in out
+
+
+# ---------------------------------------------------------------------------
+# multi-module buffers (submodule defined above the instantiating module)
+
+
+def test_autodef_multi_module_buffer_scans_past_first_endmodule():
+    """Regression: the ADT scan used to stop at the FIRST endmodule, so a
+    module defined after a sibling submodule got an empty /*autodef*/
+    region.  val is assign-driven and appears inside an input-port
+    concatenation — its declaration comes from the assign LHS, unaffected
+    by the connection form."""
+    text = """\
+module sub(input [3:0] din, output [3:0] dout);
+endmodule
+module top(output [3:0] out_pad);
+  assign val = 2'b01;
+  sub u0 (
+    .din({2'b0, val}),
+    .dout(out_pad)
+  );
+  /*autodef*/
+endmodule
+"""
+    mods = {"sub": parse_module_ports("""\
+module sub(input [3:0] din, output [3:0] dout);
+endmodule
+""".splitlines())}
+    out = "\n".join(auto_def_t(text.splitlines(), mods))
+    assert re.search(r"^wire\s*\[1:0\]\s+val;$", out, re.M)
+    # the ANSI output port driven by the instance is NOT re-declared
+    assert not re.search(r"^wire\s*\[3:0\]\s+out_pad;$", out, re.M)
+    # the sibling module's ports never leak into top's region
+    assert not re.search(r"\b(din|dout);", out)
+
+
+def test_aall_autodef_concat_member_declared_end_to_end(tmp_path):
+    """aall end-to-end on the concat4.v repro: both modules in ONE file."""
+    from verilog_tooling import inst
+
+    top = tmp_path / "concat4.v"
+    top.write_text("""\
+module sub(input [3:0] din, output [3:0] dout);
+endmodule
+module top(output [3:0] out_pad);
+  assign val = 2'b01;
+  sub u0 (
+    .din({2'b0, val}),
+    .dout(out_pad)
+  );
+  /*autodef*/
+endmodule
+""")
+    out = tmp_path / "o.v"
+    inst.main(["aall", "-i", str(top), "-o", str(out), "--ref_file", str(top), "-y", str(tmp_path)])
+    text = out.read_text()
+    assert re.search(r"^wire\[1:0\]\s+val;$", text, re.M)

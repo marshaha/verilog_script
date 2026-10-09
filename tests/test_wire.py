@@ -425,9 +425,11 @@ endmodule
 # verilog-auto-ignore-concat / verilog-auto-wire-comment (file-local vars)
 
 
-def test_autowire_concat_skipped_by_default():
-    """House default (ignore-concat = t): a {...} connection on an instance
-    output declares nothing (the old first-identifier guess is gone)."""
+def test_autowire_concat_driven_declared_by_default():
+    """House default (ignore-concat = t) exempts concat nets from AIO
+    candidacy, but a net driven by an instance OUTPUT through a {...}
+    connection IS driven — a fact, not a candidacy — so AUTOWIRE declares
+    it (scalar: the per-member split of the port width is unknowable)."""
     top = """\
 module top;
 /*AUTOWIRE*/
@@ -441,7 +443,11 @@ endmodule
 """
     out = auto_wire(top.splitlines(), sub_mods())
     wires = [ln for ln in out if ln.startswith("wire")]
-    assert wires == [decl("wire ", "", "flag_w", "// From u_sub of sub.v")]
+    assert wires == [
+        decl("wire ", "", "a_w", "// From u_sub of sub.v"),
+        decl("wire ", "", "b_w", "// From u_sub of sub.v"),
+        decl("wire ", "", "flag_w", "// From u_sub of sub.v"),
+    ]
 
 
 def test_autowire_concat_extracted_when_nil():
@@ -759,3 +765,53 @@ def test_auto_wire_symbolic_driver_dimension_declared():
     # dimension instead of dropping the net entirely
     assert len(region) == 2
     assert "mid;" in region[1] and "K" in region[1]
+
+
+def test_autowire_markerless_instance_output_concat():
+    """A marker-less instance whose module resolves by name: its output-pin
+    concatenation drives hi/lo, so AUTOWIRE declares them (scalar — the
+    per-member split of the port width is unknowable) even with the
+    ignore-concat default on."""
+    top = """\
+module top(input [3:0] in_pad, output [3:0] out_pad);
+  sub u0 (
+    .din({2'b0, val}),
+    .dout({hi, lo})
+  );
+  /*autowire*/
+endmodule
+"""
+    mods = {"sub": parse_module_ports("""\
+module sub(input [3:0] din, output [3:0] dout);
+endmodule
+""".splitlines())}
+    out = "\n".join(auto_wire(top.splitlines(), mods))
+    assert re.search(r"^\s*wire\s+hi;\s*// From u0 of sub\.v$", out, re.M)
+    assert re.search(r"^\s*wire\s+lo;\s*// From u0 of sub\.v$", out, re.M)
+
+
+def test_aall_autowire_output_concat_end_to_end(tmp_path):
+    """aall end-to-end on the concat2.v repro: both modules in ONE file,
+    marker-less instance, output-side concat."""
+    from verilog_tooling import inst
+
+    top = tmp_path / "concat2.v"
+    top.write_text("""\
+module sub(input [3:0] din, output [3:0] dout);
+endmodule
+module top(input [3:0] in_pad, output [3:0] out_pad);
+  sub u0 (
+    .din({2'b0, val}),
+    .dout({hi, lo})
+  );
+  /*autowire*/
+  /*autodef*/
+endmodule
+""")
+    out = tmp_path / "o.v"
+    inst.main(["aall", "-i", str(top), "-o", str(out), "--ref_file", str(top), "-y", str(tmp_path)])
+    text = out.read_text()
+    assert re.search(r"^wire\s+hi;\s*// From u0 of sub\.v$", text, re.M)
+    assert re.search(r"^wire\s+lo;\s*// From u0 of sub\.v$", text, re.M)
+    # input-side val has no driver: not AW's job — ADT flags it unresolved
+    assert "// unresolved: val" in text

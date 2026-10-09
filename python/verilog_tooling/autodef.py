@@ -1426,12 +1426,17 @@ def _eval_bound(expr: str, consts: Mapping[str, int], symbolic: bool = False):
     return None
 
 
-def _loop_ranges(lines: Sequence[str]) -> dict[str, str]:
+def _loop_ranges(
+    lines: Sequence[str], consts: "Mapping[str, int] | None" = None
+) -> dict[str, str]:
     """for-loop variable -> unpacked range "lo:hi" derived from the loop
     bounds. Literal bounds are folded to integers; bounds mentioning a
     ``parameter``/`` `define`` are kept symbolic (``0:NUM0-1``) so the
-    declared dimension stays correct when an instance overrides the value."""
-    consts = _const_symbols(lines)
+    declared dimension stays correct when an instance overrides the value.
+    CONSTS overrides the constant-symbol table (a module span's caller
+    passes the whole-buffer table so pre-module `` `define``s resolve)."""
+    if consts is None:
+        consts = _const_symbols(lines)
     ranges: dict[str, str] = {}
     for lp in discover_for_scopes(list(lines)):
         init = _eval_bound(lp.init, consts)
@@ -1498,20 +1503,26 @@ def _loop_ranges(lines: Sequence[str]) -> dict[str, str]:
     return ranges
 
 
-def _loop_sym_hi(lines: Sequence[str]) -> dict[str, str]:
+def _loop_sym_hi(
+    lines: Sequence[str], consts: "Mapping[str, int] | None" = None
+) -> dict[str, str]:
     """for-loop variable -> symbolic hi expression (e.g. ``NUM0-1``), only for
     loops whose bound references a parameter/`define (stays symbolic)."""
     out = {}
-    for var, rng in _loop_ranges(lines).items():
+    for var, rng in _loop_ranges(lines, consts).items():
         hi = rng.split(":", 1)[1]
         if not re.fullmatch(r"-?\d+", hi):
             out[var] = hi
     return out
 
 
-def _loop_bounds(lines: Sequence[str]) -> dict[str, tuple[int, int]]:
-    """for-loop variable -> numeric (lo, hi) inclusive bounds."""
-    consts = _const_symbols(lines)
+def _loop_bounds(
+    lines: Sequence[str], consts: "Mapping[str, int] | None" = None
+) -> dict[str, tuple[int, int]]:
+    """for-loop variable -> numeric (lo, hi) inclusive bounds.  CONSTS
+    overrides the constant-symbol table (see :func:`_loop_ranges`)."""
+    if consts is None:
+        consts = _const_symbols(lines)
     bounds: dict[str, tuple[int, int]] = {}
     for lp in discover_for_scopes(list(lines)):
         init = _eval_bound(lp.init, consts)
@@ -2963,13 +2974,18 @@ def _comma_separated_header(expanded: list[str], original: Sequence[str]) -> lis
 
 
 def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = None) -> list[str]:
-    """Regenerate the /*autodef*/ declarations of a module.
+    """Regenerate the /*autodef*/ declarations of every marked module.
 
     MODULES maps instance module names to their parsed definitions (for
     inst_wire port-width lookup); it may be empty/None when the buffer has
     no /*autoinst*/ markers.  User ``wire``/``reg`` declarations stay in
     place and are never moved or deleted.
-    """
+
+    The buffer may hold several modules (a submodule defined above the
+    instantiating one): each /*autodef*/ marker is regenerated from its
+    OWN module's text only — a single buffer-wide scan would stop at the
+    first ``endmodule`` and leave every later module's region empty (and
+    would leak the sibling module's ports/signals into the tables)."""
     modules = modules or {}
     from .inst import set_typedef_regexp
     from .libdirs import parse_typedef_regexp
@@ -2978,14 +2994,39 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     set_typedef_regexp(parse_typedef_regexp(lines))
     set_param_value(parse_param_value(lines))
     lines = kill_auto_def_t(lines)
-    from .inst import _expand_ansi_header
+    from .inst import _expand_ansi_header, map_module_spans, module_spans
 
-    lines = _comma_separated_header(_expand_ansi_header(list(lines)), lines)
-    alldefs = get_all_defs(lines)
-    allparas = get_all_paras(lines)
-    loop_ranges = _loop_ranges(lines)
-    loop_bounds = _loop_bounds(lines)
-    sym_hi = _loop_sym_hi(lines)
+    # expand each module's single-line ANSI header in place (the shared
+    # helper rewrites only the FIRST header of the text it is given, so it
+    # must run once per module span)
+    expanded = list(lines)
+    for start, end in reversed(module_spans(expanded)):
+        span = expanded[start : end + 1]
+        expanded[start : end + 1] = _comma_separated_header(
+            _expand_ansi_header(list(span)), span
+        )
+    lines = expanded
+    return map_module_spans(
+        lines,
+        _AUTODEF_MARK_FULL,
+        lambda span: _auto_def_t_single(span, modules, lines),
+    )
+
+
+def _auto_def_t_single(
+    lines: Sequence[str], modules: Mapping[str, ModuleDef], full: Sequence[str]
+) -> list[str]:
+    """ADT for ONE module span (FULL is the whole post-kill buffer).
+
+    `` `define``/constant scans use FULL (macros and named constants are a
+    compilation-unit resource — a `` `define``/`` `include`` above the
+    module line still applies); everything else is scoped to the span."""
+    alldefs = get_all_defs(full) | get_all_defs(lines)
+    allparas = get_all_paras(full) | get_all_paras(lines)
+    consts = _const_symbols(full)
+    loop_ranges = _loop_ranges(lines, consts)
+    loop_bounds = _loop_bounds(lines, consts)
+    sym_hi = _loop_sym_hi(lines, consts)
     loop_decls = _loop_var_decls(lines)
     unresolved: dict[str, str] = {
         name: "no driver or declaration found"
@@ -2995,9 +3036,9 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
 
     for excluded in (
         _loop_vars(lines),  # for-loop variables are never signals
-        set(_const_symbols(lines)),  # named constants are not signals
+        set(_const_symbols(full)),  # named constants are not signals
         _structure_names(lines, modules),  # genvar/labels/instances
-        set(buffer_module_defs("\n".join(lines))),  # the module's own name
+        set(buffer_module_defs("\n".join(full))),  # the module's own name
     ):
         for name in excluded:
             unresolved.pop(name, None)
@@ -3034,9 +3075,9 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
         _line_off.append(_line_off[-1] + len(_l) + 1)
 
     signals = SignalTable()
-    signals.known = frozenset(set(allparas) | set(_const_symbols(lines)))
+    signals.known = frozenset(set(allparas) | set(_const_symbols(full)))
     if _param_value_on():
-        signals.consts = _const_symbols(lines)
+        signals.consts = _const_symbols(full)
     from .inst import auto_arg_port_names
 
     signals.port_names = frozenset(auto_arg_port_names(lines))
@@ -3264,7 +3305,7 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     # THIS module (a submodule's own parameter names, or — worse — another
     # SIGNAL mistaken for a constant msb like reg[chn_sel_idx:0]) would not
     # compile: mark it unresolved instead of emitting a broken declaration
-    known_syms = set(allparas) | set(_const_symbols(lines))
+    known_syms = set(allparas) | set(_const_symbols(full))
     for name, sig in list(signals.signals.items()):
         if sig.type == "usrdef":
             continue

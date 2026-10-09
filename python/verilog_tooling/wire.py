@@ -41,8 +41,12 @@ Configuration (file-local variables in the ``// Local Variables:``
 section):
 
 - ``verilog-auto-ignore-concat`` — non-nil (our default; emacs defaults to
-  nil) skips pin connections in ``{...}`` or ``(...)``; nil extracts their
-  identifiers instead (see :func:`_expr_nets`);
+  nil) exempts nets in ``{...}``/``(...)`` connections from the
+  AUTOINPUT/AUTOOUTPUT candidacy sets; nil extracts their identifiers
+  instead (see :func:`_expr_nets`).  AUTOWIRE/AUTOREG always extract them:
+  a net driven through a concat IS driven (a fact, not a candidacy), so it
+  is declared (AUTOWIRE, scalar width — the per-member split of the port
+  width is unknowable) or excluded from AUTOREG;
 - ``verilog-auto-wire-comment`` — nil suppresses the ``// From`` comments.
 """
 
@@ -89,9 +93,11 @@ _COMMENT_COL = 48  # verilog-insert-definition: indent-to (max 48 (+ indent-pt 4
 # file-local configuration (Local Variables section)
 
 
-# house default: skip {...}/(...) connections; emacs verilog-auto-ignore-concat
-# defaults to nil (extract their signals) — our users wrap signals in {}
-# precisely to exempt them from AUTOINPUT/AUTOOUTPUT/AUTOWIRE
+# house default: exempt {...}/(...) connection nets from AUTOINPUT/
+# AUTOOUTPUT candidacy; emacs verilog-auto-ignore-concat defaults to nil
+# (extract their signals) — our users wrap signals in {} precisely to
+# exempt them from AIO promotion (AUTOWIRE/AUTOREG still record the
+# connection as the driven fact it is)
 _IGNORE_CONCAT_DEFAULT = True
 _IGNORE_CONCAT = _IGNORE_CONCAT_DEFAULT
 
@@ -111,8 +117,10 @@ def _local_bool(lines: Sequence[str], name: str, default: bool) -> bool:
 
 
 def parse_ignore_concat(lines: Sequence[str]) -> bool:
-    """verilog-auto-ignore-concat file-local: non-nil skips pin connections
-    in {...} or (...); nil extracts their signals (emacs default)."""
+    """verilog-auto-ignore-concat file-local: non-nil exempts nets in
+    {...}/(...) pin connections from AIO candidacy (AUTOWIRE/AUTOREG
+    always extract them as driven facts); nil extracts their signals
+    everywhere (emacs default)."""
     return _local_bool(lines, "verilog-auto-ignore-concat", _IGNORE_CONCAT_DEFAULT)
 
 
@@ -358,7 +366,8 @@ def _inst_driven_nets(
     concat_ok: bool = False,
 ) -> dict[str, InstNet]:
     """net -> InstNet for every net connected to an output/inout port of an
-    /*autoinst*/ instance whose module is in MODULES (first driver wins).
+    /*autoinst*/ instance — or a marker-less instance whose module name
+    resolves in MODULES — (first driver wins).
 
     DIRECTIONS restricts the port directions considered (default: outputs
     and inouts — the AUTOWIRE driver set; interface ports are never wire
@@ -367,8 +376,12 @@ def _inst_driven_nets(
     cannot be re-declared).
 
     A {...} or (...) connection is skipped when the ignore-concat setting is
-    on (``verilog-auto-ignore-concat`` file-local, default on); when off,
-    its identifiers are extracted (verilog-read-sub-decls-expr).
+    on (``verilog-auto-ignore-concat`` file-local, default on) and
+    CONCAT_OK is false; otherwise its identifiers are extracted
+    (verilog-read-sub-decls-expr).  CONCAT_OK is on for every caller that
+    records a FACT (AUTOWIRE/AUTOREG "driven" sets, AIO connection
+    bookkeeping); it stays off only for AIO candidacy, where the
+    ignore-concat exemption is the user-visible strategy.
 
     The pin list is parsed with the same full-text machinery as EAI
     (:func:`emacs.inst_pin_connections` on the paren-stack instance
@@ -389,30 +402,9 @@ def _inst_driven_nets(
 
         const_map = {k: str(v) for k, v in _const_symbols(lines).items()}
     text = "\n".join(lines)
-    markers = emacs.find_auto_markers(lines, "autoinst")
-    stacks = emacs._scan_parens_at(text, [m.offset for m in markers])
     nets: dict[str, InstNet] = {}
-    for marker in markers:
-        st = stacks[marker.offset]
-        if not st:
-            continue
-        open_idx = st[-1]
-        try:
-            module, inst = emacs._resolve_instance_at(text, open_idx)
-        except ValueError:
-            continue
-        moddef = modules.get(module)
-        if moddef is None:
-            # Gate primitive (or/buf/etc.): parse positional ports.
-            # Array instance resolution (u_or [31:0]) is handled in
-            # _resolve_instance_at.
-            if module in emacs._GATE_PRIMITIVES:
-                _primitive_nets(
-                    text, open_idx, module, inst,
-                    emacs._GATE_PRIMITIVES[module],
-                    nets, directions, simple_only,
-                )
-            continue
+
+    def _scan(open_idx: int, module: str, inst: str, moddef: ModuleDef) -> None:
         if directions is None:
             # the AUTOWIRE driver set: outputs and inouts — an interface
             # port connection is an interface instance, never a wire driver
@@ -438,10 +430,10 @@ def _inst_driven_nets(
                 continue
             if stripped.startswith(("(", "{")):
                 # verilog-auto-ignore-concat: skip (default) or extract.
-                # CONCAT_OK is exclusion bookkeeping (AIO "is this net
-                # wired internally anywhere"): there the identifiers in
-                # a {...}/(...) expression always count as connected,
-                # regardless of the candidacy exemption.
+                # CONCAT_OK is fact recording (AW/AREG "driven" sets, AIO
+                # "is this net wired internally anywhere"): there the
+                # identifiers in a {...}/(...) expression always count as
+                # connected, regardless of the candidacy exemption.
                 if not _IGNORE_CONCAT or concat_ok:
                     for net, ewidth in _expr_nets(stripped):
                         if param_values:
@@ -509,6 +501,49 @@ def _inst_driven_nets(
                     nets[net] = replace(
                         rec, unpacked_idx=tuple(rec.unpacked_idx) + (uidx,)
                     )
+
+    markers = emacs.find_auto_markers(lines, "autoinst")
+    stacks = emacs._scan_parens_at(text, [m.offset for m in markers])
+    for marker in markers:
+        st = stacks[marker.offset]
+        if not st:
+            continue
+        open_idx = st[-1]
+        try:
+            module, inst = emacs._resolve_instance_at(text, open_idx)
+        except ValueError:
+            continue
+        moddef = modules.get(module)
+        if moddef is None:
+            # Gate primitive (or/buf/etc.): parse positional ports.
+            # Array instance resolution (u_or [31:0]) is handled in
+            # _resolve_instance_at.
+            if module in emacs._GATE_PRIMITIVES:
+                _primitive_nets(
+                    text, open_idx, module, inst,
+                    emacs._GATE_PRIMITIVES[module],
+                    nets, directions, simple_only,
+                )
+            continue
+        _scan(open_idx, module, inst, moddef)
+    # marker-less instances whose module name resolves in MODULES (the same
+    # rule autodef documents): their named .port(net) connections are
+    # drivers too.  A marked instance is matched here as well; rescanning
+    # it is a no-op (same-driver records are idempotent in _note_net).
+    from .autodef import _instance_headers
+
+    line_off = [0]
+    for ln in lines:
+        line_off.append(line_off[-1] + len(ln) + 1)
+    for i, (module, inst, hdr_end) in _instance_headers(lines, modules).items():
+        hl = i if hdr_end < 0 else hdr_end
+        pos = lines[hl].find(inst)
+        if pos < 0:
+            continue
+        rel = lines[hl].find("(", pos + len(inst))
+        if rel < 0:
+            continue
+        _scan(line_off[hl] + rel, module, inst, modules[module])
     return nets
 
 
@@ -636,7 +671,7 @@ def _auto_wire_single(
     from .autodef import set_param_value
 
     set_param_value(parse_param_value(full))
-    driven = _inst_driven_nets(lines, modules)
+    driven = _inst_driven_nets(lines, modules, concat_ok=True)
     if not driven:
         return list(lines)
     ports, usrdef, _ = _module_tables(lines)
@@ -734,7 +769,7 @@ def _auto_reg_single(
 
     set_param_value(parse_param_value(full))
     ports, usrdef, assigns = _module_tables(lines)
-    driven = set(_inst_driven_nets(lines, modules or {}))
+    driven = set(_inst_driven_nets(lines, modules or {}, concat_ok=True))
     excluded = set(usrdef.signals) | assigns | driven
     excluded |= get_all_defs(full) | get_all_paras(lines)
     sigs = [
