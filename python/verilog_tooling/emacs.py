@@ -632,7 +632,12 @@ def _param_from_entry(entry: str) -> Param | None:
     # strip `ifdef/`endif lines wrapping the entry (e.g. params guarded by a
     # `define inside the #(...) header)
     entry = re.sub(r"^\s*`(ifdef|ifndef|else|endif)\b[^\n]*", "", entry).strip()
-    entry = re.sub(r"^(?:parameter|localparam)\b", "", entry).strip()
+    # localparam is never overridable: verilog-decls-get-gparams (and the
+    # AUTOINSTPARAM built on it) collects `parameter` only — a localparam in
+    # the #(...) header must not become a .NAME(NAME) override
+    if re.match(r"^localparam\b", entry):
+        return None
+    entry = re.sub(r"^parameter\b", "", entry).strip()
     while True:
         m = re.match(r"(\w+)\s+", entry)
         if m and m.group(1) in _TYPE_WORDS:

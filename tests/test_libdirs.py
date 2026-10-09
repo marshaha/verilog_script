@@ -232,8 +232,10 @@ def test_expand_includes_inline_param_block(tmp_path):
     expanded = expand_includes(lines)
     assert any("localparam W" in ln for ln in expanded)
     assert any(ln.strip() == "module m #(" for ln in expanded)  # prefix kept
+    # localparams are never AUTOINSTPARAM parameters (verilog-decls-get-gparams
+    # collects `parameter` only — a localparam cannot be overridden)
     params = parse_module_params(lines)
-    assert [p.name for p in params] == ["W", "DEPTH", "PTR", "PAYLD"]
+    assert [p.name for p in params] == []
     paras = get_all_paras(lines)
     assert {"W", "DEPTH", "PTR", "PAYLD"} <= paras
     consts = _const_symbols(lines)
@@ -415,12 +417,15 @@ def test_expand_includes_cycle_cut(tmp_path):
     set_include_dirs([])
 
 
-def test_localparam_entries_parse_as_params():
-    """#(localparam X = 1, ...) entries are parameters too."""
+def test_localparam_entries_not_params():
+    """#(localparam X = 1, ...) entries are NOT parameters: verilog-mode's
+    verilog-decls-get-gparams collects `parameter` only — a localparam
+    cannot be overridden, so AUTOINSTPARAM must not emit .X(X) for it
+    (emacs-verified on a #(parameter/localparam mix) submodule)."""
     from verilog_tooling.emacs import parse_module_params
 
     lines = ["module m #(localparam X = 1, parameter Y = 2) (input a);"]
-    assert [p.name for p in parse_module_params(lines)] == ["X", "Y"]
+    assert [p.name for p in parse_module_params(lines)] == ["Y"]
 
 
 def test_parse_module_ports_sees_through_include(tmp_path):

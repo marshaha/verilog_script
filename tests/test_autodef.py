@@ -2990,3 +2990,87 @@ endmodule
     inst.main(["aall", "-i", str(top), "-o", str(out), "--ref_file", str(top), "-y", str(tmp_path)])
     text = out.read_text()
     assert re.search(r"^wire\[1:0\]\s+val;$", text, re.M)
+
+
+# ---------------------------------------------------------------------------
+# unresolved-set exclusions (periph_sys.sv regressions)
+
+
+def test_unbased_unsized_literal_not_a_signal():
+    """'0 / '1 / 'x / 'z are literals: the digit must not reach unresolved."""
+    sigs = get_all_signals(
+        ["module m;",
+         "assign a = '0;",
+         "assign b = {'1, c};",
+         "assign d = 4'd0;",
+         "endmodule"],
+        set(), set(),
+    )
+    assert "0" not in sigs and "1" not in sigs
+    assert {"a", "b", "c", "d"} <= sigs  # real signals still collected
+
+
+def test_markerless_unresolvable_instance_names_not_signals():
+    """sync_dff2b u_sync (...) with an unfindable module: neither the module
+    nor the instance name is a signal (periph_sys sync_dff2b shape: the #(
+    carries content on the module line and the instance opens after it)."""
+    from verilog_tooling.autodef import _structure_names
+
+    names = _structure_names(
+        [
+            "module m;",
+            "sync_dff2b #(   .WL    (2   ),",
+            "        .Q_INIT (1'b0))",
+            "    u_sync_dma_ack_apb_spi(",
+            "        .clk (clk),",
+            "        .q   (q_sync)",
+            ");",
+            "ghost_mod u_ghost (",
+            "    .a (a)",
+            ");",
+            "endmodule",
+        ],
+        {},
+    )
+    assert {"sync_dff2b", "u_sync_dma_ack_apb_spi", "ghost_mod", "u_ghost"} <= names
+
+
+def test_markerless_instance_scanner_ignores_non_instances():
+    """Declarations, calls and keywords are not mistaken for instances."""
+    from verilog_tooling.autodef import _markerless_instance_names
+
+    names = _markerless_instance_names(
+        [
+            "module m #(parameter W = 8) (",
+            "input clk);",
+            "wire [W-1:0] a = f (x);",
+            "assign y = foo (a);",
+            "if (a) foo (b);",
+            "function [3:0] g (input [3:0] x);",
+            "endmodule",
+        ]
+    )
+    assert not ({"m", "g", "foo"} & names)
+
+
+def test_interface_instance_from_include_registered(tmp_path):
+    """An interface instantiation inside a `include'd file registers the
+    instance name (periph_sys periph_sys_intf_inst.sv shape), so
+    `apb_cfg.psel` member accesses never flag the instance as a signal."""
+    from verilog_tooling.autodef import _structure_names
+    from verilog_tooling.libdirs import set_include_dirs
+
+    (tmp_path / "intf_inst.sv").write_text(
+        "axera_apb_interface #(\n"
+        "        .AW (12),\n"
+        "        .DW (32))\n"
+        "apb_sys_cfg();\n"
+    )
+    set_include_dirs([str(tmp_path)])
+    try:
+        names = _structure_names(
+            ["module m;", '`include "intf_inst.sv"', "endmodule"], {}
+        )
+    finally:
+        set_include_dirs([])
+    assert {"axera_apb_interface", "apb_sys_cfg"} <= names

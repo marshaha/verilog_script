@@ -1148,7 +1148,11 @@ def get_all_signals(lines: Sequence[str], defs: set[str], paras: set[str]) -> se
                 continue
             if re.search(r"'[hHdDbBoO]", token) or re.fullmatch(r"\d+", token):
                 continue
+            if re.fullmatch(r"'[01xXzZ]", token):
+                continue  # SV unbased unsized literal ('0/'1/'x/'z)
             name = re.sub(r"^'", "", token)
+            if re.fullmatch(r"\d+", name):
+                continue  # pure numeric literal is never a signal
             if name.lower() in _KEYWORDS or name in paras or name in defs:
                 continue
             signals.add(name)
@@ -2848,6 +2852,62 @@ def _structure_names(
     for mod, inst, _ in _instance_headers(lines, modules).values():
         names.add(mod)
         names.add(inst)
+    names.update(_markerless_instance_names(lines))
+    return names
+
+
+# marker-less instantiation header shapes (module unresolvable or not):
+# ``mod #(...) inst (`` and ``mod inst (`` — the two identifier-plus-pin-list
+# forms an instantiation statement can take
+_MLI_HEAD = re.compile(
+    r"^[ \t]*([A-Za-z_]\w*)[ \t]*(?:(#[ \t]*\()|([A-Za-z_]\w*)[ \t]*(?:\[[^\]]*\][ \t]*)?\()",
+    re.M,
+)
+_MLI_INST = re.compile(r"\s*([A-Za-z_]\w*)[ \t]*(?:\[[^\]]*\][ \t]*)?\(")
+
+
+def _markerless_instance_names(lines: Sequence[str]) -> set[str]:
+    """Module and instance names of marker-less instantiation-shaped
+    statements, whether or not the module resolves.
+
+    ``mod inst (`` and ``mod #(...) inst (`` at statement start are
+    instantiations (or SystemVerilog interface instances, same shape):
+    neither the module/type name nor the instance name is a signal, so
+    they must never land in the unresolved set.  `` `include`` files are
+    read through (analysis only) — an interface-instance include
+    (``axi_bus u_bus (...);``) declares those names for the whole module.
+    Conservative: the first word must not be a keyword and a pin-list
+    ``(`` must follow the instance name, so declarations
+    (``mytype myvar;``) and plain calls (``foo(bar);``) never match.
+    ``module``/``function``/``task`` headers are excluded via _KEYWORDS."""
+    from .comments import mask_comments
+    from .emacs import _balanced
+    from .libdirs import expand_includes
+
+    text = mask_comments("\n".join(expand_includes(list(lines))))
+    names: set[str] = set()
+    for m in _MLI_HEAD.finditer(text):
+        mod = m.group(1)
+        if mod in _KEYWORDS:
+            continue
+        if m.group(3) is not None:
+            # ``mod inst (`` — both words on the matched line
+            inst = m.group(3)
+            if inst not in _KEYWORDS:
+                names.add(mod)
+                names.add(inst)
+            continue
+        # ``mod #( ... ) inst (``: skip the balanced parameter block, the
+        # instance name opens the pin list right after it
+        open_idx = m.end() - 1
+        try:
+            _inner, end = _balanced(text, open_idx)
+        except ValueError:
+            continue
+        im = _MLI_INST.match(text, end)
+        if im and im.group(1) not in _KEYWORDS:
+            names.add(mod)
+            names.add(im.group(1))
     return names
 
 

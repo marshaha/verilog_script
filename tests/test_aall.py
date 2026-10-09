@@ -3,6 +3,7 @@ sequential 8-command pipeline (eap -> eai -> aio -> aw -> areg -> adt -> arg -> 
 and the threaded/cached module resolver must keep the old priorities."""
 
 from pathlib import Path
+import re
 
 from verilog_tooling import arg as arg_mod
 from verilog_tooling import autodef, inout, inst, wire
@@ -229,3 +230,76 @@ endmodule
     o2 = tmp_path / "o2.v"
     inst.main(["aall", "-i", str(o1), "-o", str(o2), "--ref_file", str(o1), "-y", str(tmp_path)])
     assert o2.read_text() == text1
+
+
+# periph_sys.sv regression: localparams of the submodule must not be
+# AUTOINSTPARAM-expanded; unresolvable marker-less instances and interface
+# instances (via `include) are never unresolved; '0 is a literal.
+
+PERIPH_SUB = """\
+module bus_intf_wrap #(
+    localparam UART_ADDR = 32'h1000,
+    localparam IDLE      = 2'b00,
+    parameter   W        = 8
+)(
+    input  wire         clk,
+    output reg  [W-1:0] q
+);
+localparam BODY_LP = 1;
+endmodule
+"""
+
+PERIPH_TOP = """\
+module top (
+    /*autoarg*/
+);
+input        clk;
+output [7:0] q;
+/*autodef*/
+
+`include "intf_inst.sv"
+
+bus_intf_wrap #(/*AUTOINSTPARAM*/
+) u_wrap (/*AUTOINST*/);
+
+sync_dff2b #(   .WL    (2   ),
+        .Q_INIT (1'b0))
+    u_sync_ack(
+        .clk (clk),
+        .d   (d_sync),
+        .q   (q_sync)
+);
+
+assign psel_s = apb_sys_cfg.psel;
+assign dbg    = '0;
+
+endmodule
+"""
+
+
+def test_aall_periph_sys_unresolved_regressions(tmp_path, capsys):
+    libdir = tmp_path / "lib"
+    libdir.mkdir()
+    (libdir / "bus_intf_wrap.sv").write_text(PERIPH_SUB)
+    (libdir / "intf_inst.sv").write_text(
+        "axera_apb_interface #(\n"
+        "        .AW (12),\n"
+        "        .DW (32))\n"
+        "apb_sys_cfg();\n"
+    )
+    top = tmp_path / "top.v"
+    top.write_text(PERIPH_TOP)
+    capsys.readouterr()
+    out = _run_aall(top, libdir, tmp_path)
+    unresolved = {m.group(1) for m in re.finditer(r"// unresolved: (\S+)", out)}
+    # A: localparams never become #() overrides
+    assert ".W" in out  # the real parameter IS expanded
+    assert ".UART_ADDR" not in out and ".IDLE" not in out and ".BODY_LP" not in out
+    assert not ({"UART_ADDR", "IDLE", "BODY_LP"} & unresolved)
+    # B: interface instance (from the `include) and its type are not signals
+    assert not ({"apb_sys_cfg", "axera_apb_interface"} & unresolved)
+    # C: unresolvable marker-less instance: neither name is a signal
+    assert not ({"sync_dff2b", "u_sync_ack"} & unresolved)
+    # D: the '0 literal is not a signal
+    assert "0" not in unresolved
+

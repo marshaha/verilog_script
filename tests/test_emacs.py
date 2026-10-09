@@ -814,3 +814,18 @@ InstModule u_bad (/*AUTOINST*/);
     assert out == buf  # instance left untouched
     err = capsys.readouterr().err
     assert "skipped" in err and "u_bad" in err
+
+
+def test_parse_module_params_header_excludes_localparam():
+    """#(...) header localparams are not parameters (emacs AUTOINSTPARAM
+    expands `parameter` only — verified against emacs on a mixed header);
+    body declarations behave the same (parameter kept, localparam dropped)."""
+    lines = [
+        "module m #(parameter W = 8, localparam L = 4, parameter D = 2) (a);",
+        "input a;",
+        "localparam B = 1;",
+        "parameter P = 3;",
+        "endmodule",
+    ]
+    assert parse_module_params(lines) == (
+        Param("W", "8"), Param("D", "2"), Param("P", "3"))
