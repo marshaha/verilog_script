@@ -936,13 +936,7 @@ class SignalTable:
             )
             return
         sig = self.signals.get(net)
-        pdims = _conn_packed_dims(rest) or (
-            tuple(_clean_dim(d) for d in port.packed) if len(port.packed) > 1 else ()
-        )
-        if param_values and pdims:
-            from .emacs import _apply_param_values
-
-            pdims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in pdims)
+        pdims = _port_dim_evidence(rest, port, param_values)
         from ._trace import trace_sig, tracing
 
         if tracing(net):
@@ -1007,16 +1001,12 @@ class SignalTable:
         elif not re.match(r"\s*\[", mrest):
             width = port_width  # plain net: the input port's declared msb
         # else: a bit/part select — no usable width info
-        pdims = _conn_packed_dims(rest) or (
-            tuple(_clean_dim(d) for d in port.packed) if len(port.packed) > 1 else ()
-        )
+        pdims = _port_dim_evidence(rest, port, param_values)
         if param_values:
             from .emacs import _apply_param_values
 
             if width:
                 width = _apply_param_values(width, param_values)
-            if pdims:
-                pdims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in pdims)
         if not width and not pdims:
             return
         sig = self.signals.get(net)
@@ -2411,6 +2401,33 @@ def _conn_packed_dims(text: str) -> tuple[str, ...]:
     if not m:
         return ()
     return tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
+
+
+def _port_dim_evidence(
+    rest: str, port: "Port", param_values: Mapping[str, str] | None = None
+) -> tuple[str, ...]:
+    """Packed-dimension evidence for a driven net's declaration, shared by
+    the AUTOWIRE fresh-declaration path and the AUTODEF update path.
+
+    The EAI multidim connection note (``net/*[D1][D2]*/``) wins when present
+    (already param-value substituted); otherwise the port's own ranges —
+    with UNPACKED array dims folded in front of the packed ones
+    (``output [35:0] x [1:0]`` composes to ('1:0', '35:0'), the shape the
+    fresh-declaration path emits for the same port).  Empty for a port that
+    is scalar in every dimension.  PARAM_VALUES (the instance's ``#(...)``
+    overrides) are substituted into every range."""
+    pdims = _conn_packed_dims(rest)
+    if not pdims:
+        pdims = tuple(_clean_dim(d) for d in port.unpacked) + tuple(
+            _clean_dim(d) for d in port.packed
+        )
+        if len(pdims) < 2:
+            pdims = ()
+    if pdims and param_values:
+        from .emacs import _apply_param_values
+
+        pdims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in pdims)
+    return pdims
 
 
 # declarations re-extraction cannot reproduce are "unregenerable" — the

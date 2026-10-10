@@ -3462,3 +3462,106 @@ def test_trace_update_skip_no_evidence(monkeypatch, capsys):
         l.startswith("[vt-trace] net: update-skip reason=no-evidence")
         for l in err.splitlines()
     )
+
+
+# ---------------------------------------------------------------------------
+# unpacked-dim ports: composed dim evidence + multi-line packed ranges
+
+
+DBUF_UNPACKED = """\
+module dbufu (
+    input  wire        clk,
+    output wire [35:0] rdata [1:0]
+);
+endmodule
+"""
+
+
+def test_unpacked_port_dims_update_old_decl_end_to_end(tmp_path):
+    """Marker-less instance, no EAI note, unpacked port
+    (output [35:0] rdata [1:0]): the stale wire[35:0][35:0] declaration is
+    corrected with the composed dims (unpacked folded in front of packed)."""
+    from verilog_tooling import inst
+
+    libdir = tmp_path / "lib"
+    libdir.mkdir()
+    (libdir / "dbufu.v").write_text(DBUF_UNPACKED)
+    top = tmp_path / "top.v"
+    top.write_text("""\
+module top(input clk);
+  wire[35:0][35:0] ram;
+  dbufu u10 (.clk(clk), .rdata(ram));
+  /*autodef*/
+endmodule
+""")
+    out = tmp_path / "o.v"
+    inst.main(["aall", "-i", str(top), "-o", str(out), "--ref_file", str(top), "-y", str(libdir)])
+    text = out.read_text()
+    assert re.search(r"^wire ?\[1:0\]\[35:0\] +ram;$", text, re.M)
+    assert "[35:0][35:0]" not in text
+
+
+def test_unpacked_port_aw_fresh_decl_unchanged(tmp_path):
+    """AUTOWIRE's fresh declaration for an unpacked port keeps its
+    historical form (packed range + unpacked dim, no folding)."""
+    from verilog_tooling import wire as wire_mod
+
+    mods = {"dbufu": parse_module_ports(DBUF_UNPACKED.splitlines())}
+    out = wire_mod.auto_wire(
+        [
+            "module top(input clk);",
+            "  dbufu u10 (.clk(clk), .rdata(ram));",
+            "  /*autowire*/",
+            "endmodule",
+        ],
+        mods,
+    )
+    decls = [l for l in out if "ram" in l and l.strip().startswith("wire")]
+    assert len(decls) == 1 and "[35:0]" in decls[0] and "[1:0]" in decls[0]
+
+
+def test_port_dim_evidence_composition():
+    """_port_dim_evidence: note wins; unpacked folds in front of packed;
+    scalar ports give no evidence."""
+    from verilog_tooling.autodef import _port_dim_evidence
+
+    md = parse_module_ports(DBUF_UNPACKED.splitlines())
+    port = {p.name: p for p in md.ports}["rdata"]
+    assert _port_dim_evidence("ram", port) == ("1:0", "35:0")
+    assert _port_dim_evidence("ram/*[3:0][35:0]*/", port) == ("3:0", "35:0")
+    clk = {p.name: p for p in md.ports}["clk"]
+    assert _port_dim_evidence("clk", clk) == ()
+
+
+def test_multiline_packed_ranges_parse():
+    """A packed range list wrapped across lines merges into the port's
+    packed dims (module header with a comma-separated first line AND a
+    continuation line)."""
+    for text in (
+        "module dbuf(input clk, output [1:0]\n       [35:0] rdata);\nendmodule",
+        "module dbuf(input clk,\n output [1:0]\n       [35:0] rdata);\nendmodule",
+        "module dbuf(clk, rdata);\ninput clk;\noutput [1:0]\n       [35:0] rdata;\nendmodule",
+    ):
+        md = parse_module_ports(text.splitlines())
+        port = {p.name: p for p in md.ports}["rdata"]
+        assert port.direction == "output" and port.packed == ("1:0", "35:0")
+
+
+def test_unpacked_driver_plus_single_dim_driver_no_corruption():
+    """An unpacked-port driver composed to ('1:0','35:0') followed by a
+    single-dim driver must not corrupt the corrected declaration."""
+    mods = {
+        "dbufu": parse_module_ports(DBUF_UNPACKED.splitlines()),
+        "dbuf1": parse_module_ports(DBUF_1D.splitlines()),
+    }
+    lines = [
+        "module top(input clk);",
+        "wire [35:0] net;",
+        "  dbufu u10 (.rdata(net), /*autoinst*/ .clk(clk));",
+        "  dbuf1 u11 (.rdata(net), /*autoinst*/ .clk(clk));",
+        "/*autodef*/",
+        "endmodule",
+    ]
+    out = auto_def_t(lines, mods)
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "net" in l]
+    assert decls == ["wire [1:0][35:0] net;"]

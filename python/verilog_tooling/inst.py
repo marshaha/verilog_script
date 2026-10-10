@@ -496,6 +496,17 @@ def _port_continues(line: str) -> bool:
     return t.endswith("]")
 
 
+def _tail_decl_incomplete(line: str) -> bool:
+    """The final comma-entry of LINE starts a NEW port declaration that
+    stops after its packed ranges — the name (and possibly more ranges)
+    sits on the following line (``input clk, output [1:0]``)."""
+    parts = _split_top_commas(line)
+    if len(parts) < 2:
+        return False
+    last = parts[-1].strip().rstrip(",").rstrip()
+    return bool(_PORT_KEYWORD.match(last)) and _port_continues(last)
+
+
 _TYPEDEF_REGEXP: "re.Pattern[str] | None" = None
 _UDT_HEAD_RE = re.compile(
     r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)"
@@ -566,10 +577,40 @@ def _parse_port_line_multi(line: str) -> list[Port]:
             cur += ch
     parts.append(cur)
     out: list[Port] = []
-    for part in parts:
+    for pi, part in enumerate(parts):
         part = part.strip()
         if not part:
             continue
+        dir_here, net_here, signed_here = m.group(1), net_type, signed
+        packed_here = list(packed)
+        if pi > 0 and _PORT_KEYWORD.match(part):
+            # a new declaration mid-line (``input clk, output [1:0] b``):
+            # its own direction/type/ranges, parsed like the line head
+            km = _PORT_KEYWORD.match(part)
+            dir_here = km.group(1)
+            rest2 = part[km.end() :]
+            net_here = ""
+            mnet2 = re.match(
+                r"^(wire|reg|logic|tri0|tri1|trireg|tri|wand|wor|supply0|supply1)\b\s*",
+                rest2,
+            )
+            if mnet2:
+                net_here = mnet2.group(1) if mnet2.group(1) != "wire" else ""
+                rest2 = rest2[mnet2.end() :]
+            signed_here = False
+            if re.match(r"^signed\b\s*", rest2):
+                signed_here = True
+                rest2 = re.sub(r"^signed\b\s*", "", rest2)
+            packed_here = []
+            while True:
+                wm2 = re.match(r"^\[([^\]]+)\]\s*", rest2)
+                if not wm2:
+                    break
+                packed_here.append(re.sub(r"\s+", "", wm2.group(1)))
+                rest2 = rest2[wm2.end() :]
+            part = rest2.strip()
+            if not part:
+                continue
         nm = re.match(r"\w+", part)
         if not nm:
             continue
@@ -589,7 +630,7 @@ def _parse_port_line_multi(line: str) -> list[Port]:
             data_type, name = um.group(1), um.group(3)
             after = part[um.end() :]
             for dm in re.finditer(r"\[([^\]]*)\]", um.group(2) or ""):
-                packed.append(re.sub(r"\s+", "", dm.group(1)))
+                packed_here.append(re.sub(r"\s+", "", dm.group(1)))
         elif _TYPEDEF_REGEXP is not None and _TYPEDEF_REGEXP.search(name):
             # a user type (reqcmd_t): the port name is the next word, the
             # first word is its data type
@@ -606,21 +647,21 @@ def _parse_port_line_multi(line: str) -> list[Port]:
                 break
             unpacked.append(re.sub(r"\s+", "", um.group(1)))
             after = after[um.end() :]
-        width = packed[-1] if len(packed) == 1 and not unpacked else (
-            packed[-1] if len(packed) == 1 else None
+        width = packed_here[-1] if len(packed_here) == 1 and not unpacked else (
+            packed_here[-1] if len(packed_here) == 1 else None
         )
         # simple single-packed no-unpacked keeps width for name[width] form
-        if len(packed) == 1 and not unpacked:
-            width = packed[0]
+        if len(packed_here) == 1 and not unpacked:
+            width = packed_here[0]
         out.append(
             Port(
                 name=name,
-                direction=m.group(1),
+                direction=dir_here,
                 width=width,
-                packed=tuple(packed),
+                packed=tuple(packed_here),
                 unpacked=tuple(unpacked),
-                signed=signed,
-                net_type=net_type,
+                signed=signed_here,
+                net_type=net_here,
                 data_type=data_type,
             )
         )
@@ -848,7 +889,9 @@ def parse_module_ports(
         if _PORT_KEYWORD.match(line):
             joined = line
             j = idx
-            while _parse_port_line(joined) is None and _port_continues(joined):
+            while _port_continues(joined) and (
+                _parse_port_line(joined) is None or _tail_decl_incomplete(joined)
+            ):
                 j += 1
                 if j >= n_lines:
                     break
