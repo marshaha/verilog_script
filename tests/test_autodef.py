@@ -3971,3 +3971,56 @@ def test_boundary_trace_events(monkeypatch, capsys):
     auto_def_t(fixed, mods)
     err = capsys.readouterr().err
     assert "[vt-trace] dout: conflict-clear" in err
+
+
+def test_slice_drivers_span_sub_word_slices():
+    """Sub-slices across an element word (.rdata(mem[0][255:128]),
+    .rdata(mem[0][127:0])) span min(lo):max(hi) -> [255:0], not conflict."""
+    sub = """\
+module mem_sub(output [127:0] rdata);
+endmodule
+"""
+    top = """\
+module top(input clk);
+  // verilog-autodef-user-boundary:nil
+  wire [127:0][256-1:0] mem;
+  mem_sub u0 (.rdata(mem[0][127:0]));
+  mem_sub u1 (.rdata(mem[0][255:128]));
+  mem_sub u2 (.rdata(mem[1][127:0]));
+  mem_sub u3 (.rdata(mem[1][255:128]));
+  /*autodef*/
+endmodule
+"""
+    mods = {"mem_sub": parse_module_ports(sub.splitlines())}
+    out = auto_def_t(top.splitlines(), mods)
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "mem" in l]
+    assert decls == ["  wire [1:0][255:0] mem;"]
+
+
+def test_fresh_multidim_preserves_symbolic_packed_dim():
+    """A fresh multidim declaration preserves the port declaration's symbolic
+    packed expression (e.g. 512-1:0 rather than folding to 511:0)."""
+    sub_in = """\
+module consumer(input [2:0][512-1:0] din);
+endmodule
+"""
+    sub_out = """\
+module producer(output [127:0] rdata);
+endmodule
+"""
+    top = """\
+module top(input clk);
+  consumer u_c (.din(bus/*[2:0][511:0]*/));
+  producer u_p0 (.rdata(bus[0][127:0]));
+  producer u_p1 (.rdata(bus[1][127:0]));
+  /*autodef*/
+endmodule
+"""
+    mods = {
+        "consumer": parse_module_ports(sub_in.splitlines()),
+        "producer": parse_module_ports(sub_out.splitlines()),
+    }
+    out = auto_def_t(top.splitlines(), mods)
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "bus" in l]
+    assert len(decls) == 1
+    assert "[2:0][512-1:0]" in decls[0]

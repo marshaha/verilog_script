@@ -769,6 +769,12 @@ class SignalTable:
             # user-boundary on (default): the declaration is user-owned —
             # note the conflict instead of rewriting the line
             km = re.match(r"\s*(wire|reg|logic)", sig.line)
+            if sig.conflict:
+                old_dims = tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", sig.conflict))
+                new_dims = tuple(_clean_dim(d) for d in pdims)
+                if old_dims == new_dims:
+                    sig.width_updated = True
+                    return
             sig.conflict = (km.group(1) if km else "wire") + "".join(
                 f"[{d}]" for d in pdims
             )
@@ -1052,15 +1058,28 @@ class SignalTable:
         """Merge one static element index into NET's slice evidence and
         return the composed dims (array range, element range) once TWO or
         more distinct indexes were seen.  A lone index proves nothing (no
-        growth); conflicting element ranges disable the evidence."""
-        ent = self.slice_ev.setdefault(net, [set(), None])
-        if ent[1] is not None and ent[1] != rng:
-            return None
-        ent[1] = rng
+        growth).  Sub-slices across an element word ([127:0], [255:128], ...)
+        span min(lo):max(hi); differing non-numeric ranges disable the
+        evidence."""
+        ent = self.slice_ev.setdefault(net, [set(), set()])
         ent[0].add(idx)
+        ent[1].add(rng)
         if len(ent[0]) < 2:
             return None
-        return (f"{max(ent[0])}:{min(ent[0])}", rng)
+        if len(ent[1]) == 1:
+            elem_rng = next(iter(ent[1]))
+        else:
+            numeric_ranges = []
+            for r in ent[1]:
+                parts = r.split(":")
+                if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+                    numeric_ranges.append((int(parts[0]), int(parts[1])))
+                else:
+                    return None
+            min_lo = min(lo for hi, lo in numeric_ranges)
+            max_hi = max(hi for hi, lo in numeric_ranges)
+            elem_rng = f"{max_hi}:{min_lo}"
+        return (f"{max(ent[0])}:{min(ent[0])}", elem_rng)
 
     def _record_inst_input_net(
         self,
@@ -2467,8 +2486,10 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple) -> str | None:
     m = _USRDEF_SIMPLE_DECL.match(line)
     if not m:
         return None
-    cur = tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group("dims")))
-    if cur == tuple(pdims):
+    raw_cur = tuple(re.findall(r"\[([^\]]+)\]", m.group("dims")))
+    cur = tuple(_clean_dim(d) for d in raw_cur)
+    cleaned_p = tuple(_clean_dim(d) for d in pdims)
+    if cur == cleaned_p:
         return line
     head = m.group("indent") + m.group("kw") + (m.group("sgn") or "")
     head += " " + "".join(f"[{d}]" for d in pdims) + " "
@@ -2611,6 +2632,12 @@ def _port_dim_evidence(
         from .emacs import _apply_param_values
 
         pdims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in pdims)
+    if pdims and port.packed and len(pdims) == len(port.packed):
+        new_p = list(pdims)
+        for i in range(len(pdims)):
+            if _clean_dim(port.packed[i]) == _clean_dim(pdims[i]):
+                new_p[i] = port.packed[i]
+        pdims = tuple(new_p)
     return pdims
 
 
