@@ -2521,6 +2521,9 @@ def _slice_conn_evidence(net: str, rest: str, port: "Port") -> "tuple[int, str] 
     return int(m.group(2)), _clean_dim(f"{m.group(3)}:{m.group(4)}")
 
 
+_CONN_DIM_NOTE = re.compile(r"/\*\s*((?:\[[^\]]*\])*)((?:\.\[[^\]]*\])*)\s*\*/")
+
+
 def _port_dim_evidence(
     rest: str, port: "Port", param_values: Mapping[str, str] | None = None
 ) -> tuple[str, ...]:
@@ -2528,13 +2531,19 @@ def _port_dim_evidence(
     the AUTOWIRE fresh-declaration path and the AUTODEF update path.
 
     The EAI multidim connection note (``net/*[D1][D2]*/``) wins when present
-    (already param-value substituted); otherwise the port's own ranges —
-    with UNPACKED array dims folded in front of the packed ones
-    (``output [35:0] x [1:0]`` composes to ('1:0', '35:0'), the shape the
-    fresh-declaration path emits for the same port).  Empty for a port that
-    is scalar in every dimension.  PARAM_VALUES (the instance's ``#(...)``
-    overrides) are substituted into every range."""
-    pdims = _conn_packed_dims(rest)
+    (already param-value substituted); its unpacked part (after the ``.`` in
+    ``/*[D1].[U1]*/``) folds in front of the packed ranges, exactly like a
+    port declaration's own unpacked dims.  Without a note the port's own
+    ranges compose the same way (``output [35:0] x [1:0]`` -> ('1:0',
+    '35:0'), the shape the fresh-declaration path emits for the same port).
+    Empty for a port that is scalar in every dimension.  PARAM_VALUES (the
+    instance's ``#(...)`` overrides) are substituted into every range."""
+    pdims: tuple = ()
+    m = _CONN_DIM_NOTE.search(rest)
+    if m is not None:
+        packed_n = tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
+        unpacked_n = tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(2)))
+        pdims = unpacked_n + packed_n
     if not pdims:
         pdims = tuple(_clean_dim(d) for d in port.unpacked) + tuple(
             _clean_dim(d) for d in port.packed

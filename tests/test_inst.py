@@ -1349,3 +1349,20 @@ def test_auto_inst_regen_guarded_last_port():
     assert not din_line.split("//")[0].rstrip().endswith(",")
     assert stripped[-2] == "`endif"
     assert stripped[-1] == ");"
+
+
+def test_aiu_new_multidim_pin_carries_dim_note():
+    """AIU/AIU1 append new pins through default_connection: a multidim port
+    must carry its declared shape as a /*[D1][D2]*/ note (the connection
+    text alone cannot carry the dimension and AW/ADT re-derivation reads
+    the note)."""
+    from verilog_tooling.inst import default_connection, parse_module_ports
+
+    md = parse_module_ports(
+        ["module dbuf(input clk, output [1:0][35:0] rdata, output [35:0] mem [1:0]);",
+         "endmodule"]
+    )
+    ports = {p.name: p for p in md.ports}
+    assert default_connection(ports["rdata"]) == "rdata/*[1:0][35:0]*/"
+    assert default_connection(ports["mem"]) == "mem/*[35:0].[1:0]*/"
+    assert default_connection(ports["clk"]) == "clk"

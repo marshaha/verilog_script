@@ -3839,3 +3839,28 @@ def test_update_path_consistent_with_fresh_path():
         if "apb_itp_rdata" in l and l.strip().startswith("wire") and ".prdata" not in l
     ]
     assert decls == ["wire [ITP_MODL_NUM-1:0][31:0] apb_itp_rdata;"]
+
+
+def test_unpacked_note_reads_composed():
+    """The EAI note for an unpacked port is /*[packed].[unpacked]*/: the
+    reader composes it unpacked-first, same as the port declaration."""
+    from verilog_tooling.autodef import _port_dim_evidence
+
+    md = parse_module_ports(DBUF_UNPACKED.splitlines())
+    port = {p.name: p for p in md.ports}["rdata"]
+    assert _port_dim_evidence("ram/*[35:0].[1:0]*/", port) == ("1:0", "35:0")
+    # packed-only note unchanged
+    assert _port_dim_evidence("ram/*[1:0][35:0]*/", port) == ("1:0", "35:0")
+    # stale decl corrected through an unpacked note
+    out = auto_def_t(
+        [
+            "module top(input clk);",
+            "wire[35:0][36-1:0] ram;",
+            "  dbufu u10 (.clk(clk), .rdata(ram/*[35:0].[1:0]*/));",
+            "/*autodef*/",
+            "endmodule",
+        ],
+        {"dbufu": parse_module_ports(DBUF_UNPACKED.splitlines())},
+    )
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "ram" in l and ".rdata" not in l]
+    assert decls == ["wire [1:0][35:0] ram;"]

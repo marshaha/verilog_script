@@ -209,6 +209,20 @@ range — `.dout (dout[7:0])`. Notes:
   excludes them (case-insensitive; emacs and Python regexp dialects).
 - SystemVerilog `.*` instances expand when star expansion is enabled;
   interface ports connect as `.bus (bus.master)`.
+- **Dimension notes are real information.** A connection of a
+  multidimensional port carries the port's declared shape as a
+  `net/*[D1][D2]*/` comment (`net/*[D1].[U1]*/` when the port also has
+  unpacked dimensions): the Verilog connection text itself cannot carry
+  the port's dimensions, so EAI records them in the comment for every
+  later analysis pass — AUTOWIRE/AUTODEF dimension derivation, template
+  `[]` expansion, AIF reformatting and re-generation all read the note as
+  the authoritative shape (note > port declaration > other evidence).
+  Element/slice connections (`net[0][35:0]`) are self-describing and get
+  no note. The note is not a plain comment: never delete it by hand;
+  `kill` commands clear region contents but never touch connection notes
+  (KI/EAI re-derivation rebuilds them from the port when needed); AIU/AIU1
+  keep existing notes verbatim and attach notes to newly appended
+  multidim pins.
 - Instances whose module file cannot be found are skipped with a warning
   listing the searched dirs.
 

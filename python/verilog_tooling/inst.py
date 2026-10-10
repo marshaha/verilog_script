@@ -1037,10 +1037,20 @@ def default_connection(port: Port, inst_vector: str = "t") -> str:
     interface port declared with a modport, ``name`` for a plain interface
     port, ``name[width]`` for a vector, ``name`` for a scalar.
 
+    A multidimensional port carries its declared shape as a
+    ``name/*[D1][D2]*/`` (``name/*[D1].[U1]*/`` with unpacked dims)
+    comment — the same note EAI writes: the connection text alone cannot
+    carry the dimension, and AW/ADT/AIF re-derivation depends on it.
+
     INST_VECTOR is verilog-auto-inst-vector: 't' (default) always uses the
     subscript, 'nil' skips it, 'unsigned' uses it only for unsigned ports."""
     if port.is_interface:
         return f"{port.name}.{port.modport}" if port.modport else port.name
+    if port.is_multidim:
+        inner = "".join(f"[{d}]" for d in port.packed)
+        if port.unpacked:
+            inner += "." + "".join(f"[{u}]" for u in port.unpacked)
+        return f"{port.name}/*{inner}*/"
     use_vector = (
         inst_vector == "t"
         or (inst_vector == "unsigned" and not port.signed)
