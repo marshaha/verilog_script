@@ -3759,3 +3759,83 @@ def test_symbolic_decl_converges_to_numeric_then_stable():
     twice = auto_def_t(once, mods)
     thrice = auto_def_t(twice, mods)
     assert twice == thrice  # converged: numeric form, then byte-stable
+
+
+# ---------------------------------------------------------------------------
+# grown LHS-index dims align with the packed-dim skeleton (EAI note / port
+# shape), never stack as an extra unpacked dimension
+
+
+SUB_PARAM = """\
+module sub #(parameter N = 8) (
+    input  wire [N-1:0][31:0] prdata_s
+);
+endmodule
+"""
+
+
+def _grown_top(note, decl=None, n=8):
+    lines = ["module top;"]
+    lines.append("  parameter ITP_MODL_NUM = 8;")
+    if decl is not None:
+        lines.append(decl)
+    lines.append("  wire [31:0] " + ", ".join(f"d{i}" for i in range(n)) + ";")
+    lines.append(f"  sub u (.prdata_s(apb_itp_rdata/*{note}*/), /*autoinst*/);")
+    for i in range(n):
+        lines.append(f"  assign apb_itp_rdata[{i:02d}][31:0] = d{i};")
+    lines.append("  /*autodef*/")
+    lines.append("endmodule")
+    return lines
+
+
+def grown_mods():
+    return {"sub": parse_module_ports(SUB_PARAM.splitlines())}
+
+
+def test_grown_dims_align_with_note_skeleton():
+    """assign index growth [0:7] and the /*[ITP_MODL_NUM-1:0][31:0]*/ note are
+    the SAME first dimension: merge, never stack a third dimension."""
+    out = auto_def_t(_grown_top("[ITP_MODL_NUM-1:0][31:0]"), grown_mods())
+    decls = [l for l in out if "apb_itp_rdata" in l and l.strip().startswith("wire")]
+    assert len(decls) == 1
+    assert "[ITP_MODL_NUM-1:0][31:0]" in decls[0]
+    assert "apb_itp_rdata[" not in decls[0]  # no stacked unpacked dim
+
+
+def test_grown_dims_exceeding_numeric_note_win():
+    """The drive is authoritative when it provably exceeds a NUMERIC note:
+    note [3:0][31:0] + indexes 0..7 -> [7:0][31:0]."""
+    out = auto_def_t(_grown_top("[3:0][31:0]"), grown_mods())
+    decls = [l for l in out if "apb_itp_rdata" in l and l.strip().startswith("wire")]
+    assert len(decls) == 1 and "[7:0][31:0]" in decls[0]
+
+
+def test_grown_dims_without_evidence_still_stack():
+    """No note/port evidence: the grown dim becomes the unpacked dimension
+    (the val1 [0:1] behaviour must not regress)."""
+    out = auto_def_t(
+        [
+            "module top;",
+            "assign val1[0][7:0] = data[7:0];",
+            "assign val1[1][7:0] = data[7:0];",
+            "/*autodef*/",
+            "endmodule",
+        ],
+        {},
+    )
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "val1" in l]
+    assert decls and "[0:1]" in decls[0]
+
+
+def test_update_path_consistent_with_fresh_path():
+    """A stale declaration is corrected to the note skeleton and the index
+    growth does not leak into it either (update == fresh semantics)."""
+    out = auto_def_t(
+        _grown_top("[ITP_MODL_NUM-1:0][31:0]", decl="wire[3:0][31:0] apb_itp_rdata;"),
+        grown_mods(),
+    )
+    decls = [
+        l for l in out
+        if "apb_itp_rdata" in l and l.strip().startswith("wire") and ".prdata" not in l
+    ]
+    assert decls == ["wire [ITP_MODL_NUM-1:0][31:0] apb_itp_rdata;"]

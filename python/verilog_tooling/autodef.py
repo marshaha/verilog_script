@@ -1191,6 +1191,43 @@ def _merge_unpacked_dims(a: tuple[str, ...], b: tuple[str, ...]) -> tuple[str, .
     return tuple(out)
 
 
+def _align_grown_dims(sig: "Signal", name: str = "") -> None:
+    """Positionally align LHS-index-grown dims with the net's packed-dim
+    evidence (the EAI ``/*[D1][D2]*/`` note / port shape is the
+    AUTHORITATIVE skeleton): grown dim i and evidence dim i are the SAME
+    dimension — the grown range fills/verifies it, it must never be stacked
+    as an extra unpacked dimension.  The evidence text is kept; the grown
+    range wins only when its numeric hi provably EXCEEDS a numeric evidence
+    hi (the actual drive is wider than the note).  Grown dims beyond the
+    evidence's arity stay unpacked (no evidence: unchanged — plain growth
+    like ``val1 [0:1]`` keeps working)."""
+    if not sig.dims or not sig.packed_dims:
+        return
+    ev = list(sig.packed_dims)
+    keep: list[str] = []
+    changed = False
+    for i, g in enumerate(sig.dims):
+        if i >= len(ev):
+            keep.append(g)
+            continue
+        gm = re.fullmatch(r"(-?\d+):(-?\d+)", g)
+        em = re.fullmatch(r"(-?\d+):(-?\d+)", ev[i])
+        if gm and em and int(gm.group(2)) > int(em.group(1)):
+            ev[i] = f"{gm.group(2)}:{gm.group(1)}"  # driven wider than the note
+        changed = True
+    if not changed:
+        return
+    from ._trace import trace_sig, tracing
+
+    if tracing(name):
+        trace_sig(
+            name,
+            f"merge-dims-align dims={list(sig.dims)} -> packed={ev} unpacked={keep}",
+        )
+    sig.packed_dims = tuple(ev)
+    sig.dims = tuple(keep)
+
+
 def _wider(new_msb: str, old_msb: str) -> bool:
     """Whether NEW_MSB makes the declaration strictly wider than OLD_MSB."""
     if not new_msb or new_msb == "c0":
@@ -2236,6 +2273,10 @@ def div_signals(signals: SignalTable) -> Divided:
 
     div = Divided([], [], [], [], [], _MAX_LEN_FLOOR)
     for name, sig in signals.signals.items():
+        if sig.type != "usrdef":
+            # grown LHS-index dims fold into the authoritative packed-dim
+            # skeleton (EAI note / port shape), never stack behind it
+            _align_grown_dims(sig, name)
         if sig.type in ("io_wire", "io_reg"):
             # multi-dim io port (greedy width holds "A:0][B-1" or
             # "A:0] [B-1"): the port declaration itself is already the
