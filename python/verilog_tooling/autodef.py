@@ -373,6 +373,10 @@ class SignalTable:
     # constant parameter values of this module (param-value on): instance
     # port widths naming them fold to integers
     consts: dict = field(default_factory=dict)
+    # static element-slice evidence per net: [set_of_indexes, element_range]
+    # — output drivers connecting net[0][M:N], net[1][M:N], ... imply the
+    # array dimension covering every observed index
+    slice_ev: dict = field(default_factory=dict)
 
     def __contains__(self, name: str) -> bool:
         return name in self.signals
@@ -920,6 +924,15 @@ class SignalTable:
             # its range is a valid width fallback when nothing else declares
             # the net (an undriven net between two instances would otherwise
             # be flagged unresolved)
+            from ._trace import trace_sig, tracing
+
+            if tracing(net):
+                trace_sig(
+                    net,
+                    f"conn-dims port={port_name} dir=input "
+                    f"pdims={list(_port_dim_evidence(rest, port, param_values))} "
+                    f"port_width={port_width}",
+                )
             self._record_inst_input_net(net, rest, port_width, port, param_values)
             return
         # a symbolic (parameter/expression) width is kept verbatim — the
@@ -972,6 +985,39 @@ class SignalTable:
                 self._update_usrdef_packed_dims(sig, pdims, net)
         else:
             self.signals[net] = Signal(width=port_width, type="inst_wire", packed_dims=pdims)
+        sev = _slice_conn_evidence(net, rest, port)
+        if sev is not None:
+            merged = self._note_slice_evidence(net, sev[0], sev[1])
+            if merged is not None:
+                sig2 = self.signals.get(net)
+                if sig2 is not None:
+                    from ._trace import trace_sig
+
+                    trace_sig(
+                        net, f"slice-grow dims={list(merged)}"
+                    )
+                    if sig2.type == "usrdef":
+                        # the slice indexes prove the array dimension the
+                        # hand-written declaration got wrong
+                        self._update_usrdef_packed_dims(sig2, merged, net)
+                    elif not sig2.packed_dims and sig2.type in (
+                        "inst_wire", "inst_in_wire", "freg", "creg", "wire"
+                    ):
+                        sig2.packed_dims = merged
+
+    def _note_slice_evidence(self, net: str, idx: int, rng: str) -> tuple | None:
+        """Merge one static element index into NET's slice evidence and
+        return the composed dims (array range, element range) once TWO or
+        more distinct indexes were seen.  A lone index proves nothing (no
+        growth); conflicting element ranges disable the evidence."""
+        ent = self.slice_ev.setdefault(net, [set(), None])
+        if ent[1] is not None and ent[1] != rng:
+            return None
+        ent[1] = rng
+        ent[0].add(idx)
+        if len(ent[0]) < 2:
+            return None
+        return (f"{max(ent[0])}:{min(ent[0])}", rng)
 
     def _record_inst_input_net(
         self,
@@ -1013,7 +1059,11 @@ class SignalTable:
         if sig is None:
             self.signals[net] = Signal(width=width, type="inst_in_wire", packed_dims=pdims)
         elif sig.type == "usrdef" and pdims:
-            _absorb_waived_usrdef(sig, pdims, "inst_in_wire", net)
+            if not _absorb_waived_usrdef(sig, pdims, "inst_in_wire", net) and not sig.width_updated:
+                # an input port's dimension note/composed shape is weaker
+                # evidence than an output driver's: it only corrects a
+                # declaration no output driver already fixed
+                self._update_usrdef_packed_dims(sig, pdims, net)
         elif sig.type == "inst_in_wire":
             if sig.width in ("", "c0") or (width and _wider(width, sig.width)):
                 if width:
@@ -2401,6 +2451,24 @@ def _conn_packed_dims(text: str) -> tuple[str, ...]:
     if not m:
         return ()
     return tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
+
+
+_SLICE_CONN = re.compile(
+    r"^\s*(\w+)\s*\[\s*(-?\d+)\s*\]\s*\[\s*([^:\[\]]+?)\s*:\s*([^\[\]]+?)\s*\]"
+)
+
+
+def _slice_conn_evidence(net: str, rest: str, port: "Port") -> "tuple[int, str] | None":
+    """``net[K][M:N]`` element-slice connection on a single-packed port:
+    the static index K and the element range M:N.  Multi-packed ports are
+    excluded — there the first bracket is a packed bit-select, not an array
+    index."""
+    if len(port.packed) > 1:
+        return None
+    m = _SLICE_CONN.match(rest)
+    if not m or m.group(1) != net:
+        return None
+    return int(m.group(2)), _clean_dim(f"{m.group(3)}:{m.group(4)}")
 
 
 def _port_dim_evidence(

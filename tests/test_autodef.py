@@ -3565,3 +3565,133 @@ def test_unpacked_driver_plus_single_dim_driver_no_corruption():
     out = auto_def_t(lines, mods)
     decls = [l for l in out if re.match(r"^\s*wire\b", l) and "net" in l]
     assert decls == ["wire [1:0][35:0] net;"]
+
+
+# ---------------------------------------------------------------------------
+# slice-index dim growth + input-port dimension notes (synthetic)
+
+
+RDMA_SUB = """\
+module rdma (
+    input  wire        clk,
+    output wire [35:0] rdma0_rdata,
+    output wire [35:0] rdma1_rdata
+);
+endmodule
+"""
+
+SINK_SUB = """\
+module sink (
+    input  wire        clk,
+    input  wire [1:0][35:0] din
+);
+endmodule
+"""
+
+
+def slice_mods():
+    return {
+        "rdma": parse_module_ports(RDMA_SUB.splitlines()),
+        "sink": parse_module_ports(SINK_SUB.splitlines()),
+    }
+
+
+def _slice_top(decl):
+    return [
+        "module top(input clk);",
+        decl,
+        "  rdma u_rdma (.clk(clk),",
+        "    .rdma0_rdata(ram[0][35:0]),",
+        "    .rdma1_rdata(ram[1][35:0]));",
+        "  sink u_sink (.clk(clk), .din(ram/*[1:0][35:0]*/));",
+        "/*autodef*/",
+        "endmodule",
+    ]
+
+
+def test_slice_drivers_grow_dim_and_fix_stale_decl():
+    """net[0][35:0] + net[1][35:0] output slices imply the [1:0] array dim;
+    the stale wire[35:0][36-1:0] (wrong first dim, SYMBOLIC second dim) is
+    rewritten per-dimension to wire [1:0][35:0]."""
+    out = auto_def_t(_slice_top("wire[35:0][36-1:0] ram;"), slice_mods())
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "ram" in l and ".rdma" not in l]
+    assert decls == ["wire [1:0][35:0] ram;"]
+
+
+def test_slice_drivers_fresh_decl_gets_composed_dims():
+    """Without a hand-written declaration the inst-wire emission carries the
+    grown dims."""
+    out = auto_def_t(_slice_top(""), slice_mods())
+    decls = [l for l in out if "ram" in l and l.strip().startswith("wire")]
+    assert len(decls) == 1 and "[1:0][35:0]" in decls[0]
+
+
+def test_single_slice_index_does_not_grow():
+    """A lone net[0][35:0] slice is not proof of an array dimension."""
+    mods = {"rdma": parse_module_ports(RDMA_SUB.splitlines())}
+    out = auto_def_t(
+        [
+            "module top(input clk);",
+            "  rdma u_rdma (.clk(clk),",
+            "    .rdma0_rdata(ram[0][35:0]));",
+            "/*autodef*/",
+            "endmodule",
+        ],
+        mods,
+    )
+    decls = [l for l in out if "ram" in l and l.strip().startswith("wire")]
+    assert decls and "[1:0]" not in decls[0].split("ram")[0]
+
+
+def test_input_port_note_corrects_decl_weaker_than_driver():
+    """An input port's /*[1:0][35:0]*/ note corrects the stale declaration
+    when no output driver did; a bare single-dim input connection never
+    invents dims."""
+    mods = {"sink": parse_module_ports(SINK_SUB.splitlines())}
+    out = auto_def_t(
+        [
+            "module top(input clk);",
+            "wire[35:0][36-1:0] ram;",
+            "  sink u_sink (.clk(clk), .din(ram/*[1:0][35:0]*/));",
+            "/*autodef*/",
+            "endmodule",
+        ],
+        mods,
+    )
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "ram" in l and ".din" not in l]
+    assert decls == ["wire [1:0][35:0] ram;"]
+
+    mods2 = {
+        "sink1": parse_module_ports(
+            ["module sink1 (input wire clk, input wire [35:0] din);", "endmodule"]
+        )
+    }
+    out2 = auto_def_t(
+        [
+            "module top(input clk);",
+            "wire[35:0] ram2;",
+            "  sink1 u_sink (.clk(clk), .din(ram2));",
+            "/*autodef*/",
+            "endmodule",
+        ],
+        mods2,
+    )
+    assert "wire[35:0] ram2;" in out2  # single-dim uncommented input: untouched
+
+
+def test_aall_slice_growth_end_to_end(tmp_path):
+    from verilog_tooling import inst
+
+    libdir = tmp_path / "lib"
+    libdir.mkdir()
+    (libdir / "rdma.v").write_text(RDMA_SUB)
+    (libdir / "sink.v").write_text(SINK_SUB)
+    top = tmp_path / "top.v"
+    top.write_text("\n".join(_slice_top("wire[35:0][36-1:0] ram;")) + "\n")
+    o1 = tmp_path / "o1.v"
+    o2 = tmp_path / "o2.v"
+    inst.main(["aall", "-i", str(top), "-o", str(o1), "--ref_file", str(top), "-y", str(libdir)])
+    text = o1.read_text()
+    assert re.search(r"^wire ?\[1:0\]\[35:0\] +ram;$", text, re.M)
+    inst.main(["aall", "-i", str(o1), "-o", str(o2), "--ref_file", str(top), "-y", str(libdir)])
+    assert o2.read_text() == text  # idempotent
