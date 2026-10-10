@@ -1399,6 +1399,7 @@ endmodule
 def test_stale_usrdef_width_updated_from_driver():
     text = """\
 module top(input clk, input [7:0] din);
+// verilog-autodef-user-boundary:nil
 /*autodef*/
 wire [3:0] stale_w;
 reg  [1:0] stale_r;
@@ -1447,6 +1448,7 @@ endmodule
 def test_scalar_usrdef_gains_vector_width():
     text = """\
 module top(input clk, input [7:0] din);
+// verilog-autodef-user-boundary:nil
 /*autodef*/
 wire scalar_w;
 assign scalar_w = din;
@@ -3173,6 +3175,7 @@ def multidim_mods():
 def _multidim_top(decl_line):
     return [
         "module top;",
+        "// verilog-autodef-user-boundary:nil",
         "input clk;",
         "/*autodef*/",
         "",
@@ -3257,6 +3260,7 @@ def test_aall_wrong_width_decl_updated_end_to_end(tmp_path):
     top = tmp_path / "top.v"
     top.write_text("""\
 module top;
+// verilog-autodef-user-boundary:nil
 input clk;
 /*autodef*/
 /*autowire*/
@@ -3354,6 +3358,7 @@ endmodule
 def _dual_top(decl, m2="dbuf"):
     return [
         "module top(input clk);",
+        "// verilog-autodef-user-boundary:nil",
         decl,
         "  dbuf u10 (.rdata(net), /*autoinst*/ .clk(clk));",
         f"  {m2} u11 (.rdata(net), /*autoinst*/ .clk(clk));",
@@ -3383,6 +3388,7 @@ def test_dual_driver_mixed_dims_no_last_dim_overwrite():
     for first, second in (("dbuf", "dbuf1"), ("dbuf1", "dbuf")):
         lines = [
             "module top(input clk);",
+            "// verilog-autodef-user-boundary:nil",
             "wire [35:0] net;",
             f"  {first} u10 (.rdata(net), /*autoinst*/ .clk(clk));",
             f"  {second} u11 (.rdata(net), /*autoinst*/ .clk(clk));",
@@ -3489,6 +3495,7 @@ def test_unpacked_port_dims_update_old_decl_end_to_end(tmp_path):
     top = tmp_path / "top.v"
     top.write_text("""\
 module top(input clk);
+// verilog-autodef-user-boundary:nil
   wire[35:0][35:0] ram;
   dbufu u10 (.clk(clk), .rdata(ram));
   /*autodef*/
@@ -3556,6 +3563,7 @@ def test_unpacked_driver_plus_single_dim_driver_no_corruption():
     }
     lines = [
         "module top(input clk);",
+        "// verilog-autodef-user-boundary:nil",
         "wire [35:0] net;",
         "  dbufu u10 (.rdata(net), /*autoinst*/ .clk(clk));",
         "  dbuf1 u11 (.rdata(net), /*autoinst*/ .clk(clk));",
@@ -3599,6 +3607,7 @@ def slice_mods():
 def _slice_top(decl):
     return [
         "module top(input clk);",
+        "// verilog-autodef-user-boundary:nil",
         decl,
         "  rdma u_rdma (.clk(clk),",
         "    .rdma0_rdata(ram[0][35:0]),",
@@ -3651,6 +3660,7 @@ def test_input_port_note_corrects_decl_weaker_than_driver():
     out = auto_def_t(
         [
             "module top(input clk);",
+            "// verilog-autodef-user-boundary:nil",
             "wire[35:0][36-1:0] ram;",
             "  sink u_sink (.clk(clk), .din(ram/*[1:0][35:0]*/));",
             "/*autodef*/",
@@ -3669,6 +3679,7 @@ def test_input_port_note_corrects_decl_weaker_than_driver():
     out2 = auto_def_t(
         [
             "module top(input clk);",
+            "// verilog-autodef-user-boundary:nil",
             "wire[35:0] ram2;",
             "  sink1 u_sink (.clk(clk), .din(ram2));",
             "/*autodef*/",
@@ -3722,6 +3733,7 @@ endmodule
 def _flipflop_top(decl):
     return [
         "module top(input clk);",
+        "// verilog-autodef-user-boundary:nil",
         decl,
         "  pipe u_p (.clk(clk), .o0(ram[0][3:0]), .o1(ram[1][3:0]));",
         "  sink_sym u_s (.clk(clk), .din(ram/*[R_MASTER_NUM-1:0][3:0]*/));",
@@ -3775,7 +3787,7 @@ endmodule
 
 
 def _grown_top(note, decl=None, n=8):
-    lines = ["module top;"]
+    lines = ["module top;", "// verilog-autodef-user-boundary:nil"]
     lines.append("  parameter ITP_MODL_NUM = 8;")
     if decl is not None:
         lines.append(decl)
@@ -3855,6 +3867,7 @@ def test_unpacked_note_reads_composed():
     out = auto_def_t(
         [
             "module top(input clk);",
+            "// verilog-autodef-user-boundary:nil",
             "wire[35:0][36-1:0] ram;",
             "  dbufu u10 (.clk(clk), .rdata(ram/*[35:0].[1:0]*/));",
             "/*autodef*/",
@@ -3864,3 +3877,97 @@ def test_unpacked_note_reads_composed():
     )
     decls = [l for l in out if re.match(r"^\s*wire\b", l) and "ram" in l and ".rdata" not in l]
     assert decls == ["wire [1:0][35:0] ram;"]
+
+
+# ---------------------------------------------------------------------------
+# verilog-autodef-user-boundary (default t): conflict notes, no rewrite
+
+
+def _boundary_top(decl_line):
+    # like _multidim_top but WITHOUT the nil override (default boundary on)
+    return [
+        "module top;",
+        "input clk;",
+        "/*autodef*/",
+        "",
+        decl_line,
+        "sub u_sub (/*autoinst*/",
+        "    .dout (dout/*[1:0][35:0]*/),",
+        "    .w    (w)",
+        ");",
+        "endmodule",
+    ]
+
+
+def test_boundary_default_conflicting_decl_gets_note():
+    """Default (t): the user declaration is NOT rewritten; a trailing
+    //AD_CONFLICT: note carries the inferred shape, after the user's own
+    comment."""
+    out = auto_def_t(_boundary_top("wire [35:0] dout;  // mine"), multidim_mods())
+    decls = [l for l in out if "dout" in l and ";" in l and ".dout" not in l]
+    assert decls == ["wire [35:0] dout;  // mine  //AD_CONFLICT: infer wire[1:0][35:0]"]
+
+
+def test_boundary_note_idempotent_and_self_clearing():
+    """Re-running does not duplicate the note; fixing the declaration by
+    hand clears the note on the next run; a changed inference rewrites the
+    note text."""
+    mods = multidim_mods()
+    once = auto_def_t(_boundary_top("wire [35:0] dout;  // mine"), mods)
+    twice = auto_def_t(once, mods)
+    assert twice == once  # idempotent
+    # user fixes the declaration: the note disappears
+    fixed = [l.replace("wire [35:0] dout;", "wire [1:0][35:0] dout;") for l in once]
+    thrice = auto_def_t(fixed, mods)
+    assert not any("AD_CONFLICT" in l for l in thrice)
+    assert any("wire [1:0][35:0] dout;  // mine" in l for l in thrice)
+
+
+def test_boundary_dt_exempt_no_note():
+    out = auto_def_t(_boundary_top("wire [35:0] dout; //DT"), multidim_mods())
+    assert "wire [35:0] dout; //DT" in out
+    assert not any("AD_CONFLICT" in l for l in out)
+
+
+def test_boundary_no_evidence_no_note():
+    """A scalar connection gives no dimension inference: no annotation."""
+    out = auto_def_t(
+        [
+            "module top;",
+            "input clk;",
+            "/*autodef*/",
+            "wire plain;",
+            "sub u_sub (/*autoinst*/",
+            "    .clk (plain)",
+            ");",
+            "endmodule",
+        ],
+        multidim_mods(),
+    )
+    assert not any("AD_CONFLICT" in l for l in out)
+
+
+def test_boundary_width_conflict_note():
+    """Single-dim width conflicts are noted too (infer wire[7:0])."""
+    text = """\
+module top(input clk, input [7:0] din);
+/*autodef*/
+wire [3:0] stale_w;
+assign stale_w = din;
+endmodule
+"""
+    out = "\n".join(_adt(text))
+    assert "wire [3:0] stale_w;  //AD_CONFLICT: infer wire[7:0]" in out
+    assert "wire [7:0] stale_w;" not in out
+
+
+def test_boundary_trace_events(monkeypatch, capsys):
+    _trace_run(monkeypatch, "dout")
+    mods = multidim_mods()
+    once = auto_def_t(_boundary_top("wire [35:0] dout;"), mods)
+    err = capsys.readouterr().err
+    assert "[vt-trace] dout: conflict-note infer=wire[1:0][35:0]" in err
+    fixed = [l.replace("wire [35:0] dout;", "wire [1:0][35:0] dout;") for l in once]
+    auto_def_t(fixed, mods)
+    err = capsys.readouterr().err
+    assert "[vt-trace] dout: conflict-clear" in err

@@ -129,6 +129,15 @@ def parse_param_value(lines: Sequence[str]) -> bool:
     return _local_bool(lines, "verilog-auto-inst-param-value", False)
 
 
+def parse_user_boundary(lines: Sequence[str]) -> bool:
+    """verilog-autodef-user-boundary file-local (default t): non-nil treats
+    declarations outside the /*autodef*/ region as user-owned — a
+    conflicting inferred width/dimension is noted with a trailing
+    ``//AD_CONFLICT: infer ...`` comment instead of rewriting the
+    declaration; nil restores the in-place correction behaviour."""
+    return _local_bool(lines, "verilog-autodef-user-boundary", True)
+
+
 def _wire_comment_enabled(lines: Sequence[str]) -> bool:
     """verilog-auto-wire-comment file-local (default t): nil suppresses the
     // To/From comments on generated declarations."""

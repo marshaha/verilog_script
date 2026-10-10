@@ -325,6 +325,22 @@ assign 线网、实例输出驱动的线网，以及 for 循环变量
 `reg`。完整规则见下文 [/*autodef*/ (AD/ADT)](#autodef-adadt)。
 `KADT` 把区域折叠回标记。
 
+#### 区域外的用户声明（`verilog-autodef-user-boundary`）
+
+`/*autodef*/` 区域之外的声明视为用户手写。当推导出的位宽/维度与之
+**冲突**时，默认行为（文件级 `// verilog-autodef-user-boundary:t`）
+不改写该行，而是在行尾追加注解，给出推理结果：
+
+```verilog
+wire [35:0] ram_rdata;  // 我的声明  //AD_CONFLICT: infer wire[1:0][35:0]
+```
+
+该注解幂等（重跑不重复追加）、声明被手动修正后自动消失、推理结果
+变化时自动更新注解内容。带 `//DT` 的声明完全豁免（不改写、不注
+解）；推理不出位宽/维度时不加注解。写
+`// verilog-autodef-user-boundary:nil` 则恢复旧行为：可证明错误的
+声明原地纠正（缺失/错误的 packed 维度、可证明过时的位宽）。
+
 ```verilog
 module top (
     input  wire       clk,

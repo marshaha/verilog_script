@@ -151,6 +151,21 @@ def set_param_value(enabled: bool) -> None:
 
 def _param_value_on() -> bool:
     return _PARAM_VALUE
+
+
+# verilog-autodef-user-boundary file-local (default t): a hand-written
+# declaration outside the /*autodef*/ region is user-owned — conflicting
+# inferred width/dims get a //AD_CONFLICT: note, not a rewrite
+_USER_BOUNDARY = True
+
+
+def set_user_boundary(enabled: bool) -> None:
+    global _USER_BOUNDARY
+    _USER_BOUNDARY = enabled
+
+
+def _user_boundary_on() -> bool:
+    return _USER_BOUNDARY
 _DIRECTIVE_LINE = re.compile(r"^\s*`(define|ifdef|ifndef|else|elseif|elsif|endif)\b")
 _SIGNAL_TOKEN = re.compile(r"[`'.]?\w+")
 # non-signal text pre-stripped before tokenising: string literals (their
@@ -330,6 +345,10 @@ class Signal:
     # instance evidence: the region re-emits it, the orphan line is dropped
     orphan: bool = False  # a kill-waived line sitting in the orphan slot
     # (directly after the /*autodef*/ marker) — eligible for absorb
+    # verilog-autodef-user-boundary (default t): the inferred declaration
+    # shape conflicting with this usrdef line, e.g. "wire[1:0][35:0]" —
+    # emitted as a //AD_CONFLICT: note instead of rewriting the line
+    conflict: str = ""
 
 
 def conn_net_name(rest: str) -> str | None:
@@ -695,6 +714,12 @@ class SignalTable:
         rewritten = _rewrite_usrdef_range(sig.line, new_msb)
         if rewritten is None:
             return  # declaration text is not a simple one-line wire/reg
+        if _user_boundary_on():
+            # user-boundary on (default): note the conflict, keep the line
+            km = re.match(r"\s*(wire|reg|logic)", sig.line)
+            sig.conflict = f"{km.group(1) if km else 'wire'}[{new_msb}:0]"
+            sig.width_updated = True  # strong evidence consumed
+            return
         from ._trace import trace_sig
 
         trace_sig(name or sig.name, f"update-width before={sig.width} after={new_msb}")
@@ -739,6 +764,15 @@ class SignalTable:
             # (input-port) evidence does not rewrite the declaration on the
             # next pass (numeric/symbolic flip-flop between runs)
             sig.width_updated = True
+            return
+        if _user_boundary_on():
+            # user-boundary on (default): the declaration is user-owned —
+            # note the conflict instead of rewriting the line
+            km = re.match(r"\s*(wire|reg|logic)", sig.line)
+            sig.conflict = (km.group(1) if km else "wire") + "".join(
+                f"[{d}]" for d in pdims
+            )
+            sig.width_updated = True  # strong evidence consumed
             return
         from ._trace import trace_sig
 
@@ -2341,6 +2375,29 @@ def div_signals(signals: SignalTable) -> Divided:
     return div
 
 
+_AD_CONFLICT_NOTE = re.compile(r"\s*//AD_CONFLICT:.*$")
+
+
+def _usrdef_display_line(sig: "Signal", name: str = "") -> str:
+    """The emission form of a user declaration line: any previous
+    ``//AD_CONFLICT:`` annotation is stripped and re-derived from this run's
+    evidence — a resolved conflict disappears, a changed inference updates
+    the note text (idempotent re-runs).  The user's own comment text is
+    kept; the note always trails the line."""
+    from ._trace import trace_sig
+
+    had = _AD_CONFLICT_NOTE.search(sig.line)
+    line = _AD_CONFLICT_NOTE.sub("", sig.line)
+    if sig.conflict:
+        note = "  //AD_CONFLICT: infer " + sig.conflict
+        if not had or had.group(0).strip() != note.strip():
+            trace_sig(name, f"conflict-note infer={sig.conflict}")
+        return line + note
+    if had:
+        trace_sig(name, "conflict-clear")
+    return line
+
+
 def _usrdef_wider(new_msb: str, old_msb: str) -> bool:
     """True when a driver-derived width provably outgrows a hand-written one:
     both numeric and new > old, or the declaration is scalar ('c0') and the
@@ -3392,6 +3449,9 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
 
     set_typedef_regexp(parse_typedef_regexp(lines))
     set_param_value(parse_param_value(lines))
+    from .wire import parse_user_boundary
+
+    set_user_boundary(parse_user_boundary(lines))
     lines = kill_auto_def_t(lines)
     from .inst import _expand_ansi_header, map_module_spans, module_spans
 
@@ -3782,9 +3842,11 @@ def _auto_def_t_single(
     # (a provably stale hand-written width, grown from its driver) replaces
     # the original line at emission time.
     usrdef_lines: dict[int, Signal] = {}
-    for sig in signals.signals.values():
+    usrdef_names: dict[int, str] = {}
+    for name, sig in signals.signals.items():
         if sig.type == "usrdef" and sig.line_idx >= 0:
             usrdef_lines[sig.line_idx] = sig
+            usrdef_names[sig.line_idx] = name
     # waived orphan lines the instance evidence re-derived identically:
     # they are emitted inside the region instead
     drop_idxs = {s.line_idx for s in signals.signals.values() if s.drop_line and s.line_idx >= 0}
@@ -3794,7 +3856,9 @@ def _auto_def_t_single(
         if _AUTODEF_MARK_FULL.match(line):
             out.extend(_emit_sections(line, div, unresolved, loop_decls))
         elif idx in usrdef_lines:
-            out.append(usrdef_lines[idx].line)  # possibly width-updated decl
+            # possibly width-updated decl; in user-boundary mode a stale
+            # //AD_CONFLICT: annotation is re-derived (or cleared) here
+            out.append(_usrdef_display_line(usrdef_lines[idx], usrdef_names[idx]))
         elif idx in drop_idxs:
             continue
         else:

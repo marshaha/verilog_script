@@ -348,6 +348,25 @@ drivers. Undriven outputs become `reg`. See [/*autodef*/
 (AD/ADT)](#autodef-adadt) below for the full rules. `KADT` collapses the
 region back to the marker.
 
+#### User declarations outside the region (`verilog-autodef-user-boundary`)
+
+Declarations outside the `/*autodef*/` region are user-owned.  When the
+inferred width/dimensions **conflict** with such a declaration, the
+default (file-local `// verilog-autodef-user-boundary:t`) keeps the line
+and appends a trailing note naming the inferred shape:
+
+```verilog
+wire [35:0] ram_rdata;  // my decl  //AD_CONFLICT: infer wire[1:0][35:0]
+```
+
+The note is idempotent (re-runs do not duplicate it), disappears once the
+declaration is fixed by hand, and its text follows the current inference.
+A declaration carrying `//DT` is fully exempt (never rewritten, never
+annotated), and nothing is annotated when no width/dimension could be
+inferred.  With `// verilog-autodef-user-boundary:nil` the old behaviour
+returns: a provably wrong declaration is corrected in place (missing or
+wrong packed dimensions, provably stale widths).
+
 ```verilog
 module top (
     input  wire       clk,
