@@ -687,6 +687,10 @@ class SignalTable:
             trace_sig(name or sig.name, "dt-exempt cmd=update-width")
             return  # user said don't touch
         if not _usrdef_wider(new_msb, sig.width):
+            if new_msb not in ("", "c0") and new_msb == sig.width:
+                # the driver width agrees with the declaration: the evidence
+                # is consumed even though the text needs no change
+                sig.width_updated = True
             return
         rewritten = _rewrite_usrdef_range(sig.line, new_msb)
         if rewritten is None:
@@ -730,6 +734,11 @@ class SignalTable:
             )
             return
         if rewritten == sig.line:
+            # the evidence agrees with the declaration: no text change is
+            # needed, but the evidence WAS consumed — mark it so a weaker
+            # (input-port) evidence does not rewrite the declaration on the
+            # next pass (numeric/symbolic flip-flop between runs)
+            sig.width_updated = True
             return
         from ._trace import trace_sig
 

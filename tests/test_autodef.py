@@ -3695,3 +3695,67 @@ def test_aall_slice_growth_end_to_end(tmp_path):
     assert re.search(r"^wire ?\[1:0\]\[35:0\] +ram;$", text, re.M)
     inst.main(["aall", "-i", str(o1), "-o", str(o2), "--ref_file", str(top), "-y", str(libdir)])
     assert o2.read_text() == text  # idempotent
+
+
+# ---------------------------------------------------------------------------
+# high-priority evidence no-op must still count as "consumed" (flip-flop)
+
+
+PIPE_SUB = """\
+module pipe (
+    input  wire       clk,
+    output wire [3:0] o0,
+    output wire [3:0] o1
+);
+endmodule
+"""
+
+SINK_SYM_SUB = """\
+module sink_sym (
+    input  wire        clk,
+    input  wire [R_MASTER_NUM-1:0][3:0] din
+);
+endmodule
+"""
+
+
+def _flipflop_top(decl):
+    return [
+        "module top(input clk);",
+        decl,
+        "  pipe u_p (.clk(clk), .o0(ram[0][3:0]), .o1(ram[1][3:0]));",
+        "  sink_sym u_s (.clk(clk), .din(ram/*[R_MASTER_NUM-1:0][3:0]*/));",
+        "/*autodef*/",
+        "endmodule",
+    ]
+
+
+def flipflop_mods():
+    return {
+        "pipe": parse_module_ports(PIPE_SUB.splitlines()),
+        "sink_sym": parse_module_ports(SINK_SYM_SUB.splitlines()),
+    }
+
+
+def test_numeric_decl_stable_with_symbolic_input_note():
+    """slice-grow (numeric, high priority) agrees with the declaration and
+    rewrites nothing — but the evidence is CONSUMED, so the weaker symbolic
+    input-port note must not rewrite it back on the next pass."""
+    mods = flipflop_mods()
+    once = auto_def_t(_flipflop_top("wire[1:0][3:0] ram;"), mods)
+    twice = auto_def_t(once, mods)
+    thrice = auto_def_t(twice, mods)
+    assert once == twice == thrice
+    assert any("wire[1:0][3:0] ram;" in l or "wire [1:0][3:0] ram;" in l for l in thrice)
+    assert not any("R_MASTER_NUM" in l and "ram" in l and "wire" in l for l in thrice)
+
+
+def test_symbolic_decl_converges_to_numeric_then_stable():
+    """Starting from a symbolic declaration, slice-grow rewrites it to the
+    numeric dims once; later passes are byte-identical."""
+    mods = flipflop_mods()
+    once = auto_def_t(_flipflop_top("wire[R_MASTER_NUM-1:0][3:0] ram;"), mods)
+    assert any(l.strip() == "wire [1:0][3:0] ram;" for l in once)
+    twice = auto_def_t(once, mods)
+    thrice = auto_def_t(twice, mods)
+    assert twice == thrice  # converged: numeric form, then byte-stable
