@@ -422,6 +422,7 @@ def _inst_driven_nets(
 
         const_map = {k: str(v) for k, v in _const_symbols(lines).items()}
     text = "\n".join(lines)
+    text_masked = emacs.mask_comments(text)
     nets: dict[str, InstNet] = {}
 
     def _scan(open_idx: int, module: str, inst: str, moddef: ModuleDef) -> None:
@@ -434,7 +435,7 @@ def _inst_driven_nets(
         else:
             inst_io = {p.name: p for p in moddef.ports if p.direction in directions}
         param_values = emacs.effective_param_values(
-            moddef, emacs.read_inst_param_values(text, open_idx)
+            moddef, emacs.read_inst_param_values(text, open_idx, text_masked)
         )
         for pin, expr in emacs.inst_pin_connections(text, open_idx):
             if pin not in inst_io:
@@ -538,7 +539,7 @@ def _inst_driven_nets(
             continue
         open_idx = st[-1]
         try:
-            module, inst = emacs._resolve_instance_at(text, open_idx)
+            module, inst = emacs._resolve_instance_at(text, open_idx, text_masked)
         except ValueError:
             continue
         moddef = modules.get(module)

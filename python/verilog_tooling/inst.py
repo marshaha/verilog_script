@@ -1974,7 +1974,7 @@ def _statement_span(mt: str, marker_off: int) -> tuple[int, int]:
     # port list: the instance name precedes it, a #(...) group may
     # precede the instance name (mirrors VerilogBuffer.resolve_instance)
     _, kw = emacs._prev_word(mt, inner)
-    group = emacs._skip_group_back(mt, kw)
+    group = emacs._skip_group_back(mt, kw, mt)
     if group is not None:
         kk = group[0]
         while kk > 0 and mt[kk - 1] in " \t\n":
@@ -2419,12 +2419,13 @@ def _which_resolvable(
 
     markers_all = emacs.find_auto_markers(lines, keyword)
     joined = "\n".join(lines)
+    joined_masked = emacs.mask_comments(joined)
     stacks = emacs._scan_parens_at(joined, [m.offset for m in markers_all])
     resolvable = []
     for mi, marker in enumerate(markers_all):
         try:
             stack = stacks[marker.offset]
-            mod = emacs._resolve_instance_at(joined, stack[-1])[0]
+            mod = emacs._resolve_instance_at(joined, stack[-1], joined_masked)[0]
         except (ValueError, IndexError):
             continue
         if mod in resolved:
@@ -2687,11 +2688,12 @@ def _main_emacs(command: str, text: str, lines: list[str], args) -> list[str]:
         resolvable = []
         markers_all = emacs.find_auto_markers(lines, keyword)
         joined = "\n".join(lines)
+        joined_masked = emacs.mask_comments(joined)
         stacks = emacs._scan_parens_at(joined, [m.offset for m in markers_all])
         for mi, marker in enumerate(markers_all):
             try:
                 stack = stacks[marker.offset]
-                mod = emacs._resolve_instance_at(joined, stack[-1])[0]
+                mod = emacs._resolve_instance_at(joined, stack[-1], joined_masked)[0]
             except (ValueError, IndexError):
                 continue
             if mod in files or mod in buffer_mods:

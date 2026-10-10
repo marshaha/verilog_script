@@ -116,4 +116,8 @@ def strip_line_comments(text: str) -> str:
     ``/* */`` blocks are kept (AUTO markers, template blocks) but still
     tracked — a ``//`` inside a block comment or a string is not treated
     as a comment."""
+    if "//" not in text:
+        return text
+    if "\n" not in text and '"' not in text and "/*" not in text:
+        return text.split("//", 1)[0]
     return mask_comments(text, block=False, cut_line=True)

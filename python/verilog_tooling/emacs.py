@@ -285,7 +285,9 @@ def _prev_word(text: str, i: int) -> tuple[str, int]:
     return text[j:end], j
 
 
-def _skip_group_back(text: str, i: int) -> tuple[int, int] | None:
+def _skip_group_back(
+    text: str, i: int, masked: "str | None" = None
+) -> tuple[int, int] | None:
     """Skip backwards over a balanced ``( ... )`` group ending before I.
 
     Returns (open_idx, close_idx); None when the text before I does not end
@@ -293,16 +295,24 @@ def _skip_group_back(text: str, i: int) -> tuple[int, int] | None:
     comments or strings do not count toward the balance: an unbalanced
     paren in a comment (e.g. an unbalanced ``// }}`` fold) would otherwise
     shift the located group start and silently corrupt the parameter
-    values read from the block."""
+    values read from the block.  MASKED optionally supplies
+    mask_comments(text) so repeated calls on slices of the same buffer
+    do not re-mask the prefix from scratch."""
     j = _skip_back(text, i)
     if j == 0 or text[j - 1] != ")":
         return None
     close = j - 1
-    masked = mask_comments(text[: close + 1])
+    # comment masking preserves length and position, so the mask of any
+    # prefix text[:close+1] is identically mask_comments(text)[:close+1]
+    m_slice = (
+        masked[: close + 1]
+        if masked is not None
+        else mask_comments(text[: close + 1])
+    )
     depth = 0
     j = close
     while j >= 0:
-        c = masked[j]
+        c = m_slice[j]
         if c == ")":
             depth += 1
         elif c == "(":
@@ -317,7 +327,9 @@ def _skip_group_back(text: str, i: int) -> tuple[int, int] | None:
 # parameter values (verilog-read-inst-param-value, verilog-auto-inst-param-value)
 
 
-def read_inst_param_values(text: str, open_idx: int) -> dict[str, str]:
+def read_inst_param_values(
+    text: str, open_idx: int, masked: "str | None" = None
+) -> dict[str, str]:
     """Parse the ``#( .NAME(VALUE), ... )`` block immediately preceding the
     pin list opened at OPEN_IDX; returns {param_name: value_text}.
 
@@ -333,7 +345,7 @@ def read_inst_param_values(text: str, open_idx: int) -> dict[str, str]:
     # garbage ones (a mangled read once produced the width expression
     # `((7),.DW(32)-1)` on a real ZipCPU file).
     try:
-        group = _skip_group_back(text, j)
+        group = _skip_group_back(text, j, masked)
     except ValueError:
         return {}
     if group is None:
@@ -348,7 +360,8 @@ def read_inst_param_values(text: str, open_idx: int) -> dict[str, str]:
     # `.AW(7),.DW(32)` parse as a single entry with value `7),.DW(32`).
     # Masking preserves length, so slices and the value regexp below
     # still operate on the original characters.
-    inner = mask_comments(text)[group[0] + 1 : group[1]]
+    m_text = masked if masked is not None else mask_comments(text)
+    inner = m_text[group[0] + 1 : group[1]]
     values: dict[str, str] = {}
     for entry in _split_top_commas(inner):
         entry = _strip_comments(entry)  # drop comments + // Templated debris
@@ -728,7 +741,9 @@ def find_auto_markers(
     return out
 
 
-def _resolve_instance_at(text: str, open_idx: int) -> tuple[str, str]:
+def _resolve_instance_at(
+    text: str, open_idx: int, masked: "str | None" = None
+) -> tuple[str, str]:
     """(module, instance) for the pin list opened at OPEN_IDX."""
     inst, j = _prev_word(text, open_idx)
     if not inst:
@@ -749,7 +764,8 @@ def _resolve_instance_at(text: str, open_idx: int) -> tuple[str, str]:
                 inst, j = _prev_word(text, k)
     if not inst:
         raise ValueError("AUTOINST: cannot resolve instance name")
-    group = _skip_group_back(text, j)
+    m_full = masked if masked is not None else mask_comments(text)
+    group = _skip_group_back(text, j, m_full)
     if group is not None:
         # parameter override: the #( ... ) group before the instance name
         j = group[0]
@@ -846,6 +862,7 @@ def marker_modules(
         markers = markers + find_auto_markers(lines, r"\.\*", require_comment=False)
         markers.sort(key=lambda m: m.offset)
     stacks = _scan_parens_at(text, [m.offset for m in markers])
+    text_masked = mask_comments(text)
     modules = []
     for marker in markers:
         stack = stacks[marker.offset]
@@ -854,7 +871,7 @@ def marker_modules(
         open_idx = stack[-1]
         try:
             if keyword == "AUTOINST" or text[marker.offset : marker.end] == ".*":
-                modules.append(_resolve_instance_at(text, open_idx)[0])
+                modules.append(_resolve_instance_at(text, open_idx, text_masked)[0])
             else:
                 modules.append(
                     _resolve_param_instance(text, open_idx, _matching_paren(text, open_idx))[0]
@@ -1292,7 +1309,8 @@ def auto_inst(
         if is_star and not star_expand:
             continue
         try:
-            module, inst = _resolve_instance_at(text, open_idx)
+            m_full = mask_comments(text)
+            module, inst = _resolve_instance_at(text, open_idx, m_full)
         except ValueError:
             continue  # instance array / `define'd name: skip, not expandable
         try:
@@ -1336,7 +1354,10 @@ def _auto_inst_one(
         else None
     )
     at_value = template_at_value(tpl, inst) if tpl else ""
-    param_values = read_inst_param_values(text, open_idx) if param_value else {}
+    m_full = mask_comments(text)
+    param_values = (
+        read_inst_param_values(text, open_idx, m_full) if param_value else {}
+    )
     # Parent module signal declarations (for inst-vector:nil width matching):
     # every wire/reg/logic AND io declaration of the enclosing module —
     # multi-name decls included (misc._scan_decls handles both)
