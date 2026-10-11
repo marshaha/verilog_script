@@ -209,6 +209,13 @@
       "type": "spi",
       "sv_count": "~20",
       "status": "clean"
+    },
+    {
+      "name": "apb_timer_oc",
+      "path": "apb_timer_oc/rtl",
+      "type": "timer",
+      "sv_count": "4",
+      "status": "clean"
     }
   ],
   "last_updated": "2026-10-11"
