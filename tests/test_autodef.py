@@ -4362,3 +4362,28 @@ def test_unpacked_decl_not_flagged_when_port_has_no_unpacked():
     assert len(decls) == 1, decls
     assert "AD_CONFLICT" not in decls[0], decls[0]
     assert "[NumShares]" in decls[0], decls[0]
+
+
+def test_unpacked_decl_indices_not_treated_as_packed():
+    """Unpacked indices (x[0], x[1]) on a hand-written unpacked declaration
+    (logic x [N]) are element selects, not packed bit-selects.  Inferring
+    packed [1:0] from them is wrong.  (ibex rvfi_stage_valid_d:
+    logic rvfi_stage_valid_d [RVFI_STAGES] falsely flagged as
+    infer logic[1:0].)"""
+    from verilog_tooling.autodef import auto_def_t
+
+    out = auto_def_t(
+        [
+            "module top;",
+            "  /*autodef*/",
+            "  logic rvfi_stage_valid_d [RVFI_STAGES];",
+            "  assign rvfi_stage_valid_d[0] = a;",
+            "  assign rvfi_stage_valid_d[1] = b;",
+            "endmodule",
+        ],
+        {},
+    )
+    decls = [l for l in out if "rvfi_stage_valid_d" in l and re.match(r"^\s*logic\b", l)]
+    assert len(decls) == 1, decls
+    assert "AD_CONFLICT" not in decls[0], decls[0]
+    assert "[RVFI_STAGES]" in decls[0], decls[0]

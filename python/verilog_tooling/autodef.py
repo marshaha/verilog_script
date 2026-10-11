@@ -718,6 +718,15 @@ class SignalTable:
 
             trace_sig(name or sig.name, "update-skip reason=multidim-decl cmd=update-width")
             return
+        if _usrdef_unpacked_dims(sig.line):
+            # unpacked declaration (e.g. logic x [RVFI_STAGES]): indices like
+            # x[0], x[1] are unpacked element selects, not packed bit-selects.
+            # Inferring a packed [1:0] from them is wrong (ibex
+            # rvfi_stage_valid_d false positive).
+            from ._trace import trace_sig
+
+            trace_sig(name or sig.name, "update-skip reason=unpacked-decl cmd=update-width")
+            return
         if re.search(r"//\s*DT\s*$", sig.line, re.IGNORECASE):
             from ._trace import trace_sig
 
