@@ -4160,3 +4160,149 @@ def test_mixed_packed_unpacked_port_net():
     assert any(
         re.match(r"^\s*wire\s+\[1:0\]\[7:0\]\s+m\s*\[3:0\];$", l) for l in decls
     ), decls
+
+
+def test_multiline_port_connection_unpacked():
+    """A port connection split across lines still yields the legal
+    unpacked declaration (wire [7:0] mid [3:0])."""
+    from verilog_tooling.inst import parse_module_ports
+
+    sarr4 = "module sarr4 (input [7:0] din [3:0], output [7:0] dout [3:0]);\nendmodule"
+    mods = {"sarr4": parse_module_ports(sarr4.splitlines())}
+    out = auto_def_t(
+        [
+            "module e1 (",
+            "  input [7:0] d [3:0],",
+            "  output [7:0] q [3:0]",
+            ");",
+            "  /*autodef*/",
+            "  sarr4 u0 (",
+            "    .din (d),",
+            "    .dout (",
+            "      mid",
+            "    )",
+            "  );",
+            "  sarr4 u1 (.din (mid), .dout (q));",
+            "endmodule",
+        ],
+        mods,
+    )
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "mid" in l]
+    assert any(re.match(r"^\s*wire\s+\[7:0\]\s+mid\s*\[3:0\];$", l) for l in decls), decls
+
+
+def test_block_comments_inside_connections():
+    """Block comments inside .port(net) connections do not disturb
+    net extraction or the unpacked declaration."""
+    from verilog_tooling.inst import parse_module_ports
+
+    sarr4 = "module sarr4 (input [7:0] din [3:0], output [7:0] dout [3:0]);\nendmodule"
+    mods = {"sarr4": parse_module_ports(sarr4.splitlines())}
+    out = auto_def_t(
+        [
+            "module e2 (",
+            "  input [7:0] d [3:0],",
+            "  output [7:0] q [3:0]",
+            ");",
+            "  /*autodef*/",
+            "  sarr4 u0 (.din (d /* input data */), .dout (mid /* middle */));",
+            "  sarr4 u1 (.din (mid), .dout (q));",
+            "endmodule",
+        ],
+        mods,
+    )
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "mid" in l]
+    assert any(re.match(r"^\s*wire\s+\[7:0\]\s+mid\s*\[3:0\];$", l) for l in decls), decls
+    assert not any("unresolved" in l for l in out)
+
+
+def test_multiline_submodule_header_typed_params(tmp_path):
+    """A submodule header split across lines with typed parameters
+    (parameter int unsigned W) still resolves param defaults for dims."""
+    from verilog_tooling import inst
+
+    libdir = tmp_path / "lib"
+    libdir.mkdir()
+    (libdir / "s2d_ml.v").write_text(
+        "module s2d_ml #(parameter int unsigned W = 8,\n"
+        "                parameter int unsigned N = 4)\n"
+        "  (input [N-1:0]\n"
+        "         [W-1:0] din,\n"
+        "   output [N-1:0][W-1:0] dout);\n"
+        "  assign dout = din;\n"
+        "endmodule\n"
+    )
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module e4b (\n"
+        "  input [3:0][7:0] arr_in,\n"
+        "  output [3:0][7:0] arr_out\n"
+        ");\n"
+        "  /*autodef*/\n"
+        "  s2d_ml u0 (.din (arr_in), .dout (m01));\n"
+        "  s2d_ml u1 (.din (m01), .dout (arr_out));\n"
+        "endmodule\n"
+    )
+    out = tmp_path / "o.v"
+    inst.main(["aall", "-i", str(top), "-o", str(out), "--ref_file", str(top), "-y", str(libdir)])
+    text = out.read_text()
+    assert re.search(r"^wire\s*\[3:0\]\[7:0\]\s+m01;$", text, re.M), text
+
+
+def test_comment_inside_submodule_port_decl():
+    """Comments embedded in a submodule's port declaration do not break
+    packed/unpacked dim parsing."""
+    from verilog_tooling.inst import parse_module_ports
+
+    sarr4_c = (
+        "module sarr4_c (input [7:0] /* data in */ din [3:0],\n"
+        "                output [7:0] dout /* data out */ [3:0]);\n"
+        "endmodule"
+    )
+    mods = {"sarr4_c": parse_module_ports(sarr4_c.splitlines())}
+    out = auto_def_t(
+        [
+            "module e5 (",
+            "  input [7:0] d [3:0],",
+            "  output [7:0] q [3:0]",
+            ");",
+            "  /*autodef*/",
+            "  sarr4_c u0 (.din (d), .dout (mid));",
+            "  sarr4_c u1 (.din (mid), .dout (q));",
+            "endmodule",
+        ],
+        mods,
+    )
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "mid" in l]
+    assert any(re.match(r"^\s*wire\s+\[7:0\]\s+mid\s*\[3:0\];$", l) for l in decls), decls
+
+
+def test_multiline_param_override():
+    """A #(.W(16), .N(2)) parameter override split across lines still
+    substitutes into the port dims."""
+    from verilog_tooling.inst import parse_module_ports
+
+    s2d = (
+        "module s2d #(parameter int unsigned W = 8, parameter int unsigned N = 4)\n"
+        "  (input [N-1:0][W-1:0] din, output [N-1:0][W-1:0] dout);\n"
+        "endmodule"
+    )
+    mods = {"s2d": parse_module_ports(s2d.splitlines())}
+    out = auto_def_t(
+        [
+            "module e11 (",
+            "  input [1:0][15:0] arr_in,",
+            "  output [1:0][15:0] arr_out",
+            ");",
+            "  /*autodef*/",
+            "  s2d #(",
+            "    .W (16),",
+            "    .N (2)",
+            "  ) u0 (.din (arr_in), .dout (m01));",
+            "  s2d #(.W(16), .N(2)) u1 (.din (m01), .dout (arr_out));",
+            "endmodule",
+        ],
+        mods,
+    )
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "m01" in l]
+    assert any(re.match(r"^\s*wire\s+\[1:0\]\[15:0\]\s+m01;$", l) for l in decls), decls
