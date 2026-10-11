@@ -5,6 +5,7 @@ import re
 from verilog_tooling.autodef import (
     _candidate_module_names,
     _comma_separated_header,
+    _const_symbols,
     auto_def_t,
     get_all_defs,
     get_all_paras,
@@ -4024,3 +4025,80 @@ endmodule
     decls = [l for l in out if re.match(r"^\s*wire\b", l) and "bus" in l]
     assert len(decls) == 1
     assert "[2:0][512-1:0]" in decls[0]
+
+
+# ---------------------------------------------------------------------------
+# SystemVerilog typed parameters: `parameter int unsigned W = 8` etc.
+# Both the name collector (get_all_paras) and the constant folder
+# (_const_symbols) used to only understand `integer`/`int`, so a typed
+# parameter was invisible: nets/ports dimensioned by it were spuriously
+# reported `// unresolved: ... not visible in this module` (ibex_if_stage:
+# TagSizeECC/LineSizeECC with `parameter int unsigned`).
+
+
+def test_typed_parameter_names_collected():
+    lines = [
+        "module m #(",
+        "  parameter int unsigned W = 8,",
+        "  parameter bit F = 1'b0,",
+        "  parameter logic [3:0] MASK = 4'hf,",
+        "  parameter my_pkg::cfg_t CFG = 3,",
+        "  parameter N = 4",
+        ") ();",
+        "endmodule",
+    ]
+    paras = get_all_paras(lines)
+    assert {"W", "F", "MASK", "CFG", "N"} <= paras
+    assert "int" not in paras and "bit" not in paras and "logic" not in paras
+
+
+def test_typed_parameter_const_values_folded():
+    lines = [
+        "module m #(",
+        "  parameter int unsigned W = 8,",
+        "  parameter int N = W + 2,",
+        ") ();",
+        "endmodule",
+    ]
+    consts = _const_symbols(lines)
+    assert consts["W"] == 8
+    assert consts["N"] == 10
+
+
+def test_verilog2001_parameter_named_int_still_works():
+    # `parameter int = 8` declares a parameter NAMED int: the type prefix
+    # must backtrack instead of swallowing the name.
+    lines = ["module m #(", "  parameter int = 8,", ") ();", "endmodule"]
+    assert get_all_paras(lines) == {"int"}
+    assert _const_symbols(lines)["int"] == 8
+
+
+def test_typed_parameter_dims_not_spurious_unresolved():
+    """End to end: a port dim `[W-1:0]` with `parameter int unsigned W`
+    must not be flagged 'not visible in this module'."""
+    lib = """\
+module s2d (input [1:0][7:0] din, output [1:0][7:0] dout);
+  assign dout = din;
+endmodule
+"""
+    top = """\
+module top #(
+  parameter int unsigned W = 8,
+  parameter int unsigned N = 4
+) (
+  input  [N-1:0][W-1:0] arr_in,
+  output [N-1:0][W-1:0] arr_out
+);
+  /*autodef*/
+  s2d u0 (.din (arr_in[1:0]), .dout (m01));
+  s2d u1 (.din (arr_in[N-1:2]), .dout (mrest));
+  s2d u2 (.din ({mrest, m01}), .dout (arr_out));
+endmodule
+"""
+    mods = {"s2d": parse_module_ports(lib.splitlines())}
+    out = auto_def_t(top.splitlines(), mods)
+    text = "\n".join(out)
+    assert "not visible in this module" not in text
+    decls = [l for l in out if re.match(r"^\s*wire\b", l)]
+    assert any("m01" in l and "[1:0][7:0]" in l for l in decls)
+    assert any("mrest" in l and "[1:0][7:0]" in l for l in decls)
