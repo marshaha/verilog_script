@@ -1080,8 +1080,25 @@ class SignalTable:
                 self._update_usrdef_width(sig, port_width, net)
             if sig.type == "usrdef":
                 # the driving port's packed shape proves the hand-written
-                # declaration wrong (e.g. a missing packed dim): fix it
-                self._update_usrdef_packed_dims(sig, pdims, udims, net)
+                # declaration wrong (e.g. a missing packed dim): fix it.
+                # BUT: if the connection is indexed (net[i]) and the
+                # declaration has more packed dims than the port, it's a
+                # valid slice — the index accounts for the extra dim
+                # (opentitan aes_mix_columns: [3:0][3:0][7:0]
+                # data_i_transposed[i] -> [3:0][7:0] port). Don't flag.
+                decl_dims = _usrdef_packed_dims(sig.line)
+                if (
+                    decl_dims is not None
+                    and len(decl_dims) > len(pdims)
+                    and re.search(r"\w+\s*\[\s*\w+\s*\]", rest)
+                ):
+                    from ._trace import trace_sig
+
+                    trace_sig(net, "update-skip reason=decl-has-more-dims")
+                    sig.conflict = ""
+                    sig.width_updated = True
+                else:
+                    self._update_usrdef_packed_dims(sig, pdims, udims, net)
         else:
             self.signals[net] = Signal(
                 width=port_width,
@@ -1188,8 +1205,23 @@ class SignalTable:
             ) and not sig.width_updated:
                 # an input port's dimension note/composed shape is weaker
                 # evidence than an output driver's: it only corrects a
-                # declaration no output driver already fixed
-                self._update_usrdef_packed_dims(sig, pdims, udims, net)
+                # declaration no output driver already fixed.
+                # BUT: if the connection is indexed (net[i]) and the
+                # declaration has more packed dims than the port, it's a
+                # valid slice — don't flag (opentitan aes_mix_columns).
+                decl_dims = _usrdef_packed_dims(sig.line)
+                if (
+                    decl_dims is not None
+                    and len(decl_dims) > len(pdims)
+                    and re.search(r"\w+\s*\[\s*\w+\s*\]", rest)
+                ):
+                    from ._trace import trace_sig
+
+                    trace_sig(net, "update-skip reason=decl-has-more-dims(in)")
+                    sig.conflict = ""
+                    sig.width_updated = True
+                else:
+                    self._update_usrdef_packed_dims(sig, pdims, udims, net)
         elif sig.type == "inst_in_wire":
             if sig.width in ("", "c0") or (width and _wider(width, sig.width)):
                 if width:
