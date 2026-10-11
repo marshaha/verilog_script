@@ -354,6 +354,9 @@ class Signal:
     # packed-range side (sig[PIPELINE_LENGTH-1:0]) proves they were plain
     # bit-selects of a packed vector and clears them
     dims_select_only: bool = False
+    # dims came from unpacked PORT evidence (authoritative): _align_grown_dims
+    # must not consume them as loop-grown dims
+    dims_port_evidence: bool = False
     line_idx: int = -1  # buffer line holding a usrdef declaration (-1: unknown)
     width_updated: bool = False  # a stale usrdef width was grown from its driver
     drop_line: bool = False  # a waived usrdef line re-derived identically by
@@ -742,19 +745,23 @@ class SignalTable:
         sig.width = new_msb
         sig.width_updated = True
 
-    def _update_usrdef_packed_dims(self, sig: Signal, pdims: tuple, name: str = "") -> None:
+    def _update_usrdef_packed_dims(
+        self, sig: Signal, pdims: tuple, udims: tuple = (), name: str = ""
+    ) -> None:
         """Rewrite a hand-written declaration whose packed shape the driving
         instance disproves — a missing, extra or wrong packed dimension
-        (``wire [35:0] x;`` fed by ``output [1:0][35:0] x``).  PDIMS are the
-        port's own packed dims (or the EAI ``/*[D1][D2]*/`` note), already
-        param-value substituted, so they are authoritative.  Only a simple
-        one-line single-name ``wire``/``reg``/``logic`` declaration is
-        eligible (multi-name lists and initialised declarations are never
-        touched), a ``//DT`` comment anywhere on the line exempts it, and a
-        declaration already carrying exactly PDIMS is left alone
-        (idempotent)."""
-        if sig.type != "usrdef" or not pdims:
-            if sig.type == "usrdef" and not pdims:
+        (``wire [35:0] x;`` fed by ``output [1:0][35:0] x``).  PDIMS/UDIMS are
+        the port's own packed/unpacked dims (or the EAI ``/*[D1][D2]*/`` note),
+        already param-value substituted, so they are authoritative.  Unpacked
+        evidence renders after the name (``wire [35:0] x [1:0];``) — folding
+        it into packed (``wire [1:0][35:0] x;``) is illegal SystemVerilog
+        (Verilator %Error, IEEE 1800-2017 7.6).  Only a simple one-line
+        single-name ``wire``/``reg``/``logic`` declaration is eligible
+        (multi-name lists and initialised declarations are never touched), a
+        ``//DT`` comment anywhere on the line exempts it, and a declaration
+        already carrying exactly PDIMS/UDIMS is left alone (idempotent)."""
+        if sig.type != "usrdef" or not (pdims or udims):
+            if sig.type == "usrdef" and not (pdims or udims):
                 from ._trace import trace_sig
 
                 trace_sig(name or sig.name, "update-skip reason=no-evidence")
@@ -764,7 +771,7 @@ class SignalTable:
 
             trace_sig(name or sig.name, "dt-exempt cmd=update-dims")
             return  # user said don't touch
-        rewritten = _rewrite_usrdef_packed_dims(sig.line, pdims)
+        rewritten = _rewrite_usrdef_packed_dims(sig.line, pdims, udims)
         if rewritten is None:
             from ._trace import trace_sig
 
@@ -786,13 +793,17 @@ class SignalTable:
             km = re.match(r"\s*(wire|reg|logic)", sig.line)
             if sig.conflict:
                 old_dims = tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", sig.conflict))
-                new_dims = tuple(_clean_dim(d) for d in pdims)
+                new_dims = tuple(_clean_dim(d) for d in pdims) + tuple(
+                    _clean_dim(d) for d in udims
+                )
                 if old_dims == new_dims:
                     sig.width_updated = True
                     return
             sig.conflict = (km.group(1) if km else "wire") + "".join(
                 f"[{d}]" for d in pdims
             )
+            if udims:
+                sig.conflict += "." + "".join(f"[{d}]" for d in udims)
             sig.width_updated = True  # strong evidence consumed
             return
         from ._trace import trace_sig
@@ -802,8 +813,12 @@ class SignalTable:
             f"update-dims before={sig.line.strip()} after={rewritten.strip()}",
         )
         sig.line = rewritten
-        sig.width = pdims[0].split(":")[0].strip()
-        sig.packed_dims = tuple(pdims[1:])
+        if pdims:
+            sig.width = pdims[0].split(":")[0].strip()
+            sig.packed_dims = tuple(pdims[1:])
+        if udims:
+            sig.dims = tuple(udims)
+            sig.dims_port_evidence = True
         sig.width_updated = True
 
     def extend_from_side(self, side: "Side | None", stype: str) -> None:
@@ -991,10 +1006,11 @@ class SignalTable:
             from ._trace import trace_sig, tracing
 
             if tracing(net):
+                _pd, _ud = _port_dim_evidence(rest, port, param_values)
                 trace_sig(
                     net,
                     f"conn-dims port={port_name} dir=input "
-                    f"pdims={list(_port_dim_evidence(rest, port, param_values))} "
+                    f"pdims={list(_pd)} udims={list(_ud)} "
                     f"port_width={port_width}",
                 )
             self._record_inst_input_net(net, rest, port_width, port, param_values)
@@ -1013,17 +1029,19 @@ class SignalTable:
             )
             return
         sig = self.signals.get(net)
-        pdims = _port_dim_evidence(rest, port, param_values)
+        pdims, udims = _port_dim_evidence(rest, port, param_values)
         from ._trace import trace_sig, tracing
 
         if tracing(net):
             trace_sig(
                 net,
                 f"conn-dims port={port_name} dir={port.direction} "
-                f"pdims={list(pdims)} port_width={port_width}",
+                f"pdims={list(pdims)} udims={list(udims)} port_width={port_width}",
             )
         if sig is not None:
-            if pdims and _absorb_waived_usrdef(sig, pdims, "inst_wire", net):
+            if (pdims or udims) and _absorb_waived_usrdef(
+                sig, pdims, udims, "inst_wire", net
+            ):
                 return  # orphan absorbed into the region as inst_wire
             if sig.type == "inst_in_wire":
                 sig.type = "inst_wire"  # a real driver trumps the input-port hint
@@ -1033,11 +1051,17 @@ class SignalTable:
                     sig.width = port_width
             if sig.type in ("io_wire", "io_reg"):
                 sig.driven = True
-            if pdims and not sig.packed_dims and sig.type in (
-                "inst_wire", "inst_in_wire", "freg", "creg", "wire"
+            if (
+                (pdims or udims)
+                and not sig.packed_dims
+                and not sig.dims
+                and sig.type in ("inst_wire", "inst_in_wire", "freg", "creg", "wire")
             ):
                 # io/usrdef signals keep their own declaration's dims
                 sig.packed_dims = pdims
+                if udims:
+                    sig.dims = udims
+                    sig.dims_port_evidence = True
             if sig.width == "":
                 sig.width = port_width
             elif sig.type == "usrdef":
@@ -1046,9 +1070,15 @@ class SignalTable:
             if sig.type == "usrdef":
                 # the driving port's packed shape proves the hand-written
                 # declaration wrong (e.g. a missing packed dim): fix it
-                self._update_usrdef_packed_dims(sig, pdims, net)
+                self._update_usrdef_packed_dims(sig, pdims, udims, net)
         else:
-            self.signals[net] = Signal(width=port_width, type="inst_wire", packed_dims=pdims)
+            self.signals[net] = Signal(
+                width=port_width,
+                type="inst_wire",
+                packed_dims=pdims,
+                dims=udims,
+                dims_port_evidence=bool(udims),
+            )
         sev = _slice_conn_evidence(net, rest, port)
         if sev is not None:
             merged = self._note_slice_evidence(net, sev[0], sev[1])
@@ -1063,7 +1093,7 @@ class SignalTable:
                     if sig2.type == "usrdef":
                         # the slice indexes prove the array dimension the
                         # hand-written declaration got wrong
-                        self._update_usrdef_packed_dims(sig2, merged, net)
+                        self._update_usrdef_packed_dims(sig2, merged, (), net)
                     elif not sig2.packed_dims and sig2.type in (
                         "inst_wire", "inst_in_wire", "freg", "creg", "wire"
                     ):
@@ -1124,23 +1154,31 @@ class SignalTable:
         elif not re.match(r"\s*\[", mrest):
             width = port_width  # plain net: the input port's declared msb
         # else: a bit/part select — no usable width info
-        pdims = _port_dim_evidence(rest, port, param_values)
+        pdims, udims = _port_dim_evidence(rest, port, param_values)
         if param_values:
             from .emacs import _apply_param_values
 
             if width:
                 width = _apply_param_values(width, param_values)
-        if not width and not pdims:
+        if not width and not pdims and not udims:
             return
         sig = self.signals.get(net)
         if sig is None:
-            self.signals[net] = Signal(width=width, type="inst_in_wire", packed_dims=pdims)
-        elif sig.type == "usrdef" and pdims:
-            if not _absorb_waived_usrdef(sig, pdims, "inst_in_wire", net) and not sig.width_updated:
+            self.signals[net] = Signal(
+                width=width,
+                type="inst_in_wire",
+                packed_dims=pdims,
+                dims=udims,
+                dims_port_evidence=bool(udims),
+            )
+        elif sig.type == "usrdef" and (pdims or udims):
+            if not _absorb_waived_usrdef(
+                sig, pdims, udims, "inst_in_wire", net
+            ) and not sig.width_updated:
                 # an input port's dimension note/composed shape is weaker
                 # evidence than an output driver's: it only corrects a
                 # declaration no output driver already fixed
-                self._update_usrdef_packed_dims(sig, pdims, net)
+                self._update_usrdef_packed_dims(sig, pdims, udims, net)
         elif sig.type == "inst_in_wire":
             if sig.width in ("", "c0") or (width and _wider(width, sig.width)):
                 if width:
@@ -1268,8 +1306,9 @@ def _align_grown_dims(sig: "Signal", name: str = "") -> None:
     range wins only when its numeric hi provably EXCEEDS a numeric evidence
     hi (the actual drive is wider than the note).  Grown dims beyond the
     evidence's arity stay unpacked (no evidence: unchanged — plain growth
-    like ``val1 [0:1]`` keeps working)."""
-    if not sig.dims or not sig.packed_dims:
+    like ``val1 [0:1]`` keeps working).  Dims from unpacked PORT evidence
+    (dims_port_evidence) are authoritative and never consumed here."""
+    if not sig.dims or not sig.packed_dims or sig.dims_port_evidence:
         return
     ev = list(sig.packed_dims)
     keep: list[str] = []
@@ -2492,24 +2531,30 @@ _USRDEF_SIMPLE_DECL = re.compile(
 )
 
 
-def _rewrite_usrdef_packed_dims(line: str, pdims: tuple) -> str | None:
+def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = ()) -> str | None:
     """Rewrite the packed-dimension prefix of a simple one-line
     ``wire [A:0] x;`` declaration to PDIMS, preserving indent, keyword,
     ``signed``, the name, any unpacked dims, ``;`` and the trailing comment.
-    None when the line is not a simple single-name declaration (a
-    multi-name list or an initialised declaration is never touched).
-    Returns LINE unchanged when it already carries exactly PDIMS."""
+    UDIMS (unpacked evidence) render after the name — folding them into
+    packed is illegal SystemVerilog.  None when the line is not a simple
+    single-name declaration (a multi-name list or an initialised declaration
+    is never touched).  Returns LINE unchanged when it already carries
+    exactly PDIMS/UDIMS."""
     m = _USRDEF_SIMPLE_DECL.match(line)
     if not m:
         return None
     raw_cur = tuple(re.findall(r"\[([^\]]+)\]", m.group("dims")))
     cur = tuple(_clean_dim(d) for d in raw_cur)
     cleaned_p = tuple(_clean_dim(d) for d in pdims)
-    if cur == cleaned_p:
+    raw_cur_u = tuple(re.findall(r"\[([^\]]+)\]", m.group("udims")))
+    cur_u = tuple(_clean_dim(d) for d in raw_cur_u)
+    cleaned_u = tuple(_clean_dim(d) for d in udims)
+    if cur == cleaned_p and cur_u == cleaned_u:
         return line
     head = m.group("indent") + m.group("kw") + (m.group("sgn") or "")
     head += " " + "".join(f"[{d}]" for d in pdims) + " "
-    return head + m.group("name") + m.group("udims") + m.group("end")
+    udims_txt = "".join(f"[{d}]" for d in udims) or m.group("udims")
+    return head + m.group("name") + udims_txt + m.group("end")
 
 
 def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = False) -> str:
@@ -2620,41 +2665,44 @@ _CONN_DIM_NOTE = re.compile(r"/\*\s*((?:\[[^\]]*\])*)((?:\.\[[^\]]*\])*)\s*\*/")
 
 def _port_dim_evidence(
     rest: str, port: "Port", param_values: Mapping[str, str] | None = None
-) -> tuple[str, ...]:
-    """Packed-dimension evidence for a driven net's declaration, shared by
-    the AUTOWIRE fresh-declaration path and the AUTODEF update path.
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(packed_dims, unpacked_dims) evidence for a driven net's declaration,
+    shared by the AUTOWIRE fresh-declaration path and the AUTODEF update path.
 
-    The EAI multidim connection note (``net/*[D1][D2]*/``) wins when present
-    (already param-value substituted); its unpacked part (after the ``.`` in
-    ``/*[D1].[U1]*/``) folds in front of the packed ranges, exactly like a
-    port declaration's own unpacked dims.  Without a note the port's own
-    ranges compose the same way (``output [35:0] x [1:0]`` -> ('1:0',
-    '35:0'), the shape the fresh-declaration path emits for the same port).
-    Empty for a port that is scalar in every dimension.  PARAM_VALUES (the
-    instance's ``#(...)`` overrides) are substituted into every range."""
+    The EAI multidim connection note (``net/*[D1][D2]*/``, optionally
+    ``/*[D1].[U1]*/`` with unpacked dims after the ``.``) wins when present
+    (already param-value substituted).  Without a note the port's own ranges
+    are used: packed dims stay packed, unpacked array dims stay unpacked —
+    folding unpacked into packed (``wire [3:0][7:0]``) is illegal
+    SystemVerilog when the net connects to unpacked array ports (Verilator
+    %Error: "mismatch between port which is an array, and expression which
+    is not an array", IEEE 1800-2017 7.6).  ((), ()) for a port scalar in
+    every dimension.  PARAM_VALUES (the instance's ``#(...)`` overrides) are
+    substituted into every range.
+    """
     pdims: tuple = ()
+    udims: tuple = ()
     m = _CONN_DIM_NOTE.search(rest)
     if m is not None:
-        packed_n = tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
-        unpacked_n = tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(2)))
-        pdims = unpacked_n + packed_n
-    if not pdims:
-        pdims = tuple(_clean_dim(d) for d in port.unpacked) + tuple(
-            _clean_dim(d) for d in port.packed
-        )
-        if len(pdims) < 2:
-            pdims = ()
-    if pdims and param_values:
+        pdims = tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
+        udims = tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(2)))
+    if not pdims and not udims:
+        pdims = tuple(_clean_dim(d) for d in port.packed)
+        udims = tuple(_clean_dim(d) for d in port.unpacked)
+        if len(pdims) + len(udims) < 2:
+            return (), ()
+    if param_values:
         from .emacs import _apply_param_values
 
         pdims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in pdims)
-    if pdims and port.packed and len(pdims) == len(port.packed):
+        udims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in udims)
+    if pdims and port.packed and len(pdims) == len(port.packed) and not udims:
         new_p = list(pdims)
         for i in range(len(pdims)):
             if _clean_dim(port.packed[i]) == _clean_dim(pdims[i]):
                 new_p[i] = port.packed[i]
         pdims = tuple(new_p)
-    return pdims
+    return pdims, udims
 
 
 # declarations re-extraction cannot reproduce are "unregenerable" — the
@@ -2692,7 +2740,9 @@ def _usrdef_unpacked_dims(line: str) -> "tuple[str, ...] | None":
     return tuple(_clean_dim(d) for d in re.findall(r"\[([^\]]+)\]", m.group(1)))
 
 
-def _absorb_waived_usrdef(sig: Signal, pdims: tuple, new_type: str, name: str = "") -> bool:
+def _absorb_waived_usrdef(
+    sig: Signal, pdims: tuple, udims: tuple = (), new_type: str = "", name: str = ""
+) -> bool:
     """A waived orphan (kill's unregenerable waiver left it right after the
     /*autodef*/ marker) whose declaration the current evidence re-derives
     IDENTICALLY: convert it to the derived signal type so the region
@@ -2700,7 +2750,7 @@ def _absorb_waived_usrdef(sig: Signal, pdims: tuple, new_type: str, name: str = 
     between the region and the orphan slot on alternating runs.  Only orphan
     lines are eligible: a hand-written multi-dim declaration anywhere else
     keeps its usrdef status verbatim."""
-    if sig.type != "usrdef" or not sig.orphan or not pdims or sig.drop_line:
+    if sig.type != "usrdef" or not sig.orphan or not (pdims or udims) or sig.drop_line:
         return False
     if "//" in sig.line:
         # a comment-carrying line is user-owned (region-generated multi-dim
@@ -2711,13 +2761,19 @@ def _absorb_waived_usrdef(sig: Signal, pdims: tuple, new_type: str, name: str = 
         trace_sig(name or sig.name, "waive-keep reason=trailing-comment")
         return False
     dims = _usrdef_packed_dims(sig.line)
+    ud = _usrdef_unpacked_dims(sig.line)
     if dims is None or tuple(_clean_dim(d) for d in pdims) != dims:
+        return False
+    if tuple(_clean_dim(d) for d in udims) != (ud or ()):
         return False
     from ._trace import trace_sig
 
     trace_sig(name or sig.name, f"absorb new_type={new_type} pdims={list(pdims)}")
     sig.type = new_type
     sig.packed_dims = tuple(_clean_dim(d) for d in pdims)
+    if udims:
+        sig.dims = tuple(_clean_dim(d) for d in udims)
+        sig.dims_port_evidence = True
     sig.drop_line = True
     return True
 
