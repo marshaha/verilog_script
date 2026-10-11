@@ -2634,9 +2634,10 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
     # When param calculation is on and consts given, resolve hand-written
     # dims before comparing (e.g., [NumRegsKey-1:0] vs [7:0] with NumRegsKey=8)
     # If a dim contains an identifier we cannot resolve (e.g., package param
-    # not in consts), be conservative: don't flag as conflict.
+    # not in consts, or param calculation is OFF), be conservative: don't
+    # flag as conflict.
     unresolved = False
-    if consts and _param_value_on():
+    if _param_value_on() and consts:
         from .emacs import _apply_param_values
         # _apply_param_values expects string values; consts may have ints
         str_consts = {k: str(v) for k, v in consts.items()}
@@ -2645,11 +2646,16 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
             r = _apply_param_values(d, str_consts)
             # If still has identifiers (not pure numeric), mark unresolved
             if re.search(r"[a-zA-Z_]", r):
-                # Check if it's the same as original (no resolution happened)
-                # or if it still contains unknown identifiers
                 unresolved = True
             resolved.append(r)
         raw_cur = tuple(resolved)
+    elif not _param_value_on():
+        # Param calculation OFF: if hand-written has identifiers, cannot
+        # prove mismatch vs inferred literal. Be conservative.
+        for d in raw_cur:
+            if re.search(r"[a-zA-Z_]", d):
+                unresolved = True
+                break
     cur = tuple(_clean_dim(d) for d in raw_cur)
     cleaned_p = tuple(_clean_dim(d) for d in pdims)
     # If unresolved identifiers remain, cannot prove mismatch: no conflict
