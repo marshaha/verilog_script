@@ -4387,3 +4387,33 @@ def test_unpacked_decl_indices_not_treated_as_packed():
     assert len(decls) == 1, decls
     assert "AD_CONFLICT" not in decls[0], decls[0]
     assert "[RVFI_STAGES]" in decls[0], decls[0]
+
+
+def test_struct_field_assign_no_bogus_d_link():
+    """Dotted LHS (hw2reg.val.d) must not create a 'd' signal linked to others.
+
+    (OpenTitan uart_core: `assign hw2reg.val.d = rx_val_q;` — the old
+    _split_assign regex extracted only the last word 'd', linking it with
+    1-bit control signals via link_dict.  update_define then smeared the
+    3-bit width of an unrelated 'd' wire across hand-written 1-bit
+    declarations, e.g. `logic event_rx_parity_err;` falsely flagged as
+    `infer logic[2:0]`.)"""
+    from verilog_tooling.autodef import auto_def_t
+
+    out = auto_def_t(
+        [
+            "module top;",
+            "  /*autodef*/",
+            "  logic event_rx_parity_err;",
+            "  logic [2:0] d;",
+            "  logic rx_val_q;",
+            "  assign hw2reg.val.d = rx_val_q;",
+            "  assign d = 3'b001;",
+            "  assign event_rx_parity_err = rx_val_q;",
+            "endmodule",
+        ],
+        {},
+    )
+    decls = [l for l in out if "event_rx_parity_err" in l and re.match(r"^\s*logic\b", l)]
+    assert len(decls) == 1, decls
+    assert "AD_CONFLICT" not in decls[0], decls[0]

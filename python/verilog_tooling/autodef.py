@@ -2208,6 +2208,13 @@ def get_assign_side(
         else:
             width = None
         return Side(base, width, dims=dims, elem_range=elem)
+    # A dotted LHS (hw2reg.val.d, foo.bar) is a struct/hierarchical field
+    # access, not a simple signal — do not treat the field name ('d') as a
+    # standalone signal.  (re.search(r"\w+\s*$") would extract only the last
+    # word 'd', linking it incorrectly with other signals via link_dict,
+    # smearing widths across unrelated declarations.)
+    if "." in lhs:
+        return None
     m = re.search(r"\w+\s*$", lhs)
     if not m:
         return None
@@ -2896,7 +2903,10 @@ def _split_assign(line: str, op: str) -> tuple[str, str] | None:
         lhs = re.sub(r"<=", "", m.group(0))
         rhs = re.sub(r"<=", "", line[line.index("<=") :])
     else:
-        m = re.search(r"\w+\s*((?:\[[^\]]*\]\s*)*)=(?![=])", line)
+        # Match dotted hierarchical names (hw2reg.val.d) as the LHS, not just
+        # the last word ('d').  Without the dot, 'd' is extracted and linked
+        # incorrectly with other signals via link_dict.
+        m = re.search(r"[\w.]+\s*((?:\[[^\]]*\]\s*)*)=(?![=])", line)
         if not m:
             return None
         if re.search(r"[a-zA-Z0-9_'`]\s*$", line[: m.start()]):
