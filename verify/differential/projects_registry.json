@@ -216,6 +216,13 @@
       "type": "timer",
       "sv_count": "4",
       "status": "clean"
+    },
+    {
+      "name": "picorv32",
+      "path": "picorv32",
+      "type": "cpu",
+      "sv_count": "1 (Verilog-95, 3049 lines)",
+      "status": "verilator_clean"
     }
   ],
   "last_updated": "2026-10-11"
