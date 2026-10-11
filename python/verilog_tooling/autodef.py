@@ -2749,16 +2749,8 @@ def _port_dim_evidence(
     if param_values:
         from .emacs import _apply_param_values
 
-        def _safe_apply(d):
-            # If param substitution produces garbage with newlines (broken
-            # param value regex captured across lines), keep the original.
-            # A dim never legitimately contains a newline.
-            result = _apply_param_values(d, param_values)
-            if "\n" in result:
-                return d
-            return _clean_dim(result)
-        pdims = tuple(_safe_apply(d) for d in pdims)
-        udims = tuple(_safe_apply(d) for d in udims)
+        pdims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in pdims)
+        udims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in udims)
     if pdims and port.packed and len(pdims) == len(port.packed) and not udims:
         new_p = list(pdims)
         for i in range(len(pdims)):
