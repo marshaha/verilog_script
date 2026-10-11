@@ -1607,6 +1607,37 @@ def _const_symbols(lines: Sequence[str]) -> dict[str, int]:
                     progress = True
             if not progress:
                 break
+    # Package imports: `import pkg::*` — resolve pkg.sv from include dirs
+    # and extract its parameters (e.g., aes_reg_pkg::NumRegsKey)
+    for m in re.finditer(r"^\s*import\s+(\w+)::\*", text, re.M):
+        pkg = m.group(1)
+        # Skip if we already have params from this package (avoid cycles)
+        if any(k.startswith(pkg + "::") for k in consts):
+            continue
+        try:
+            from .libdirs import _find_include
+            # Try pkg.sv, pkg.svh
+            for ext in (".sv", ".svh"):
+                path = _find_include(pkg + ext)
+                if path:
+                    try:
+                        with open(path) as f:
+                            pkg_text = f.read()
+                        # Extract parameters from package
+                        for pm in re.finditer(
+                            r"\bparameter\s+(?:int\s+)?(\w+)\s*=\s*(-?\d+)",
+                            pkg_text,
+                        ):
+                            # Store as pkg::name to avoid collisions
+                            consts[pkg + "::" + pm.group(1)] = int(pm.group(2))
+                            # Also store bare name (for unqualified use)
+                            if pm.group(1) not in consts:
+                                consts[pm.group(1)] = int(pm.group(2))
+                    except (OSError, IOError):
+                        pass
+                    break
+        except ImportError:
+            pass
     return consts
 
 
