@@ -407,7 +407,11 @@ def _apply_param_values(expr: str, param_values: Mapping[str, str]) -> str:
         for name, value in param_values.items():
             if value == name:
                 continue  # identity self-map: no-op (avoids paren explosion)
-            expr = re.sub(r"\b" + re.escape(name) + r"\b", f"({value})", expr)
+            # Only wrap in parens if the value needs it (contains operators).
+            # A simple identifier (KeyWidth) doesn't need parens; adding them
+            # causes dim mismatches like (KeyWidth)-1:0 vs KeyWidth-1:0.
+            replacement = f"({value})" if re.search(r"\W", value) else value
+            expr = re.sub(r"\b" + re.escape(name) + r"\b", replacement, expr)
         while "((" in expr:  # collapse substitution-added nesting, one level at a time
             collapsed = re.sub(r"\(\((\w+)\)\)", r"(\1)", expr)
             if collapsed == expr:

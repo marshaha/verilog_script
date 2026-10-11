@@ -810,6 +810,14 @@ class SignalTable:
                 if old_dims == new_dims:
                     sig.width_updated = True
                     return
+            # Defensive: if any dim contains garbage (newlines, keywords like
+            # 'input' from a broken regex match), do not set a conflict.
+            # (keymgr_dpe: pdims had '(KeyWidth\n) (\n  input clk_i)-1:0')
+            for d in list(pdims) + list(udims):
+                if "\n" in d or re.search(r"\b(input|output|inout|module)\b", d):
+                    from ._trace import trace_sig
+                    trace_sig(sig.name, f"conflict-skip reason=garbage-dim dim={d!r}")
+                    return
             sig.conflict = (km.group(1) if km else "wire") + "".join(
                 f"[{d}]" for d in pdims
             )
