@@ -2638,9 +2638,11 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
     unresolved = False
     if consts and _param_value_on():
         from .emacs import _apply_param_values
+        # _apply_param_values expects string values; consts may have ints
+        str_consts = {k: str(v) for k, v in consts.items()}
         resolved = []
         for d in raw_cur:
-            r = _apply_param_values(d, consts)
+            r = _apply_param_values(d, str_consts)
             # If still has identifiers (not pure numeric), mark unresolved
             if re.search(r"[a-zA-Z_]", r):
                 # Check if it's the same as original (no resolution happened)
