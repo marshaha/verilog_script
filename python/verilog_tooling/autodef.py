@@ -2551,7 +2551,12 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = ()) -> s
     raw_cur_u = tuple(re.findall(r"\[([^\]]+)\]", m.group("udims")))
     cur_u = tuple(_clean_dim(d) for d in raw_cur_u)
     cleaned_u = tuple(_clean_dim(d) for d in udims)
-    if cur == cleaned_p and cur_u == cleaned_u:
+    # Port evidence is authoritative for what it covers but silent on what it
+    # doesn't: when the port has no unpacked dims (udims empty), a
+    # hand-written unpacked dim (e.g. [NumShares] indexed by a genvar) is
+    # unopposed — not a mismatch.  Only flag when unpacked evidence exists
+    # and disagrees.
+    if cur == cleaned_p and (not udims or cur_u == cleaned_u):
         return line
     head = m.group("indent") + m.group("kw") + (m.group("sgn") or "")
     head += " " + "".join(f"[{d}]" for d in pdims) + " "

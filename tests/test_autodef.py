@@ -4334,3 +4334,31 @@ def test_multidim_slice_grow_clears_transient_conflict():
     assert "AD_CONFLICT" not in decls[0]
     assert "[3:0][17:0]" in decls[0]
 
+
+
+def test_unpacked_decl_not_flagged_when_port_has_no_unpacked():
+    """A hand-written unpacked dim (e.g. [NumShares] indexed by a genvar) is
+    unopposed when the driving port has no unpacked dims: the packed-only
+    port evidence must not flag //AD_CONFLICT dropping the unpacked dim.
+    (caliptra aes_cipher_core: logic [3:0][3:0][7:0] shift_rows_in [NumShares]
+    driven via shift_rows_in[s] by packed-only data_i.)"""
+    from verilog_tooling.inst import parse_module_ports
+
+    sub = "module sub (input logic [3:0][3:0][7:0] data_i);\nendmodule"
+    mods = {"sub": parse_module_ports(sub.splitlines())}
+    out = auto_def_t(
+        [
+            "module top;",
+            "  /*autodef*/",
+            # aligned spacing like real files: the rewrite normalizes
+            # whitespace, so a naive text comparison would mismatch
+            "  logic               [3:0][3:0][7:0] shift_rows_in [NumShares];",
+            "  sub u0 (.data_i (shift_rows_in[s]));",
+            "endmodule",
+        ],
+        mods,
+    )
+    decls = [l for l in out if re.match(r"^\s*logic\b", l) and "shift_rows_in" in l]
+    assert len(decls) == 1, decls
+    assert "AD_CONFLICT" not in decls[0], decls[0]
+    assert "[NumShares]" in decls[0], decls[0]
