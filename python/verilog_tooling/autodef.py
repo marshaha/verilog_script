@@ -1628,11 +1628,13 @@ def _const_symbols(lines: Sequence[str]) -> dict[str, int]:
                             r"\bparameter\s+(?:int\s+)?(\w+)\s*=\s*(-?\d+)",
                             pkg_text,
                         ):
+                            # Store as string (for _apply_param_values compatibility)
+                            val = pm.group(2)
                             # Store as pkg::name to avoid collisions
-                            consts[pkg + "::" + pm.group(1)] = int(pm.group(2))
+                            consts[pkg + "::" + pm.group(1)] = val
                             # Also store bare name (for unqualified use)
                             if pm.group(1) not in consts:
-                                consts[pm.group(1)] = int(pm.group(2))
+                                consts[pm.group(1)] = val
                     except (OSError, IOError):
                         pass
                     break
