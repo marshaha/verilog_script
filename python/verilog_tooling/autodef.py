@@ -814,7 +814,9 @@ class SignalTable:
                 f"[{d}]" for d in pdims
             )
             if udims:
-                sig.conflict += "." + "".join(f"[{d}]" for d in udims)
+                # Unpacked dims follow without dot separator (SV syntax:
+                # logic [packed] sig [unpacked])
+                sig.conflict += "".join(f"[{d}]" for d in udims)
             sig.width_updated = True  # strong evidence consumed
             return
         from ._trace import trace_sig
@@ -3353,18 +3355,47 @@ def _instance_headers(
         m = re.match(r"^\s*(\w+)\s*(#\s*\()\s*$", raw)
         if m and m.group(1) in modules:
             # module #(   <- parameter override spans lines; find its close,
-            # then the ``inst_name (`` line that follows
-            depth = raw.count("(") - raw.count(")")
+            # then the ``inst_name (`` that follows (same line or next)
+            # Scan character-by-character to find the matching ) for #(
+            depth = 1  # the #( on line i
+            j = i
+            found = False
+            # Start scanning from line i+1, but also check rest of line i
+            # (though regex ensures #( is at end of line i)
             j = i + 1
-            while j < n and depth > 0:
-                depth += _bal(lines[j])
-                if depth <= 0:
-                    break
-                j += 1
+            close_line = -1
+            close_pos = -1
+            while j < n and not found:
+                line = re.sub(r"//.*$", "", lines[j])
+                for pos, ch in enumerate(line):
+                    if ch == '(':
+                        depth += 1
+                    elif ch == ')':
+                        depth -= 1
+                        if depth == 0:
+                            close_line = j
+                            close_pos = pos
+                            found = True
+                            break
+                if not found:
+                    j += 1
+            if not found:
+                i += 1
+                continue
+            j = close_line
             # j is the line where the #( ... ) closes; the instance name
-            # opens the body on the next line
-            if j < n:
-                nxt = re.sub(r"//.*$", "", lines[j + 1]) if j + 1 < n else ""
+            # may follow on the SAME line (") u_reg (") or on the next line
+            # Check same line first: ") u_reg (" after close_pos
+            cur = re.sub(r"//.*$", "", lines[j])
+            after = cur[close_pos+1:]
+            m_same = re.match(r"\s*(\w+)\s*\(\s*$", after)
+            if m_same and m_same.group(1) not in _KEYWORDS:
+                out[i] = (m.group(1), m_same.group(1), j)
+                i = j + 1
+                continue
+            # Then check next line
+            if j + 1 < n:
+                nxt = re.sub(r"//.*$", "", lines[j + 1])
                 m2 = re.match(r"^\s*(\w+)\s*\(\s*$", nxt)
                 if m2 and m2.group(1) not in _KEYWORDS:
                     out[i] = (m.group(1), m2.group(1), j + 1)
