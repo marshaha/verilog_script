@@ -2571,12 +2571,16 @@ def _usrdef_display_line(sig: "Signal", name: str = "") -> str:
 def _usrdef_wider(new_msb: str, old_msb: str) -> bool:
     """True when a driver-derived width provably outgrows a hand-written one:
     both numeric and new > old, or the declaration is scalar ('c0') and the
-    driver is a vector. Symbolic widths are never provably smaller -> False."""
+    driver is a vector. Symbolic widths are never provably smaller -> False.
+    [0:0] is a single bit, equivalent to scalar -> not wider."""
     if not new_msb or new_msb == "c0":
         return False  # driver gives no growth
     if not re.fullmatch(r"-?\d+", new_msb):
         return False  # symbolic driver width: cannot prove
     if old_msb in ("", "c0"):
+        # [0:0] is single-bit, equivalent to scalar declaration
+        if new_msb == "0":
+            return False
         return True  # scalar declaration gains a vector width
     if not re.fullmatch(r"-?\d+", old_msb):
         return False  # symbolic declared width: never touched

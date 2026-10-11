@@ -4445,3 +4445,24 @@ def test_concat_lhs_no_width_smear_to_members():
         decls = [l for l in out if name in l and re.match(r"^\s*logic\b", l)]
         assert len(decls) == 1, decls
         assert "AD_CONFLICT" not in decls[0], decls[0]
+
+def test_usrdef_wider_0_0_equals_scalar():
+    """_usrdef_wider: [0:0] is single-bit, equivalent to scalar declaration.
+
+    Regression: adc_ctrl_reg_top.sv had 46 false "infer logic[0:0]" conflicts
+    where a scalar `logic foo;` was flagged because the driver inferred [0:0].
+    [0:0] is 1 bit, same as scalar -> not wider, no conflict.
+    """
+    from verilog_tooling.autodef import _usrdef_wider
+
+    # [0:0] vs scalar: NOT wider (the fix)
+    assert _usrdef_wider("0", "") is False
+    assert _usrdef_wider("0", "c0") is False
+    # Real growth: still detected
+    assert _usrdef_wider("7", "") is True
+    assert _usrdef_wider("7", "c0") is True
+    assert _usrdef_wider("7", "3") is True
+    # No growth: not wider
+    assert _usrdef_wider("3", "7") is False
+    assert _usrdef_wider("", "") is False
+    assert _usrdef_wider("c0", "") is False
