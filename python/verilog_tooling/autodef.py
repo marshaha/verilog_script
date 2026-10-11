@@ -135,7 +135,22 @@ _KEYWORDS = frozenset(
 )
 
 _DEFINE_LINE = re.compile(r"^\s*`(define|ifdef|ifndef)\s*(\w+)")
-_PARA_LINE = re.compile(r"^\s*(parameter|localparam)\s*(\w+)")
+
+# A SystemVerilog parameter type prefix: a data-type word (builtin like
+# ``int``/``bit``/``logic`` or user-defined, optionally ``pkg::``-qualified),
+# optional ``signed``/``unsigned``, and optional packed dimensions — e.g.
+# ``int``, ``int unsigned``, ``bit [3:0]``, ``my_pkg::t signed``.  Used to
+# skip the type so the *name* is captured.  Backtracking keeps the
+# Verilog-2001 ``parameter int = 8`` (a parameter NAMED int) working: the
+# prefix only commits when another word follows it.
+_SV_TYPE_PREFIX = (
+    r"[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?"
+    r"(?:\s+(?:signed|unsigned))?"
+    r"(?:\s*\[[^\]]*\])*"
+)
+_PARA_LINE = re.compile(
+    r"^\s*(parameter|localparam)\s+(?:" + _SV_TYPE_PREFIX + r"\s+)?(\w+)"
+)
 
 # verilog-auto-inst-param-value gate for declaration widths: when on, a
 # generated width that still references a constant parameter of THIS module
@@ -1455,7 +1470,8 @@ def _const_symbols(lines: Sequence[str]) -> dict[str, int]:
         consts[m.group(1)] = int(m.group(2))
     exprs: dict[str, str] = {}
     for m in re.finditer(
-        r"\b(?:parameter|localparam)\s+(?:integer\s+|int\s+)?(\w+)\s*=\s*", text
+        r"\b(?:parameter|localparam)\s+(?:" + _SV_TYPE_PREFIX + r"\s+)?(\w+)\s*=\s*",
+        text,
     ):
         name = m.group(1)
         # the value ends at the next top-level , ; or ) — a greedy regex
