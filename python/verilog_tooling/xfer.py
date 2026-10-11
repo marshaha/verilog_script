@@ -1570,7 +1570,7 @@ def _resolve_ifaces(args, lines: list[str], keywords: Sequence[str]) -> dict[str
     """Interface name -> InterfaceInfo for marker references (library file
     by name, else the buffer's own interface block)."""
     from .inst import _cli_resolve, _resolve_module_files
-    from .libdirs import parse_typedef_regexp
+    from .libdirs import parse_typedef_regexp, read_source_lines
 
     names = _marker_ref_names(lines, keywords)
     ifaces: dict[str, InterfaceInfo] = {}
@@ -1583,7 +1583,7 @@ def _resolve_ifaces(args, lines: list[str], keywords: Sequence[str]) -> dict[str
         src: "list[str] | None" = None
         td_re: "str | None" = None
         if name in files:
-            src = files[name].read_text().splitlines()
+            src = read_source_lines(files[name])
             td_re = parse_typedef_regexp(src)
         elif name in buf_ifaces:
             src = buf_ifaces[name]

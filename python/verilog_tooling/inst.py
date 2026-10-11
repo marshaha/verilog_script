@@ -99,7 +99,7 @@ def _log(msg: str) -> None:
     print(f"[verilog_tooling] {msg} (+{dt:.1f}s)", file=sys.stderr)
 
 from .comments import mask_comments, strip_comments as _strip_c, strip_line_comments as _strip_lc
-from .libdirs import resolve_libdirs
+from .libdirs import read_source_lines, resolve_libdirs
 from .template import (
     AutoTemplate,
     _auto_re_to_python,
@@ -2306,7 +2306,7 @@ def _module_lines(
 ) -> list[str] | None:
     """A module's definition lines: its library file, else this buffer."""
     if name in files:
-        return files[name].read_text().splitlines()
+        return read_source_lines(files[name])
     return buffer_mods.get(name)
 
 
@@ -2395,12 +2395,12 @@ def _read_module_srcs(files: Mapping[str, Path]) -> dict[str, list[str]]:
     merged after the pool joins so nothing depends on thread timing."""
     items = sorted(files.items())
     if len(items) <= 2:
-        return {n: p.read_text().splitlines() for n, p in items}
+        return {n: read_source_lines(p) for n, p in items}
     from concurrent.futures import ThreadPoolExecutor
 
     def _read(item: "tuple[str, Path]") -> "tuple[str, list[str]]":
         name, path = item
-        return name, path.read_text().splitlines()
+        return name, read_source_lines(path)
 
     with ThreadPoolExecutor(max_workers=min(8, len(items))) as pool:
         return dict(pool.map(_read, items))

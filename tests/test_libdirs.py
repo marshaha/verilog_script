@@ -462,3 +462,29 @@ def test_parse_module_ports_sees_through_include(tmp_path):
     ifaces = find_interfaces([str(tmp_path)], read_includes=False)
     assert "odd_if" not in ifaces
     set_include_dirs([])
+
+
+def test_read_source_lines_tolerates_non_utf8(tmp_path):
+    """Real projects ship latin-1 bytes (copyright marks); reading a
+    library file must not raise UnicodeDecodeError (scr1 crash)."""
+    from verilog_tooling.libdirs import read_source_lines
+
+    p = tmp_path / "latin1.v"
+    p.write_bytes(
+        b"// Copyright \xa9 2024 Someone\n"
+        b"module latin1 (input clk, output [7:0] q);\n"
+        b"endmodule\n"
+    )
+    lines = read_source_lines(p)
+    assert any("module latin1" in l for l in lines)
+    assert any("Copyright" in l for l in lines)
+
+
+def test_module_lines_tolerates_non_utf8_libdir(tmp_path):
+    """_module_lines (the -y library loading path) survives latin-1."""
+    from verilog_tooling.inst import _module_lines
+
+    p = tmp_path / "latin1mod.v"
+    p.write_bytes(b"// \xa9\nmodule latin1mod(input clk);\nendmodule\n")
+    assert _module_lines("latin1mod", {"latin1mod": p}, {})[1] == \
+        "module latin1mod(input clk);"
