@@ -243,3 +243,22 @@ def test_exact_duplicates_bottom_wins():
 ); */"""
     (t,) = find_auto_templates(text)
     assert template_connection(t, "a0", "", None) == "exact_bottom"
+
+
+def test_template_brackets_multidim_uses_packed_note():
+    """[][] on a packed+unpacked port must expand to the full dimensions
+    note, not just the packed range.  (verilog-mode tests/autoinst_param_2d:
+    [AUM-1:0] my_data_av[VUM] with [][] gave illegal
+    TEST0_my_data_av[AUM-1:0], dropping [VUM].)"""
+    from verilog_tooling.template import expand_connection
+
+    out = expand_connection(
+        "TEST0_my_data_av[][]",
+        "0",
+        "AUM-1:0",
+        packed_note="/*[AUM-1:0].[VUM]*/",
+    )
+    assert out == "TEST0_my_data_av/*[AUM-1:0].[VUM]*/", out
+    # single [] still uses the packed range
+    out1 = expand_connection("sig[]", "0", "7:0", packed_note="/*[7:0]*/")
+    assert out1 == "sig[7:0]", out1

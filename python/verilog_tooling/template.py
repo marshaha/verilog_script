@@ -557,9 +557,14 @@ def expand_connection(
         note = (f"[{port_width}]" if port_width else packed_note) + "." + idx
         return expr[: m.start()] + idx + f"/*{note}*/" + expr[m.end() :]
     # a multidim port has no single range: []/[][] expand to the
-    # verilog-mode dimensions note /*[D1][D2]*/ instead (packed_note)
+    # verilog-mode dimensions note /*[D1][D2]*/ instead (packed_note).
+    # For [][] (explicit multidim), always prefer packed_note when available;
+    # falling back to [port_width] would drop unpacked dims (e.g.
+    # [AUM-1:0] my_data_av[VUM] with [][] -> [AUM-1:0] is illegal).
+    if "[][]" in expr:
+        rng_multi = packed_note if packed_note else (f"[{port_width}]" if port_width else "")
+        expr = expr.replace("[][]", rng_multi)
     rng = f"[{port_width}]" if port_width else packed_note
-    expr = expr.replace("[][]", rng)
     expr = expr.replace("[]", rng)
     return expr
 
