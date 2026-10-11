@@ -4174,6 +4174,9 @@ def main(argv=None) -> None:
         names |= _candidate_module_names(lines)
         if names:
             libdirs, inst_files, vc_entries, extensions = _cli_resolve(args, lines)
+            # Set include dirs for package param resolution (_const_symbols)
+            from .libdirs import set_include_dirs
+            set_include_dirs(libdirs)
             files = _resolve_module_files(names, libdirs, inst_files, vc_entries, extensions)
             buffer_mods = buffer_module_defs("\n".join(lines))
             from .libdirs import parse_typedef_regexp
