@@ -392,7 +392,7 @@ def test_chip_top_include_params_through_adt_cli(tmp_path):
         "fab_cpu_periph_rd_addr_b_data;",
     ):
         assert sig in text
-    assert "(FAB_CPU_DATA_PTR_WIDTH_B)-1:0" in text
+    assert "FAB_CPU_DATA_PTR_WIDTH_B-1:0" in text
 
 
 def test_expand_includes_missing_keeps_line(tmp_path, capsys):

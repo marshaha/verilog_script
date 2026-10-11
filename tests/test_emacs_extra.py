@@ -83,7 +83,7 @@ m #(.W(16)) u_m_0 (/*AUTOINST*/);
 """
     templates = find_auto_templates(text)
     out = auto_inst(text.splitlines(), {"m": mod()}, templates=templates, param_value=True)
-    assert any("(in[0:(16)-1])" in l for l in out)
+    assert any("in[0:16-1]" in l for l in out)
 
 
 # ---------------------------------------------------------------------------
