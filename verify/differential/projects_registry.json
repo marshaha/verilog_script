@@ -237,6 +237,13 @@
       "type": "gba",
       "sv_count": "44",
       "status": "complex"
+    },
+    {
+      "name": "arm_cortex_m0",
+      "path": "arm_cortex_m0/sim",
+      "type": "cpu",
+      "sv_count": "60 (Verilog-2005)",
+      "status": "verilator_syntax_issue_type_keyword"
     }
   ],
   "last_updated": "2026-10-11"
