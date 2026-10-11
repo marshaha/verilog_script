@@ -4445,3 +4445,56 @@ def test_concat_lhs_no_width_smear_to_members():
         decls = [l for l in out if name in l and re.match(r"^\s*logic\b", l)]
         assert len(decls) == 1, decls
         assert "AD_CONFLICT" not in decls[0], decls[0]
+
+
+def test_param_value_resolves_handwritten_dims_before_conflict_check():
+    """When param-value is on and consts are known, resolve hand-written
+    dims (e.g. [NumRegsKey-1:0] with NumRegsKey=8) before comparing against
+    inferred literal dims ([7:0]) so no spurious //AD_CONFLICT is flagged."""
+    from verilog_tooling.autodef import auto_def_t
+    from verilog_tooling.inst import parse_module_ports
+
+    sub = "module sub (output [7:0] q);\nendmodule"
+    top = [
+        "module top #(parameter NumRegsKey = 8);",
+        "  /*autodef*/",
+        "  logic [NumRegsKey-1:0] key_data;",
+        "  sub u0 (.q (key_data));",
+        "endmodule",
+        "// Local Variables:",
+        "// verilog-auto-inst-param-value:t",
+        "// End:",
+    ]
+    mods = {"sub": parse_module_ports(sub.splitlines())}
+    out = auto_def_t(top, mods)
+    decls = [l for l in out if "key_data" in l and re.match(r"^\s*logic\b", l)]
+    assert len(decls) == 1, decls
+    assert "AD_CONFLICT" not in decls[0], decls[0]
+
+
+def test_unresolved_external_param_conservative_no_conflict():
+    """When a hand-written declaration references an unresolved package or
+    external parameter (e.g. PkgWidth not in module consts), autodef cannot
+    prove a mismatch against [7:0] and must conservatively keep the line
+    without flagging //AD_CONFLICT."""
+    from verilog_tooling.autodef import auto_def_t
+    from verilog_tooling.inst import parse_module_ports
+
+    sub = "module sub (output [7:0] q);\nendmodule"
+    top = [
+        "module top;",
+        "  /*autodef*/",
+        "  logic [PkgWidth-1:0] key_data;",
+        "  sub u0 (.q (key_data));",
+        "endmodule",
+        "// Local Variables:",
+        "// verilog-auto-inst-param-value:t",
+        "// End:",
+    ]
+    mods = {"sub": parse_module_ports(sub.splitlines())}
+    out = auto_def_t(top, mods)
+    decls = [l for l in out if "key_data" in l and re.match(r"^\s*logic\b", l)]
+    assert len(decls) == 1, decls
+    assert "AD_CONFLICT" not in decls[0], decls[0]
+    assert "[PkgWidth-1:0]" in decls[0], decls[0]
+
