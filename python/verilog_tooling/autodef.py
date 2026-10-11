@@ -791,6 +791,12 @@ class SignalTable:
                 f"update-skip reason=not-simple line={sig.line.strip()!r}",
             )
             return
+        # Handle NOT_FOUND tuple: expose unresolved params
+        if isinstance(rewritten, tuple) and rewritten[0] == "NOT_FOUND":
+            _, params, orig_line = rewritten
+            sig.conflict = f"NOT_FOUND {','.join(params)}"
+            sig.width_updated = True
+            return
         if rewritten == sig.line:
             # the evidence agrees with the declaration: no text change is
             # needed, but the evidence WAS consumed — mark it so a weaker
@@ -2549,7 +2555,11 @@ def _usrdef_display_line(sig: "Signal", name: str = "") -> str:
     had = _AD_CONFLICT_NOTE.search(sig.line)
     line = _AD_CONFLICT_NOTE.sub("", sig.line)
     if sig.conflict:
-        note = "  //AD_CONFLICT: infer " + sig.conflict
+        # NOT_FOUND is a special marker, not an inference
+        if sig.conflict.startswith("NOT_FOUND"):
+            note = "  //AD_CONFLICT: " + sig.conflict
+        else:
+            note = "  //AD_CONFLICT: infer " + sig.conflict
         if not had or had.group(0).strip() != note.strip():
             trace_sig(name, f"conflict-note infer={sig.conflict}")
         return line + note
@@ -2634,9 +2644,9 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
     # When param calculation is on and consts given, resolve hand-written
     # dims before comparing (e.g., [NumRegsKey-1:0] vs [7:0] with NumRegsKey=8)
     # If a dim contains an identifier we cannot resolve (e.g., package param
-    # not in consts, or param calculation is OFF), be conservative: don't
-    # flag as conflict.
-    unresolved = False
+    # not in consts, or param calculation is OFF), expose it as NOT_FOUND
+    # instead of silently skipping or falsely flagging as mismatch.
+    unresolved_params = []
     if _param_value_on() and consts:
         from .emacs import _apply_param_values
         # _apply_param_values expects string values; consts may have ints
@@ -2644,24 +2654,25 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
         resolved = []
         for d in raw_cur:
             r = _apply_param_values(d, str_consts)
-            # If still has identifiers (not pure numeric), mark unresolved
-            if re.search(r"[a-zA-Z_]", r):
-                unresolved = True
+            # If still has identifiers, collect them as unresolved
+            for ident in re.findall(r"[a-zA-Z_]\w*", r):
+                if ident not in unresolved_params:
+                    unresolved_params.append(ident)
             resolved.append(r)
         raw_cur = tuple(resolved)
     elif not _param_value_on():
-        # Param calculation OFF: if hand-written has identifiers, cannot
-        # prove mismatch vs inferred literal. Be conservative.
+        # Param calculation OFF: collect identifiers from hand-written dims
         for d in raw_cur:
-            if re.search(r"[a-zA-Z_]", d):
-                unresolved = True
-                break
+            for ident in re.findall(r"[a-zA-Z_]\w*", d):
+                if ident not in unresolved_params:
+                    unresolved_params.append(ident)
     cur = tuple(_clean_dim(d) for d in raw_cur)
     cleaned_p = tuple(_clean_dim(d) for d in pdims)
-    # If unresolved identifiers remain, cannot prove mismatch: no conflict
-    # (conservative: package params not in consts)
-    if unresolved:
-        return line
+    # If unresolved params, expose as NOT_FOUND (don't silently skip)
+    if unresolved_params:
+        # Return a special marker that the caller will turn into NOT_FOUND note
+        # We use a tuple to signal this; the caller checks for it
+        return ("NOT_FOUND", unresolved_params, line)
     raw_cur_u = tuple(re.findall(r"\[([^\]]+)\]", m.group("udims")))
     cur_u = tuple(_clean_dim(d) for d in raw_cur_u)
     cleaned_u = tuple(_clean_dim(d) for d in udims)
