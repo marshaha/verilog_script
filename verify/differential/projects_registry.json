@@ -104,6 +104,118 @@
       "type": "cache",
       "sv_count": "17",
       "status": "clean"
+    },
+    {
+      "name": "apb4_i2c",
+      "path": "apb4_i2c/rtl",
+      "type": "i2c",
+      "sv_count": "15",
+      "status": "clean"
+    },
+    {
+      "name": "axi_dma_donlon",
+      "path": "axi_dma_donlon/rtl",
+      "type": "dma",
+      "sv_count": "22",
+      "status": "clean"
+    },
+    {
+      "name": "rtl_ds",
+      "path": "rtl_ds/rtl",
+      "type": "data_structures",
+      "sv_count": "38",
+      "status": "clean"
+    },
+    {
+      "name": "apb4_gpio",
+      "path": "apb4_gpio/rtl",
+      "type": "gpio",
+      "sv_count": "15",
+      "status": "clean"
+    },
+    {
+      "name": "spi_srinu",
+      "path": "spi_srinu",
+      "type": "spi",
+      "sv_count": "2",
+      "status": "clean"
+    },
+    {
+      "name": "async_fifo_pm",
+      "path": "async_fifo_pm",
+      "type": "fifo",
+      "sv_count": "6",
+      "status": "no_candidates"
+    },
+    {
+      "name": "spi_ms",
+      "path": "spi_ms",
+      "type": "spi",
+      "sv_count": "1",
+      "status": "no_candidates"
+    },
+    {
+      "name": "uart16550",
+      "path": "uart16550/rtl",
+      "type": "uart",
+      "sv_count": "6",
+      "status": "clean"
+    },
+    {
+      "name": "uart16550a",
+      "path": "uart16550a",
+      "type": "uart",
+      "sv_count": "9",
+      "status": "clean"
+    },
+    {
+      "name": "i2s_unicamp",
+      "path": "i2s_unicamp/rtl",
+      "type": "i2s",
+      "sv_count": "14",
+      "status": "clean"
+    },
+    {
+      "name": "gpio_prajwal",
+      "path": "gpio_prajwal/rtl",
+      "type": "gpio",
+      "sv_count": "31",
+      "status": "clean"
+    },
+    {
+      "name": "apb4_pwm",
+      "path": "apb4_pwm/rtl",
+      "type": "pwm",
+      "sv_count": "37",
+      "status": "clean"
+    },
+    {
+      "name": "pwm_vyges",
+      "path": "pwm_vyges/rtl",
+      "type": "pwm",
+      "sv_count": "9",
+      "status": "clean"
+    },
+    {
+      "name": "apb4_timer",
+      "path": "apb4_timer/rtl",
+      "type": "timer",
+      "sv_count": "~20",
+      "status": "clean"
+    },
+    {
+      "name": "apb4_spi",
+      "path": "apb4_spi/rtl",
+      "type": "spi",
+      "sv_count": "~20",
+      "status": "clean"
+    },
+    {
+      "name": "apb_timer_oc",
+      "path": "apb_timer_oc/rtl",
+      "type": "timer",
+      "sv_count": "4",
+      "status": "clean"
     }
   ],
   "last_updated": "2026-10-11"
