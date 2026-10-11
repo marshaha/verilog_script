@@ -727,6 +727,7 @@ class SignalTable:
             if new_msb not in ("", "c0") and new_msb == sig.width:
                 # the driver width agrees with the declaration: the evidence
                 # is consumed even though the text needs no change
+                sig.conflict = ""
                 sig.width_updated = True
             return
         rewritten = _rewrite_usrdef_range(sig.line, new_msb)
@@ -785,6 +786,7 @@ class SignalTable:
             # needed, but the evidence WAS consumed — mark it so a weaker
             # (input-port) evidence does not rewrite the declaration on the
             # next pass (numeric/symbolic flip-flop between runs)
+            sig.conflict = ""
             sig.width_updated = True
             return
         if _user_boundary_on():

@@ -4306,3 +4306,31 @@ def test_multiline_param_override():
     )
     decls = [l for l in out if re.match(r"^\s*wire\b", l) and "m01" in l]
     assert any(re.match(r"^\s*wire\s+\[1:0\]\[15:0\]\s+m01;$", l) for l in decls), decls
+
+
+def test_multidim_slice_grow_clears_transient_conflict():
+    """When a multidim signal is driven by individual slice connections
+    ([0], [1], [2], [3]), slice-grow accumulates evidence step-by-step
+    ('1:0' -> '2:0' -> '3:0'). Intermediate steps must not leave a stale
+    '//AD_CONFLICT: infer wire[2:0][17:0]' once the accumulated shape
+    matches the hand-written declaration (wire [3:0][17:0] sig)."""
+    from verilog_tooling.inst import parse_module_ports
+
+    lib = "module drv (output [17:0] q);\nendmodule"
+    top = [
+        "module top;",
+        "  /*autodef*/",
+        "  wire [3:0][17:0] sig;",
+        "  drv u0 (.q (sig[0][17:0]));",
+        "  drv u1 (.q (sig[1][17:0]));",
+        "  drv u2 (.q (sig[2][17:0]));",
+        "  drv u3 (.q (sig[3][17:0]));",
+        "endmodule",
+    ]
+    mods = {"drv": parse_module_ports(lib.splitlines())}
+    out = auto_def_t(top, mods)
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "sig" in l]
+    assert len(decls) == 1, decls
+    assert "AD_CONFLICT" not in decls[0]
+    assert "[3:0][17:0]" in decls[0]
+
