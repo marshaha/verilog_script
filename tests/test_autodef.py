@@ -3486,7 +3486,8 @@ endmodule
 def test_unpacked_port_dims_update_old_decl_end_to_end(tmp_path):
     """Marker-less instance, no EAI note, unpacked port
     (output [35:0] rdata [1:0]): the stale wire[35:0][35:0] declaration is
-    corrected with the composed dims (unpacked folded in front of packed)."""
+    corrected with unpacked dims after the name (folding them into packed
+    is Verilator-illegal)."""
     from verilog_tooling import inst
 
     libdir = tmp_path / "lib"
@@ -3504,7 +3505,7 @@ endmodule
     out = tmp_path / "o.v"
     inst.main(["aall", "-i", str(top), "-o", str(out), "--ref_file", str(top), "-y", str(libdir)])
     text = out.read_text()
-    assert re.search(r"^wire ?\[1:0\]\[35:0\] +ram;$", text, re.M)
+    assert re.search(r"^wire ?\[35:0\] +ram\[1:0\];$", text, re.M)
     assert "[35:0][35:0]" not in text
 
 
@@ -3528,16 +3529,18 @@ def test_unpacked_port_aw_fresh_decl_unchanged(tmp_path):
 
 
 def test_port_dim_evidence_composition():
-    """_port_dim_evidence: note wins; unpacked folds in front of packed;
+    """_port_dim_evidence returns (packed, unpacked): note wins; unpacked
+    stays unpacked (folding it into packed is Verilator-illegal);
     scalar ports give no evidence."""
     from verilog_tooling.autodef import _port_dim_evidence
 
     md = parse_module_ports(DBUF_UNPACKED.splitlines())
     port = {p.name: p for p in md.ports}["rdata"]
-    assert _port_dim_evidence("ram", port) == ("1:0", "35:0")
-    assert _port_dim_evidence("ram/*[3:0][35:0]*/", port) == ("3:0", "35:0")
+    assert _port_dim_evidence("ram", port) == (("35:0",), ("1:0",))
+    assert _port_dim_evidence("ram/*[3:0][35:0]*/", port) == (("3:0", "35:0"), ())
+    assert _port_dim_evidence("ram/*[35:0].[1:0]*/", port) == (("35:0",), ("1:0",))
     clk = {p.name: p for p in md.ports}["clk"]
-    assert _port_dim_evidence("clk", clk) == ()
+    assert _port_dim_evidence("clk", clk) == ((), ())
 
 
 def test_multiline_packed_ranges_parse():
@@ -3555,8 +3558,9 @@ def test_multiline_packed_ranges_parse():
 
 
 def test_unpacked_driver_plus_single_dim_driver_no_corruption():
-    """An unpacked-port driver composed to ('1:0','35:0') followed by a
-    single-dim driver must not corrupt the corrected declaration."""
+    """An unpacked-port driver (unpacked dims stay after the name — folding
+    them into packed is Verilator-illegal) followed by a single-dim driver
+    must not corrupt the corrected declaration."""
     mods = {
         "dbufu": parse_module_ports(DBUF_UNPACKED.splitlines()),
         "dbuf1": parse_module_ports(DBUF_1D.splitlines()),
@@ -3572,7 +3576,7 @@ def test_unpacked_driver_plus_single_dim_driver_no_corruption():
     ]
     out = auto_def_t(lines, mods)
     decls = [l for l in out if re.match(r"^\s*wire\b", l) and "net" in l]
-    assert decls == ["wire [1:0][35:0] net;"]
+    assert decls == ["wire [35:0] net[1:0];"]
 
 
 # ---------------------------------------------------------------------------
@@ -3855,14 +3859,15 @@ def test_update_path_consistent_with_fresh_path():
 
 def test_unpacked_note_reads_composed():
     """The EAI note for an unpacked port is /*[packed].[unpacked]*/: the
-    reader composes it unpacked-first, same as the port declaration."""
+    reader keeps packed and unpacked separate (unpacked after the name —
+    folding into packed is Verilator-illegal)."""
     from verilog_tooling.autodef import _port_dim_evidence
 
     md = parse_module_ports(DBUF_UNPACKED.splitlines())
     port = {p.name: p for p in md.ports}["rdata"]
-    assert _port_dim_evidence("ram/*[35:0].[1:0]*/", port) == ("1:0", "35:0")
+    assert _port_dim_evidence("ram/*[35:0].[1:0]*/", port) == (("35:0",), ("1:0",))
     # packed-only note unchanged
-    assert _port_dim_evidence("ram/*[1:0][35:0]*/", port) == ("1:0", "35:0")
+    assert _port_dim_evidence("ram/*[1:0][35:0]*/", port) == (("1:0", "35:0"), ())
     # stale decl corrected through an unpacked note
     out = auto_def_t(
         [
@@ -3876,7 +3881,7 @@ def test_unpacked_note_reads_composed():
         {"dbufu": parse_module_ports(DBUF_UNPACKED.splitlines())},
     )
     decls = [l for l in out if re.match(r"^\s*wire\b", l) and "ram" in l and ".rdata" not in l]
-    assert decls == ["wire [1:0][35:0] ram;"]
+    assert decls == ["wire [35:0] ram[1:0];"]
 
 
 # ---------------------------------------------------------------------------
@@ -4024,3 +4029,56 @@ endmodule
     decls = [l for l in out if re.match(r"^\s*wire\b", l) and "bus" in l]
     assert len(decls) == 1
     assert "[2:0][512-1:0]" in decls[0]
+
+
+def test_unpacked_port_net_renders_unpacked_not_packed():
+    """Verilator %Error (IEEE 1800-2017 7.6) rejects a PACKED net connected
+    to unpacked array ports ('mismatch between port which is an array, and
+    expression which is not an array').  A net driven by
+    output [7:0] dout [3:0] must declare as wire [7:0] mid [3:0], NOT
+    wire [3:0][7:0] mid."""
+    from verilog_tooling.inst import parse_module_ports
+
+    sarr4 = "module sarr4 (input [7:0] din [3:0], output [7:0] dout [3:0]);\nendmodule"
+    mods = {"sarr4": parse_module_ports(sarr4.splitlines())}
+    out = auto_def_t(
+        [
+            "module b6 (",
+            "  input [7:0] d [3:0],",
+            "  output [7:0] q [3:0]",
+            ");",
+            "  /*autodef*/",
+            "  sarr4 u0 (.din (d), .dout (mid));",
+            "  sarr4 u1 (.din (mid), .dout (q));",
+            "endmodule",
+        ],
+        mods,
+    )
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and "mid" in l]
+    assert decls == ["wire         [7:0]                      mid [3:0];"] or \
+        any(re.match(r"^\s*wire\s+\[7:0\]\s+mid\s*\[3:0\];$", l) for l in decls), decls
+    # the packed folding must be gone
+    assert not any("[3:0][7:0]" in l for l in decls)
+
+
+def test_mixed_packed_unpacked_port_net():
+    """output [1:0][7:0] data [3:0]: packed stays packed, unpacked stays
+    unpacked."""
+    from verilog_tooling.inst import parse_module_ports
+
+    mixed = "module mx (input [1:0][7:0] din [3:0], output [1:0][7:0] dout [3:0]);\nendmodule"
+    mods = {"mx": parse_module_ports(mixed.splitlines())}
+    out = auto_def_t(
+        [
+            "module top;",
+            "  /*autodef*/",
+            "  mx u0 (.din (d), .dout (m));",
+            "  mx u1 (.din (m), .dout (q));",
+            "endmodule",
+        ],
+        mods,
+    )
+    decls = [l for l in out if re.match(r"^\s*wire\b", l) and re.search(r"\bm\b", l)]
+    assert any(
+        re.match(r"^\s*wire\s+\[1:0\]\[7:0\]\s+m\s*\[3:0\];$", l) for l in decls
+    ), decls
