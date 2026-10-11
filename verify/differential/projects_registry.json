@@ -104,6 +104,27 @@
       "type": "cache",
       "sv_count": "17",
       "status": "clean"
+    },
+    {
+      "name": "apb4_i2c",
+      "path": "apb4_i2c/rtl",
+      "type": "i2c",
+      "sv_count": "15",
+      "status": "clean"
+    },
+    {
+      "name": "axi_dma_donlon",
+      "path": "axi_dma_donlon/rtl",
+      "type": "dma",
+      "sv_count": "22",
+      "status": "clean"
+    },
+    {
+      "name": "rtl_ds",
+      "path": "rtl_ds/rtl",
+      "type": "data_structures",
+      "sv_count": "38",
+      "status": "clean"
     }
   ],
   "last_updated": "2026-10-11"
