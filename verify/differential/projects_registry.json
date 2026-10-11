@@ -1,0 +1,110 @@
+{
+  "projects": [
+    {
+      "name": "opentitan_full",
+      "path": "opentitan_full/hw/ip",
+      "type": "soc_ips",
+      "sv_count": "~2000",
+      "status": "clean"
+    },
+    {
+      "name": "caliptra-rtl",
+      "path": "caliptra-rtl/src",
+      "type": "soc",
+      "sv_count": "~500",
+      "status": "clean"
+    },
+    {
+      "name": "ibex_new",
+      "path": "ibex_new/rtl",
+      "type": "riscv_core",
+      "sv_count": "~100",
+      "status": "clean"
+    },
+    {
+      "name": "snitch",
+      "path": "snitch/hw",
+      "type": "riscv_soc",
+      "sv_count": "300",
+      "status": "clean"
+    },
+    {
+      "name": "cv32e40s",
+      "path": "cv32e40s/rtl",
+      "type": "riscv_core",
+      "sv_count": "90",
+      "status": "clean"
+    },
+    {
+      "name": "tdrv32",
+      "path": "tdrv32/rtl",
+      "type": "riscv_core",
+      "sv_count": "39",
+      "status": "clean"
+    },
+    {
+      "name": "c_trace",
+      "path": "c_trace/rtl",
+      "type": "trace_ip",
+      "sv_count": "123",
+      "status": "clean"
+    },
+    {
+      "name": "floonoc",
+      "path": "floonoc/hw",
+      "type": "noc",
+      "sv_count": "62",
+      "status": "clean"
+    },
+    {
+      "name": "axi_dma_donlon",
+      "path": "axi_dma_donlon/rtl",
+      "type": "dma",
+      "sv_count": "22",
+      "status": "clean"
+    },
+    {
+      "name": "retrosoc",
+      "path": "retrosoc/rtl",
+      "type": "riscv_soc",
+      "sv_count": "564",
+      "status": "clean"
+    },
+    {
+      "name": "streaming_rtl",
+      "path": "streaming_rtl/rtl",
+      "type": "streaming_lib",
+      "sv_count": "83",
+      "status": "clean"
+    },
+    {
+      "name": "axi_lib",
+      "path": "axi_lib/rtl",
+      "type": "axi_lib",
+      "sv_count": "18",
+      "status": "clean"
+    },
+    {
+      "name": "openrisc64",
+      "path": "openrisc64",
+      "type": "riscv_core",
+      "sv_count": "18",
+      "status": "clean"
+    },
+    {
+      "name": "mac10g",
+      "path": "mac10g/rtl",
+      "type": "ethernet",
+      "sv_count": "6",
+      "status": "clean"
+    },
+    {
+      "name": "mesi_cache",
+      "path": "mesi_cache/rtl",
+      "type": "cache",
+      "sv_count": "17",
+      "status": "clean"
+    }
+  ],
+  "last_updated": "2026-10-11"
+}
