@@ -34,6 +34,19 @@ _ENV_HEAD = re.compile(r"^\$(\w+)")
 _V_EXT = re.compile(r"\.(?:v|sv)$")
 
 
+def read_source_lines(path) -> list[str]:
+    """Source lines of a Verilog file, tolerating non-UTF-8 bytes.
+
+    Real projects ship latin-1 copyright marks and the like; undecodable
+    bytes become U+FFFD instead of raising UnicodeDecodeError and killing
+    the run.  ``pathlib.Path.read_text(errors=...)`` needs Python 3.10+,
+    so this decodes explicitly (floor is 3.7).
+    """
+    from pathlib import Path
+
+    return Path(path).read_bytes().decode("utf-8", errors="replace").splitlines()
+
+
 def _expand(path: str, env: Mapping[str, str]) -> str:
     """Expand ``~`` to $HOME and a leading ``$VAR`` component from ENV
     (automatic.vim: ``substitute(dir,'\\~',$HOME,"g")`` + GetRealDir_py).
