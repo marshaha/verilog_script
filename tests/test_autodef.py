@@ -4474,17 +4474,16 @@ def test_param_value_resolves_handwritten_dims_before_conflict_check():
 
 def test_unresolved_external_param_conservative_no_conflict():
     """When a hand-written declaration references an unresolved package or
-    external parameter (e.g. PkgWidth not in module consts), autodef cannot
-    prove a mismatch against [7:0] and must conservatively keep the line
-    without flagging //AD_CONFLICT."""
+    external parameter (e.g. PkgWidth not in module consts), autodef
+    flags it with NOT_FOUND marker so it can be investigated."""
     from verilog_tooling.autodef import auto_def_t
     from verilog_tooling.inst import parse_module_ports
 
-    sub = "module sub (output [7:0] q);\nendmodule"
+    sub = "module sub (output [1:0][7:0] q);\nendmodule"
     top = [
         "module top;",
         "  /*autodef*/",
-        "  logic [PkgWidth-1:0] key_data;",
+        "  logic [PkgWidth-1:0][7:0] key_data;",
         "  sub u0 (.q (key_data));",
         "endmodule",
         "// Local Variables:",
@@ -4495,6 +4494,6 @@ def test_unresolved_external_param_conservative_no_conflict():
     out = auto_def_t(top, mods)
     decls = [l for l in out if "key_data" in l and re.match(r"^\s*logic\b", l)]
     assert len(decls) == 1, decls
-    assert "AD_CONFLICT" not in decls[0], decls[0]
+    assert "AD_CONFLICT: NOT_FOUND PkgWidth" in decls[0], decls[0]
     assert "[PkgWidth-1:0]" in decls[0], decls[0]
 

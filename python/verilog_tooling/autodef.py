@@ -791,12 +791,14 @@ class SignalTable:
                 f"update-skip reason=not-simple line={sig.line.strip()!r}",
             )
             return
-        # Handle NOT_FOUND tuple: expose unresolved params
+        # Handle NOT_FOUND tuple: expose unresolved params when user boundary is ON;
+        # when user boundary is OFF (rewrite mode), proceed to rewrite the line
         if isinstance(rewritten, tuple) and rewritten[0] == "NOT_FOUND":
-            _, params, orig_line = rewritten
-            sig.conflict = f"NOT_FOUND {','.join(params)}"
-            sig.width_updated = True
-            return
+            _, params, rewritten = rewritten
+            if _user_boundary_on():
+                sig.conflict = f"NOT_FOUND {','.join(params)}"
+                sig.width_updated = True
+                return
         if rewritten == sig.line:
             # the evidence agrees with the declaration: no text change is
             # needed, but the evidence WAS consumed — mark it so a weaker
@@ -2647,20 +2649,19 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
     # not in consts, or param calculation is OFF), expose it as NOT_FOUND
     # instead of silently skipping or falsely flagging as mismatch.
     unresolved_params = []
-    if _param_value_on() and consts:
+    if _param_value_on():
+        str_consts = {k: str(v) for k, v in (consts or {}).items()}
         from .emacs import _apply_param_values
-        # _apply_param_values expects string values; consts may have ints
-        str_consts = {k: str(v) for k, v in consts.items()}
         resolved = []
         for d in raw_cur:
-            r = _apply_param_values(d, str_consts)
+            r = _apply_param_values(d, str_consts) if str_consts else d
             # If still has identifiers, collect them as unresolved
             for ident in re.findall(r"[a-zA-Z_]\w*", r):
                 if ident not in unresolved_params:
                     unresolved_params.append(ident)
             resolved.append(r)
         raw_cur = tuple(resolved)
-    elif not _param_value_on():
+    else:
         # Param calculation OFF: collect identifiers from hand-written dims
         for d in raw_cur:
             for ident in re.findall(r"[a-zA-Z_]\w*", d):
@@ -2668,14 +2669,16 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
                     unresolved_params.append(ident)
     cur = tuple(_clean_dim(d) for d in raw_cur)
     cleaned_p = tuple(_clean_dim(d) for d in pdims)
-    # If unresolved params, expose as NOT_FOUND (don't silently skip)
-    if unresolved_params:
-        # Return a special marker that the caller will turn into NOT_FOUND note
-        # We use a tuple to signal this; the caller checks for it
-        return ("NOT_FOUND", unresolved_params, line)
     raw_cur_u = tuple(re.findall(r"\[([^\]]+)\]", m.group("udims")))
     cur_u = tuple(_clean_dim(d) for d in raw_cur_u)
     cleaned_u = tuple(_clean_dim(d) for d in udims)
+    head = m.group("indent") + m.group("kw") + (m.group("sgn") or "")
+    head += " " + "".join(f"[{d}]" for d in pdims) + " "
+    udims_txt = "".join(f"[{d}]" for d in udims) or m.group("udims")
+    rewritten_line = head + m.group("name") + udims_txt + m.group("end")
+    # If unresolved params, expose as NOT_FOUND when checking conflicts
+    if unresolved_params:
+        return ("NOT_FOUND", unresolved_params, rewritten_line)
     # Port evidence is authoritative for what it covers but silent on what it
     # doesn't: when the port has no unpacked dims (udims empty), a
     # hand-written unpacked dim (e.g. [NumShares] indexed by a genvar) is
@@ -2683,10 +2686,7 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
     # and disagrees.
     if cur == cleaned_p and (not udims or cur_u == cleaned_u):
         return line
-    head = m.group("indent") + m.group("kw") + (m.group("sgn") or "")
-    head += " " + "".join(f"[{d}]" for d in pdims) + " "
-    udims_txt = "".join(f"[{d}]" for d in udims) or m.group("udims")
-    return head + m.group("name") + udims_txt + m.group("end")
+    return rewritten_line
 
 
 def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = False) -> str:
