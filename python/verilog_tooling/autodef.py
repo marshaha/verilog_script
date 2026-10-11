@@ -781,7 +781,8 @@ class SignalTable:
 
             trace_sig(name or sig.name, "dt-exempt cmd=update-dims")
             return  # user said don't touch
-        rewritten = _rewrite_usrdef_packed_dims(sig.line, pdims, udims)
+        rewritten = _rewrite_usrdef_packed_dims(sig.line, pdims, udims,
+                                                   consts=self.consts)
         if rewritten is None:
             from ._trace import trace_sig
 
@@ -2583,7 +2584,8 @@ _USRDEF_SIMPLE_DECL = re.compile(
 )
 
 
-def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = ()) -> str | None:
+def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
+                               consts: dict | None = None) -> str | None:
     """Rewrite the packed-dimension prefix of a simple one-line
     ``wire [A:0] x;`` declaration to PDIMS, preserving indent, keyword,
     ``signed``, the name, any unpacked dims, ``;`` and the trailing comment.
@@ -2591,13 +2593,34 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = ()) -> s
     packed is illegal SystemVerilog.  None when the line is not a simple
     single-name declaration (a multi-name list or an initialised declaration
     is never touched).  Returns LINE unchanged when it already carries
-    exactly PDIMS/UDIMS."""
+    exactly PDIMS/UDIMS (after param resolution when CONSTS given)."""
     m = _USRDEF_SIMPLE_DECL.match(line)
     if not m:
         return None
     raw_cur = tuple(re.findall(r"\[([^\]]+)\]", m.group("dims")))
+    # When param calculation is on and consts given, resolve hand-written
+    # dims before comparing (e.g., [NumRegsKey-1:0] vs [7:0] with NumRegsKey=8)
+    # If a dim contains an identifier we cannot resolve (e.g., package param
+    # not in consts), be conservative: don't flag as conflict.
+    unresolved = False
+    if consts and _param_value_on():
+        from .emacs import _apply_param_values
+        resolved = []
+        for d in raw_cur:
+            r = _apply_param_values(d, consts)
+            # If still has identifiers (not pure numeric), mark unresolved
+            if re.search(r"[a-zA-Z_]", r):
+                # Check if it's the same as original (no resolution happened)
+                # or if it still contains unknown identifiers
+                unresolved = True
+            resolved.append(r)
+        raw_cur = tuple(resolved)
     cur = tuple(_clean_dim(d) for d in raw_cur)
     cleaned_p = tuple(_clean_dim(d) for d in pdims)
+    # If unresolved identifiers remain, cannot prove mismatch: no conflict
+    # (conservative: package params not in consts)
+    if unresolved:
+        return line
     raw_cur_u = tuple(re.findall(r"\[([^\]]+)\]", m.group("udims")))
     cur_u = tuple(_clean_dim(d) for d in raw_cur_u)
     cleaned_u = tuple(_clean_dim(d) for d in udims)
