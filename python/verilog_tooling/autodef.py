@@ -810,14 +810,6 @@ class SignalTable:
                 if old_dims == new_dims:
                     sig.width_updated = True
                     return
-            # Defensive: if any dim contains garbage (newlines, keywords like
-            # 'input' from a broken regex match), do not set a conflict.
-            # (keymgr_dpe: pdims had '(KeyWidth\n) (\n  input clk_i)-1:0')
-            for d in list(pdims) + list(udims):
-                if "\n" in d or re.search(r"\b(input|output|inout|module)\b", d):
-                    from ._trace import trace_sig
-                    trace_sig(sig.name, f"conflict-skip reason=garbage-dim dim={d!r}")
-                    return
             sig.conflict = (km.group(1) if km else "wire") + "".join(
                 f"[{d}]" for d in pdims
             )
@@ -2757,8 +2749,16 @@ def _port_dim_evidence(
     if param_values:
         from .emacs import _apply_param_values
 
-        pdims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in pdims)
-        udims = tuple(_clean_dim(_apply_param_values(d, param_values)) for d in udims)
+        def _safe_apply(d):
+            # If param substitution produces garbage with newlines (broken
+            # param value regex captured across lines), keep the original.
+            # A dim never legitimately contains a newline.
+            result = _apply_param_values(d, param_values)
+            if "\n" in result:
+                return d
+            return _clean_dim(result)
+        pdims = tuple(_safe_apply(d) for d in pdims)
+        udims = tuple(_safe_apply(d) for d in udims)
     if pdims and port.packed and len(pdims) == len(port.packed) and not udims:
         new_p = list(pdims)
         for i in range(len(pdims)):

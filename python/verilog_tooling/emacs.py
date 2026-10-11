@@ -687,7 +687,8 @@ def parse_module_params(lines: Sequence[str]) -> tuple[Param, ...]:
     text = _strip_comments("\n".join(expand_includes(lines)))
     params: list[Param] = []
     header_span = None
-    m = re.search(r"\bmodule\s+\w+\s*#\s*\(", text)
+    # Allow 'import pkg::*;' between module name and #( (SystemVerilog)
+    m = re.search(r"\bmodule\s+\w+\s*(?:import\s+[\w:]+\s*::\s*\*\s*;\s*)?#\s*\(", text)
     if m:
         open_idx = text.index("(", m.start())
         inner, end = _balanced(text, open_idx)
