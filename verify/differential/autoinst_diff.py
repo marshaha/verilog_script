@@ -139,5 +139,21 @@ def main():
     
     print(f"\n{count} tested, {diffs} diffs")
 
+def load_vc(vc_path):
+    """Load -y dirs from .vc file."""
+    dirs = []
+    with open(vc_path) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("-y "):
+                dirs.append(line[3:].strip())
+    return dirs
+
 if __name__ == "__main__":
+    # Support: python3 diff_sweep.py <proj> <vc_file|--vc>
+    import sys
+    if len(sys.argv) > 2 and sys.argv[2].endswith(".vc"):
+        vc_dirs = load_vc(sys.argv[2])
+        # Replace lib arg with vc dirs
+        sys.argv[2] = ",".join(vc_dirs)
     main()
