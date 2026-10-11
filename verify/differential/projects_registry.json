@@ -216,6 +216,41 @@
       "type": "timer",
       "sv_count": "4",
       "status": "clean"
+    },
+    {
+      "name": "picorv32",
+      "path": "picorv32",
+      "type": "cpu",
+      "sv_count": "1 (Verilog-95, 3049 lines)",
+      "status": "verilator_clean"
+    },
+    {
+      "name": "mcu8051",
+      "path": "mcu8051/src/rtl",
+      "type": "cpu",
+      "sv_count": "10 (Verilog)",
+      "status": "verilator_warnings"
+    },
+    {
+      "name": "gba_mister",
+      "path": "gba_mister/rtl",
+      "type": "gba",
+      "sv_count": "44",
+      "status": "complex"
+    },
+    {
+      "name": "arm_cortex_m0",
+      "path": "arm_cortex_m0/sim",
+      "type": "cpu",
+      "sv_count": "60 (Verilog-2005)",
+      "status": "verilator_syntax_issue_type_keyword"
+    },
+    {
+      "name": "mini_isp",
+      "path": "mini_isp/rtl",
+      "type": "isp",
+      "sv_count": "~40",
+      "status": "clean"
     }
   ],
   "last_updated": "2026-10-11"
