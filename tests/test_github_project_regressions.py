@@ -470,3 +470,31 @@ def test_parse_wrapped_multi_name_declaration(tmp_path):
 
     md = inst.parse_module_ports(modfile.read_text().splitlines(), name="sub")
     assert [p.name for p in md.ports] == ["a_out", "b_out", "c_out", "d_in"]
+
+
+def test_instance_headers_param_close_same_line():
+    """Issue found via AUTOINPUT differential testing on OpenTitan uart
+    (2026-10-11): _instance_headers missed a parameterized instance where
+    the #() close and 'u_reg (' are on the SAME line (") u_reg (").
+    The old line-based _bal counting saw ") u_reg (" as net-zero and kept
+    scanning past the instance."""
+    from verilog_tooling.autodef import _instance_headers
+    from verilog_tooling.inst import parse_module_ports
+    subdef = parse_module_ports(
+        ["module uart_reg_top;", "input clk_i;", "endmodule"]
+    )
+    mods = {"uart_reg_top": subdef}
+    lines = [
+        "module top;",
+        "  uart_reg_top #(",
+        "    .Param(1)",
+        "  ) u_reg (",
+        "    .clk_i(clk_i)",
+        "  );",
+        "endmodule",
+    ]
+    headers = _instance_headers(lines, mods)
+    assert 1 in headers, f"param instance not found: {headers}"
+    mod, inst, _ = headers[1]
+    assert mod == "uart_reg_top"
+    assert inst == "u_reg"
