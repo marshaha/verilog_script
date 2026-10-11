@@ -244,6 +244,13 @@
       "type": "cpu",
       "sv_count": "60 (Verilog-2005)",
       "status": "verilator_syntax_issue_type_keyword"
+    },
+    {
+      "name": "mini_isp",
+      "path": "mini_isp/rtl",
+      "type": "isp",
+      "sv_count": "~40",
+      "status": "clean"
     }
   ],
   "last_updated": "2026-10-11"
