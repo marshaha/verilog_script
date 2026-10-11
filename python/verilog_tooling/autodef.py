@@ -3014,18 +3014,32 @@ def _lhs_member_sides(
     loop_ranges: Mapping[str, str] | None = None,
     loop_bounds: Mapping[str, tuple[int, int]] | None = None,
     sym_hi: Mapping[str, str] | None = None,
+    allow_link: bool = True,
 ) -> list[Side]:
     """Classify one concat member through :func:`get_assign_side`; nested
     concats recurse.  An unsliced member may NOT take the RHS literal's
     total width (``{p, q} = 4'h0`` leaves p and q scalar): a plain signal
     RHS keeps its link, any other RHS form degrades to a scalar (width 1).
     A member with an explicit packed slice keeps the width of its own
-    select (``a[3:0]`` in ``{a[3:0], b} = 12'h0`` is 4 bits, not 12)."""
+    select (``a[3:0]`` in ``{a[3:0], b} = 12'h0`` is 4 bits, not 12).
+    When allow_link is False (concat LHS with non-concat RHS, e.g.
+    ``{a, b} = foo``), members must NOT link to the full RHS width —
+    they are parts of the whole, not the whole itself."""
     if lhs.lstrip().startswith("{"):
         return get_concat_assign_sides(lhs, rhs, loop_ranges, loop_bounds, sym_hi)
     side = get_assign_side(lhs, rhs, loop_ranges, loop_bounds, sym_hi)
     if side is None:
         return []
+    if not allow_link:
+        # Concat member with non-matching RHS: do NOT link to the full RHS
+        # width (members are parts of the whole, not the whole itself).
+        # Keep the member's own width (from explicit slice) or scalar.
+        # (Prevents {1-bit, 32-bit} = 33-bit from smearing 33-bit onto members.)
+        if side.link is not None:
+            # Drop the link, keep width if from explicit slice, else scalar.
+            if side.elem_range is not None:
+                return [Side(side.name, side.width, None, side.dims, side.elem_range)]
+            return [Side(side.name, "1", None, side.dims, side.elem_range)]
     if side.link is not None and not side.link:
         return [Side(side.name, "1", None, side.dims, side.elem_range)]
     if side.width is not None and side.elem_range is None:
@@ -3058,7 +3072,8 @@ def get_concat_assign_sides(
     for idx, member in enumerate(parts):
         member_rhs = rhs if not rhs_linkable else rhs_members[idx].strip() + ";"
         sides.extend(
-            _lhs_member_sides(member, member_rhs, loop_ranges, loop_bounds, sym_hi)
+            _lhs_member_sides(member, member_rhs, loop_ranges, loop_bounds, sym_hi,
+                              allow_link=rhs_linkable)
         )
     return sides
 

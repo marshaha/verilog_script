@@ -4417,3 +4417,31 @@ def test_struct_field_assign_no_bogus_d_link():
     decls = [l for l in out if "event_rx_parity_err" in l and re.match(r"^\s*logic\b", l)]
     assert len(decls) == 1, decls
     assert "AD_CONFLICT" not in decls[0], decls[0]
+
+
+def test_concat_lhs_no_width_smear_to_members():
+    """Concat LHS members must not inherit the full RHS width.
+
+    (OpenTitan cheriot_trvk_core: `assign {unused_cap_base_33, cap_base} =
+    cap_base_33;` — the old code linked each member to the 33-bit RHS,
+    smearing 33-bit onto hand-written 1-bit/32-bit declarations:
+    `logic unused_cap_base_33;` falsely flagged as `infer logic[32:0]`.)"""
+    from verilog_tooling.autodef import auto_def_t
+
+    out = auto_def_t(
+        [
+            "module top;",
+            "  /*autodef*/",
+            "  logic [32:0] cap_base_33;",
+            "  logic unused_cap_base_33;",
+            "  logic [31:0] cap_base;",
+            "  assign cap_base_33 = 33'h1;",
+            "  assign {unused_cap_base_33, cap_base} = cap_base_33;",
+            "endmodule",
+        ],
+        {},
+    )
+    for name in ("unused_cap_base_33", "cap_base;"):
+        decls = [l for l in out if name in l and re.match(r"^\s*logic\b", l)]
+        assert len(decls) == 1, decls
+        assert "AD_CONFLICT" not in decls[0], decls[0]
