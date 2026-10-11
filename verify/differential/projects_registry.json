@@ -223,6 +223,20 @@
       "type": "cpu",
       "sv_count": "1 (Verilog-95, 3049 lines)",
       "status": "verilator_clean"
+    },
+    {
+      "name": "mcu8051",
+      "path": "mcu8051/src/rtl",
+      "type": "cpu",
+      "sv_count": "10 (Verilog)",
+      "status": "verilator_warnings"
+    },
+    {
+      "name": "gba_mister",
+      "path": "gba_mister/rtl",
+      "type": "gba",
+      "sv_count": "44",
+      "status": "complex"
     }
   ],
   "last_updated": "2026-10-11"
