@@ -814,7 +814,9 @@ class SignalTable:
                 f"[{d}]" for d in pdims
             )
             if udims:
-                sig.conflict += "." + "".join(f"[{d}]" for d in udims)
+                # Unpacked dims follow without dot separator (SV syntax:
+                # logic [packed] sig [unpacked])
+                sig.conflict += "".join(f"[{d}]" for d in udims)
             sig.width_updated = True  # strong evidence consumed
             return
         from ._trace import trace_sig
