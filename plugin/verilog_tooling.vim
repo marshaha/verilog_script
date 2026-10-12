@@ -126,7 +126,7 @@ function! s:ApplyResult(bufnr, new, cmd) abort
     endif
     let l:old = getline(1, '$')
     if a:new ==# l:old
-        echom '[verilog_tooling] ' . a:cmd . ': no changes'
+        echom '[verilog_tooling] ' . a:cmd . ': no changes [Done!]'
         return
     endif
     let l:view = winsaveview()
@@ -163,7 +163,7 @@ function! s:ApplyResult(bufnr, new, cmd) abort
     call winrestview(l:view)
     setlocal modified
     let l:deleted = len(l:old) - l:j - l:i
-    echom printf('[verilog_tooling] %s: line %d: %d -> %d line(s)',
+    echom printf('[verilog_tooling] %s: line %d: %d -> %d line(s) [Done!]',
           \ a:cmd, l:i + 1, l:deleted, len(l:mid))
 endfunction
 
@@ -283,7 +283,7 @@ function! s:DiffAuto() abort
     let l:lines = readfile(l:out)
     call delete(l:out)
     if empty(l:lines)
-        echom '[verilog_tooling] ADIF: no differences — AUTOs are up to date'
+        echom '[verilog_tooling] ADIF: no differences — AUTOs are up to date [Done!]'
         return
     endif
     pedit! [AUTO-diff]
@@ -315,7 +315,7 @@ function! s:LintTemplates() abort
         return
     endif
     if l:result ==# ''
-        echom '[verilog_tooling] ATLINT: no unused AUTO_TEMPLATE lines'
+        echom '[verilog_tooling] ATLINT: no unused AUTO_TEMPLATE lines [Done!]'
         return
     endif
     cgetexpr split(l:result, "\n")
@@ -368,6 +368,7 @@ function! s:NewFromTemplate(fname) abort
         return
     endif
     execute 'edit ' . fnameescape(a:fname)
+    echom '[verilog_tooling] ATpl: ' . a:fname . ' created [Done!]'
 endfunction
 
 " generators (AM/AME need the cursor line; APM/AFM are buffer-wide)
