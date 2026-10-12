@@ -1297,6 +1297,9 @@ def auto_inst(
     # one pass for all markers; offsets of unprocessed markers stay valid
     # because the loop below rewrites text bottom-up (later offsets first)
     stacks = _scan_parens_at(text, [m.offset for m in markers])
+    # mask once: _resolve_instance_at needs the masked text, and masking
+    # the full buffer per-instance is O(n^2) on many instances (perf)
+    m_full = mask_comments(text)
     for marker in reversed(markers):
         stack = stacks[marker.offset]
         if not stack:
@@ -1314,7 +1317,6 @@ def auto_inst(
         if is_star and not star_expand:
             continue
         try:
-            m_full = mask_comments(text)
             module, inst = _resolve_instance_at(text, open_idx, m_full)
         except ValueError:
             continue  # instance array / `define'd name: skip, not expandable
@@ -1329,6 +1331,7 @@ def auto_inst(
                 template_required=_inst_template_required(lines),
                 inst_vector=_inst_vector(lines),
                 simplify=_local_simplify_expressions(lines),
+                m_full=m_full,
             )
         except ValueError as exc:
             # AUTO_LISP / @"..." template evaluation outside the Python
@@ -1346,7 +1349,11 @@ def _auto_inst_one(
     text, marker, open_idx, close_idx, moddef, module, inst,
     templates, sort, dot_name, column, param_value, is_star, star_save,
     template_required=False, inst_vector="t", simplify=True,
+    m_full=None,
 ):
+    # m_full: precomputed mask_comments(text) from the caller. The auto_inst
+    # loop rewrites bottom-up, so text before open_idx is unchanged and the
+    # cached mask stays valid for read_inst_param_values (which scans back).
     lisp_env = read_auto_lisp(text, marker.offset)
     # AUTO_PYTHON user functions merge into the template expression scope
     # (Python-native alternative to elisp defun)
@@ -1359,7 +1366,8 @@ def _auto_inst_one(
         else None
     )
     at_value = template_at_value(tpl, inst) if tpl else ""
-    m_full = mask_comments(text)
+    if m_full is None:
+        m_full = mask_comments(text)
     param_values = (
         read_inst_param_values(text, open_idx, m_full) if param_value else {}
     )
