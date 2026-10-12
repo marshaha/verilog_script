@@ -4498,6 +4498,34 @@ def test_unresolved_external_param_conservative_no_conflict():
     assert "[PkgWidth-1:0]" in decls[0], decls[0]
 
 
+def test_symbolic_param_calc_expr_literal_match_no_conflict():
+    """When a hand-written declaration matches inferred dimensions literally
+    (e.g. wire[IFE_CRC_NUM*2-1:0][15:0] matching port output[IFE_CRC_NUM*2-1:0][15:0]),
+    even though IFE_CRC_NUM is in consts, it must match immediately and never
+    falsely flag //AD_CONFLICT."""
+    from verilog_tooling.autodef import auto_def_t
+    from verilog_tooling.inst import parse_module_ports
+
+    sub = "module sub (output [IFE_CRC_NUM*2-1:0][15:0] data);\nendmodule"
+    top = [
+        "module top #(parameter IFE_CRC_NUM = 2);",
+        "  /*autodef*/",
+        "  wire[IFE_CRC_NUM*2-1:0][15:0] ife_crc_data_out;",
+        "  sub u0 (.data (ife_crc_data_out));",
+        "endmodule",
+        "// Local Variables:",
+        "// verilog-auto-inst-param-value:t",
+        "// End:",
+    ]
+    mods = {"sub": parse_module_ports(sub.splitlines(), with_params=True)}
+    out = auto_def_t(top, mods)
+    decls = [l for l in out if "ife_crc_data_out" in l and re.match(r"^\s*wire\b", l)]
+    assert len(decls) == 1, decls
+    assert "AD_CONFLICT" not in decls[0], decls[0]
+    assert "[IFE_CRC_NUM*2-1:0][15:0]" in decls[0], decls[0]
+
+
+
 
 def test_usrdef_wider_0_0_equals_scalar():
     """_usrdef_wider: [0:0] is single-bit, equivalent to scalar declaration.

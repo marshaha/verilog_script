@@ -2647,11 +2647,19 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
     if not m:
         return None
     raw_cur = tuple(re.findall(r"\[([^\]]+)\]", m.group("dims")))
-    # When param calculation is on and consts given, resolve hand-written
-    # dims before comparing (e.g., [NumRegsKey-1:0] vs [7:0] with NumRegsKey=8)
-    # If a dim contains an identifier we cannot resolve (e.g., package param
-    # not in consts, or param calculation is OFF), expose it as NOT_FOUND
-    # instead of silently skipping or falsely flagging as mismatch.
+    raw_cur_u = tuple(re.findall(r"\[([^\]]+)\]", m.group("udims")))
+    cur_literal = tuple(_clean_dim(d) for d in raw_cur)
+    cur_u = tuple(_clean_dim(d) for d in raw_cur_u)
+    cleaned_p = tuple(_clean_dim(d) for d in pdims)
+    cleaned_u = tuple(_clean_dim(d) for d in udims)
+    # Fast path 1: if hand-written dims literally match inferred dims (e.g.
+    # wire[IFE_CRC_NUM*2-1:0][15:0] matching port's [IFE_CRC_NUM*2-1:0][15:0]),
+    # evidence agrees immediately — no conflict!
+    if cur_literal == cleaned_p and (not udims or cur_u == cleaned_u):
+        return line
+
+    # When param calculation is on and consts given, resolve both hand-written
+    # dims and inferred dims before comparing (e.g. [NumRegsKey-1:0] vs [7:0] with NumRegsKey=8).
     unresolved_params = []
     if _param_value_on():
         str_consts = {k: str(v) for k, v in (consts or {}).items()}
@@ -2665,6 +2673,8 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
                     unresolved_params.append(ident)
             resolved.append(r)
         raw_cur = tuple(resolved)
+        if str_consts:
+            cleaned_p = tuple(_clean_dim(_apply_param_values(d, str_consts)) for d in pdims)
     else:
         # Param calculation OFF: collect identifiers from hand-written dims
         for d in raw_cur:
@@ -2672,24 +2682,17 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
                 if ident not in unresolved_params:
                     unresolved_params.append(ident)
     cur = tuple(_clean_dim(d) for d in raw_cur)
-    cleaned_p = tuple(_clean_dim(d) for d in pdims)
-    raw_cur_u = tuple(re.findall(r"\[([^\]]+)\]", m.group("udims")))
-    cur_u = tuple(_clean_dim(d) for d in raw_cur_u)
-    cleaned_u = tuple(_clean_dim(d) for d in udims)
+
+    # Fast path 2: after constant evaluation, dims match!
+    if cur == cleaned_p and (not udims or cur_u == cleaned_u):
+        return line
     head = m.group("indent") + m.group("kw") + (m.group("sgn") or "")
     head += " " + "".join(f"[{d}]" for d in pdims) + " "
     udims_txt = "".join(f"[{d}]" for d in udims) or m.group("udims")
     rewritten_line = head + m.group("name") + udims_txt + m.group("end")
-    # If unresolved params, expose as NOT_FOUND when checking conflicts
+    # If unresolved params remain and dims mismatch, expose as NOT_FOUND
     if unresolved_params:
         return ("NOT_FOUND", unresolved_params, rewritten_line)
-    # Port evidence is authoritative for what it covers but silent on what it
-    # doesn't: when the port has no unpacked dims (udims empty), a
-    # hand-written unpacked dim (e.g. [NumShares] indexed by a genvar) is
-    # unopposed — not a mismatch.  Only flag when unpacked evidence exists
-    # and disagrees.
-    if cur == cleaned_p and (not udims or cur_u == cleaned_u):
-        return line
     return rewritten_line
 
 
