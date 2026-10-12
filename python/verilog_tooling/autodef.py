@@ -2693,16 +2693,22 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
     return rewritten_line
 
 
-def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = False) -> str:
+def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = False,
+                allow_sv_types: bool = True) -> str:
     # head: the leading keyword — a typedef or an explicit net type from the
     # submodule port REPLACES a bare ``wire`` (``foo_t x;``, ``logic signed
     # [15:0] x;``) but follows a direction keyword (``input foo_t a``,
     # ``input logic signed [15:0] x``)
+    # allow_sv_types=False: in pure Verilog (.v) files, do not emit ``logic``
+    # (issue #1142); keep ``wire`` instead.  In practice many flows compile
+    # .v as SV, so the default True preserves the submodule's type.
     head = keyword
     if sig.data_type and keyword.strip() == "wire":
         head = sig.data_type
     elif sig.net_type and keyword.strip() == "wire":
-        head = sig.net_type
+        # Don't emit SV-only 'logic' into a Verilog file
+        if not (sig.net_type == "logic" and not allow_sv_types):
+            head = sig.net_type
     # Type keyword padded: CalMargin(12, len) -> 12 - len + 1 spaces,
     # so the field is 13 wide (automatic.vim arithmetic)
     line = head + " " * (12 - len(head) + 1)
