@@ -463,9 +463,13 @@ def _inst_driven_nets(
                             ewidth = emacs._apply_param_values(ewidth, const_map)
                         _note_net(nets, InstNet(net, ewidth, inst, module))
                 continue
-            if simple_only and not _ELEM_NET.match(stripped):
+            # Issue #1526: SV cast type'(expr) — extract inner expr for the
+            # simple-net check, so t'(x) counts as signal x for AIO candidacy
+            cast_m = re.match(r"^[a-zA-Z_]\w*'\s*\((.*)\)$", stripped)
+            check_expr = cast_m.group(1).strip() if cast_m else stripped
+            if simple_only and not _ELEM_NET.match(check_expr):
                 continue
-            net = conn_net_name(stripped)
+            net = conn_net_name(check_expr)
             if net is None:
                 continue
             port = inst_io[pin]

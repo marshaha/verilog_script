@@ -4490,3 +4490,29 @@ def test_emit_signal_no_logic_in_verilog_mode():
 
     out_v = _emit_signal(sig, 20, "wire ", emacs_dims=True, allow_sv_types=False)
     assert "wire" in out_v and "logic" not in out_v
+
+def test_inst_driven_nets_sv_cast():
+    """_inst_driven_nets recognizes signal inside SV cast t'(x).
+
+    Issue #1526: template .x(t'(x)) — the x must count as a signal
+    for AUTOOUTPUT/AUTOINPUT candidacy, not be ignored.
+    """
+    from verilog_tooling.wire import _inst_driven_nets
+    from verilog_tooling.inst import parse_module_ports
+
+    top = [
+        "module t;",
+        "    t3 #( .N(4) ) t3_inst (",
+        "        /*AUTOINST*/",
+        "        .x (t'(x)));",
+        "endmodule",
+    ]
+    submod3 = [
+        "module t3 #( parameter N=4 ) (",
+        "    input [N-1:0][27:0] x",
+        ");",
+        "endmodule",
+    ]
+    mods = {"t3": parse_module_ports(submod3)}
+    in_nets = _inst_driven_nets(top, mods, ("input",), simple_only=True)
+    assert "x" in in_nets
