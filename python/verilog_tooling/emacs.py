@@ -1231,6 +1231,13 @@ def _local_simplify_expressions(lines: Sequence[str]) -> bool:
     return _local_bool(lines, "verilog-auto-simplify-expressions", True)
 
 
+def _local_inst_templated_comment(lines: Sequence[str]) -> bool:
+    """verilog-auto-inst-templated-comment file-local (default t): when nil,
+    AUTOINST omits the '// Templated' comment on template-expanded pins
+    (issue #1898)."""
+    return _local_bool(lines, "verilog-auto-inst-templated-comment", True)
+
+
 def auto_inst(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef],
@@ -1266,6 +1273,7 @@ def auto_inst(
     # file-local vars OR with CLI flags (either enables the behavior)
     sort = sort or _local_inst_sort(lines)
     dot_name = dot_name or _local_inst_dot_name(lines)
+    templated_comment = _local_inst_templated_comment(lines)
     text = "\n".join(lines)
     markers = _select_markers(lines, "AUTOINST", which)
     if star_expand:
@@ -1332,6 +1340,7 @@ def auto_inst(
                 inst_vector=_inst_vector(lines),
                 simplify=_local_simplify_expressions(lines),
                 m_full=m_full,
+                templated_comment=templated_comment,
             )
         except ValueError as exc:
             # AUTO_LISP / @"..." template evaluation outside the Python
@@ -1349,7 +1358,7 @@ def _auto_inst_one(
     text, marker, open_idx, close_idx, moddef, module, inst,
     templates, sort, dot_name, column, param_value, is_star, star_save,
     template_required=False, inst_vector="t", simplify=True,
-    m_full=None,
+    m_full=None, templated_comment=True,
 ):
     # m_full: precomputed mask_comments(text) from the caller. The auto_inst
     # loop rewrites bottom-up, so text before open_idx is unchanged and the
@@ -1422,7 +1431,7 @@ def _auto_inst_one(
                 conn = None
             # star expansions tag non-templated pins so they can be
             # deleted again on save (verilog-delete-auto-star-implicit)
-            if templated:
+            if templated and templated_comment:
                 comment = "// Templated"
             elif is_star and star_save:
                 comment = "// Implicit .*"
