@@ -4466,3 +4466,27 @@ def test_usrdef_wider_0_0_equals_scalar():
     assert _usrdef_wider("3", "7") is False
     assert _usrdef_wider("", "") is False
     assert _usrdef_wider("c0", "") is False
+
+def test_emit_signal_no_logic_in_verilog_mode():
+    """_emit_signal with allow_sv_types=False keeps 'wire' not 'logic'.
+
+    Issue #1142: AUTOWIRE in a .v file should not emit 'logic' (SV-only).
+    In practice many flows compile .v as SV, so default True preserves
+    the submodule's type; pass False for strict Verilog output.
+    """
+    from verilog_tooling.autodef import _emit_signal, Signal
+
+    sig = Signal()
+    sig.name = "data_out"
+    sig.net_type = "logic"
+    sig.data_type = ""
+    sig.signed = False
+    sig.packed_dims = []
+    sig.width = "7"
+    sig.unpacked = []
+
+    out_sv = _emit_signal(sig, 20, "wire ", emacs_dims=True, allow_sv_types=True)
+    assert "logic" in out_sv
+
+    out_v = _emit_signal(sig, 20, "wire ", emacs_dims=True, allow_sv_types=False)
+    assert "wire" in out_v and "logic" not in out_v
