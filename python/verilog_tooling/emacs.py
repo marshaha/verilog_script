@@ -525,10 +525,14 @@ def read_auto_lisp(text: str, upto: int) -> dict:
     AUTO_LISP mainly prepares constants for @"..." templates).
     """
     env: dict = {}
+    import warnings
+
     for m in re.finditer(r"/\*\s*AUTO_LISP\s*\(", text[:upto]):
         expr, _ = _balanced(text[:upto], m.end() - 1)
         try:
-            code = compile(expr, "<AUTO_LISP>", "exec")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                code = compile(expr, "<AUTO_LISP>", "exec")
             exec(code, {"__builtins__": {}}, env)
         except Exception as exc:  # noqa: BLE001 - report and continue
             raise ValueError(f"AUTO_LISP evaluation failed: {expr!r}: {exc}") from exc
