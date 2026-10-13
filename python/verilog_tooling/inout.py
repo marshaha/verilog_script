@@ -302,14 +302,24 @@ def _inout_sigs(
     full: "Sequence[str] | None" = None,
 ) -> "tuple[list[Signal], dict[str, str]]":
     """AUTOINOUT candidates: nets on instance INOUT ports, minus this
-    module's ports and nets seen on instance input/output ports (verilog-mode
-    exclusion set exactly — declared wires/params are NOT excluded)."""
+    module's ports, nets seen on instance input/output ports, and nets
+    already declared as wire/reg/logic in the body (user intent: internal).
+    """
     inout_nets = _inst_driven_nets(lines, modules, ("inout",), simple_only=True)
     ports, _, _ = _module_tables(lines)
     excluded = set(ports.signals) | _declared_port_names(lines)
     excluded |= _connected_names(lines, modules, ("input",)) | _connected_names(
         lines, modules, ("output",)
     )
+    # A net explicitly declared as wire/reg/logic is internal by user
+    # intent — do not emit a duplicate inout declaration for it.
+    for _ln in lines:
+        _m = re.match(
+            r"\s*(?:wire|reg|logic)\b[^;]*?\b([a-zA-Z_]\w*)\s*(?:\[.*?\])?\s*[;,=]",
+            _ln,
+        )
+        if _m:
+            excluded.add(_m.group(1))
     from .libdirs import parse_typedef_regexp
     from .inst import set_typedef_regexp
 
