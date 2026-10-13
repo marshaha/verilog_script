@@ -303,6 +303,17 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
         trace_sig(prev.name, f"multi-driver inst={rec.inst} module={rec.module}")
 
 
+def _split_top_exprs(masked: str) -> list[str]:
+    """Split a parenthesized port list on depth-0 commas (comments already
+    masked), stripped with empties and AUTOINST markers filtered.
+    Position-independent: the result only depends on the instance's own
+    text, so it can be cached across passes."""
+    return [
+        e for e in (p.strip() for p in _split_top_commas(masked))
+        if e and "AUTOINST" not in e
+    ]
+
+
 def _primitive_nets(
     text: str, open_idx: int, module: str, inst: str,
     dir_list: list[str],
@@ -318,30 +329,22 @@ def _primitive_nets(
     DIRECTIONS.
     """
     from . import emacs
-    import re
     close_idx = emacs._matching_paren(text, open_idx)
     span = text[open_idx + 1 : close_idx]
-    masked = emacs.mask_comments(span)
-    # Split by commas at depth 0
-    exprs = []
-    depth = 0
-    cur = []
-    for ch in masked:
-        if ch in "([{":
-            depth += 1
-            cur.append(ch)
-        elif ch in ")]}":
-            depth -= 1
-            cur.append(ch)
-        elif ch == "," and depth == 0:
-            exprs.append("".join(cur).strip())
-            cur = []
-        else:
-            cur.append(ch)
-    if cur:
-        exprs.append("".join(cur).strip())
-    # Filter empty and AUTOINST markers
-    exprs = [e for e in exprs if e and "AUTOINST" not in e]
+    exprs = _split_top_exprs(emacs.mask_comments(span))
+    _primitive_nets_from_exprs(exprs, module, inst, dir_list, nets, directions, simple_only)
+
+
+def _primitive_nets_from_exprs(
+    exprs: list[str], module: str, inst: str,
+    dir_list: list[str],
+    nets: dict,
+    directions: "tuple[str, ...] | None",
+    simple_only: bool,
+) -> None:
+    """_primitive_nets over pre-split expressions (see _split_top_exprs):
+    the direction/simple filtering half, rerunnable on cached exprs."""
+    import re
     want_dirs = directions if directions is not None else ("output", "inout")
     for idx, expr in enumerate(exprs):
         # Skip named connections (.pin) - primitives use positional
@@ -378,12 +381,253 @@ def _primitive_nets(
             nets[net_name] = rec
 
 
+def _span_module_name(span: Sequence[str]) -> "str | None":
+    """The module name of a module_spans slice (it always starts at the
+    ``module NAME`` line).  Stable across passes that only add declaration
+    lines, so it keys the per-span pin-scan cache in _main_aall."""
+    if not span:
+        return None
+    m = re.match(r"\s*module\s+(\w+)", span[0])
+    return m.group(1) if m else None
+
+
+def _cached_pin_scan(
+    pin_scan_cache: "dict | None",
+    span: Sequence[str],
+    modules: Mapping[str, ModuleDef],
+) -> "dict | None":
+    """get-or-compute _inst_pin_scan for one module span, keyed by the
+    span's module name.  Returns None when PIN_SCAN_CACHE is None (or the
+    span has no module line) — the caller then scans inline."""
+    if pin_scan_cache is None:
+        return None
+    name = _span_module_name(span)
+    if name is None:
+        return None
+    scan = pin_scan_cache.get(name)
+    if scan is None:
+        scan = _inst_pin_scan(span, modules)
+        pin_scan_cache[name] = scan
+    return scan
+
+
+def _inst_pin_scan(
+    lines: Sequence[str],
+    modules: Mapping[str, ModuleDef],
+) -> dict:
+    """Phase 1 of _inst_driven_nets (the expensive part): locate every
+    /*autoinst*/-marked instance and every marker-less instance whose
+    module resolves in MODULES, and extract its raw pin data.
+
+    The result holds position-independent values only — per-instance
+    ``(pin, expr)`` pairs, per-instance parameter values, the const-symbol
+    map and the concat setting — so it stays valid while later passes only
+    ADD declaration lines (the AUTOLOGIC/AUTOWIRE/AUTOREG trio in aall) and
+    can be cached per module span and shared across those passes.
+    """
+    from . import emacs
+    from .autodef import _param_value_on, _const_symbols, _instance_headers
+
+    const_map: dict[str, str] = {}
+    if _param_value_on():
+        const_map = {k: str(v) for k, v in _const_symbols(lines).items()}
+    text = "\n".join(lines)
+    text_masked = emacs.mask_comments(text)
+    instances: list = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add_named(module: str, inst: str, moddef: ModuleDef, open_idx: int) -> None:
+        # a marked instance is also matched by _instance_headers below;
+        # dedup here — _note_net is idempotent for the same driver, so the
+        # result is unchanged.
+        if (module, inst) in seen:
+            return
+        seen.add((module, inst))
+        pin_exprs = list(emacs.inst_pin_connections(text, open_idx))
+        param_values = emacs.effective_param_values(
+            moddef, emacs.read_inst_param_values(text, open_idx, text_masked)
+        )
+        instances.append(("named", module, inst, moddef, (pin_exprs, param_values)))
+
+    markers = emacs.find_auto_markers(lines, "autoinst")
+    stacks = emacs._scan_parens_at(text, [m.offset for m in markers])
+    for marker in markers:
+        st = stacks[marker.offset]
+        if not st:
+            continue
+        open_idx = st[-1]
+        try:
+            module, inst = emacs._resolve_instance_at(text, open_idx, text_masked)
+        except ValueError:
+            continue
+        moddef = modules.get(module)
+        if moddef is None:
+            # Gate primitive (or/buf/etc.): parse positional ports.
+            if module in emacs._GATE_PRIMITIVES and (module, inst) not in seen:
+                seen.add((module, inst))
+                close_idx = emacs._matching_paren(text, open_idx)
+                exprs = _split_top_exprs(
+                    emacs.mask_comments(text[open_idx + 1 : close_idx])
+                )
+                instances.append(
+                    ("primitive", module, inst, emacs._GATE_PRIMITIVES[module], exprs)
+                )
+            continue
+        _add_named(module, inst, moddef, open_idx)
+    # marker-less instances whose module name resolves in MODULES (the same
+    # rule autodef documents)
+    line_off = [0]
+    for ln in lines:
+        line_off.append(line_off[-1] + len(ln) + 1)
+    for i, (module, inst, hdr_end) in _instance_headers(lines, modules).items():
+        hl = i if hdr_end < 0 else hdr_end
+        pos = lines[hl].find(inst)
+        if pos < 0:
+            continue
+        rel = lines[hl].find("(", pos + len(inst))
+        if rel < 0:
+            continue
+        _add_named(module, inst, modules[module], line_off[hl] + rel)
+    return {
+        "const_map": const_map,
+        "ignore_concat": _IGNORE_CONCAT,
+        "instances": instances,
+    }
+
+
+def _process_named_instance(
+    nets: dict[str, InstNet],
+    module: str,
+    inst: str,
+    moddef: ModuleDef,
+    pin_exprs: list[tuple[str, str]],
+    param_values: dict,
+    directions: "tuple[str, ...] | None",
+    simple_only: bool,
+    concat_ok: bool,
+    const_map: dict[str, str],
+    ignore_concat: bool,
+) -> None:
+    """Phase 2 of _inst_driven_nets for one named-port instance: the
+    direction/simple/concat filtering and width computation over cached
+    pin data (cheap — rerunnable per pass)."""
+    from . import emacs
+
+    if directions is None:
+        # the AUTOWIRE driver set: outputs and inouts — an interface
+        # port connection is an interface instance, never a wire driver
+        inst_io = {
+            p.name: p for p in moddef.ports if p.direction in ("output", "inout")
+        }
+    else:
+        inst_io = {p.name: p for p in moddef.ports if p.direction in directions}
+    for pin, expr in pin_exprs:
+        if pin not in inst_io:
+            continue
+        stripped = emacs._strip_comments(expr).strip()
+        # only a `define/literal NET carries no declaration; a backtick
+        # inside a bit-select (net[`MACRO-1:0]) is fine
+        if (
+            not stripped
+            or stripped.startswith(("'", "`"))
+            or stripped[0].isdigit()
+        ):
+            continue
+        if stripped.startswith(("(", "{")):
+            # verilog-auto-ignore-concat: skip (default) or extract.
+            # CONCAT_OK is fact recording (AW/AREG "driven" sets, AIO
+            # "is this net wired internally anywhere"): there the
+            # identifiers in a {...}/(...) expression always count as
+            # connected, regardless of the candidacy exemption.
+            if not ignore_concat or concat_ok:
+                for net, ewidth in _expr_nets(stripped):
+                    if param_values:
+                        ewidth = emacs._apply_param_values(ewidth, param_values)
+                    if const_map:
+                        ewidth = emacs._apply_param_values(ewidth, const_map)
+                    _note_net(nets, InstNet(net, ewidth, inst, module))
+            continue
+        # Issue #1526: SV cast type'(expr) — extract inner expr for the
+        # simple-net check, so t'(x) counts as signal x for AIO candidacy
+        cast_m = re.match(r"^[a-zA-Z_]\w*'\s*\((.*)\)$", stripped)
+        check_expr = cast_m.group(1).strip() if cast_m else stripped
+        if simple_only and not _ELEM_NET.match(check_expr):
+            continue
+        net = conn_net_name(check_expr)
+        if net is None:
+            continue
+        port = inst_io[pin]
+        raw = port.width  # 'msb:lsb', None for scalar
+        width = "c0" if raw is None else raw.split(":")[0].strip()
+        if param_values:
+            width = emacs._apply_param_values(width, param_values)
+        if const_map:
+            width = emacs._apply_param_values(width, const_map)
+        # multi-dim packed port: prefer the dims in the EAI connection
+        # note (already param-value substituted), else the port's own
+        # packed ranges
+        pdims = _conn_packed_dims(expr) or (
+            tuple(_clean_dim(d) for d in port.packed)
+            if len(port.packed) > 1 else ()
+        )
+        if pdims and param_values:
+            pdims = tuple(
+                _clean_dim(emacs._apply_param_values(d, param_values))
+                for d in pdims
+            )
+        if pdims and const_map:
+            pdims = tuple(
+                _clean_dim(emacs._apply_param_values(d, const_map))
+                for d in pdims
+            )
+        from ._trace import trace_sig, tracing
+
+        if tracing(net):
+            trace_sig(
+                net,
+                f"conn-dims pin={pin} pdims={list(pdims)} width={width} "
+                f"inst={inst} module={module}",
+            )
+        _note_net(
+            nets,
+            InstNet(
+                net, width, inst, module, pdims, port.unpacked,
+                port.direction, port.signed, port.net_type, port.data_type,
+            ),
+        )
+        # unpacked-array element index: the note's ``.[idx]`` part, or
+        # the connection's own select when the port is unpacked
+        uidx = ""
+        um = re.search(r"\.\s*\[([^\]:]+)\]\s*\*/", expr)
+        if um:
+            uidx = um.group(1).strip()
+        elif port.unpacked:
+            em = _ELEM_NET.match(stripped)
+            if em:
+                ranges = re.findall(r"\[([^\]]+)\]", em.group(2))
+                # a select equal to the PACKED range is a packed
+                # bit-select of the whole array, not an element index
+                packed_txt = re.sub(r"\s+", "", port.packed[-1] if port.packed else "")
+                if ranges and re.sub(r"\s+", "", ranges[-1]) != packed_txt:
+                    uidx = ranges[-1].strip()
+        if uidx:
+            rec = nets[net]
+            if uidx not in rec.unpacked_idx:
+                from dataclasses import replace
+
+                nets[net] = replace(
+                    rec, unpacked_idx=tuple(rec.unpacked_idx) + (uidx,)
+                )
+
+
 def _inst_driven_nets(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef],
     directions: "tuple[str, ...] | None" = None,
     simple_only: bool = False,
     concat_ok: bool = False,
+    *,
+    _pin_scan: "dict | None" = None,
 ) -> dict[str, InstNet]:
     """net -> InstNet for every net connected to an output/inout port of an
     /*autoinst*/ instance — or a marker-less instance whose module name
@@ -412,171 +656,30 @@ def _inst_driven_nets(
     overrides (e.g. R_USER_WIDTH -> AR_INFO_WIDTH) so the declared wire
     names LOCAL symbols wherever the mapping provides them.  With
     ``verilog-auto-inst-param-value`` on, a width still naming a constant
-    parameter of THIS module folds to its integer value."""
-    from . import emacs
-    from .autodef import _param_value_on
+    parameter of THIS module folds to its integer value.
 
-    const_map: dict[str, str] = {}
-    if _param_value_on():
-        from .autodef import _const_symbols
-
-        const_map = {k: str(v) for k, v in _const_symbols(lines).items()}
-    text = "\n".join(lines)
-    text_masked = emacs.mask_comments(text)
+    The expensive per-instance pin extraction lives in
+    :func:`_inst_pin_scan`; pass its result as ``_pin_scan`` to skip it
+    (the AUTOLOGIC/AUTOWIRE/AUTOREG trio in aall shares one scan per
+    module span via :func:`_cached_pin_scan`)."""
+    # _PIN_SCAN: a cached _inst_pin_scan() result for this span (see
+    # _cached_pin_scan).  The expensive per-instance pin extraction is then
+    # skipped; only the cheap direction/simple/concat filtering reruns.
+    scan = _pin_scan if _pin_scan is not None else _inst_pin_scan(lines, modules)
+    const_map = scan["const_map"]
+    ignore_concat = scan["ignore_concat"]
     nets: dict[str, InstNet] = {}
-
-    def _scan(open_idx: int, module: str, inst: str, moddef: ModuleDef) -> None:
-        if directions is None:
-            # the AUTOWIRE driver set: outputs and inouts — an interface
-            # port connection is an interface instance, never a wire driver
-            inst_io = {
-                p.name: p for p in moddef.ports if p.direction in ("output", "inout")
-            }
+    for kind, module, inst, moddef_or_dirs, payload in scan["instances"]:
+        if kind == "primitive":
+            _primitive_nets_from_exprs(
+                payload, module, inst, moddef_or_dirs, nets, directions, simple_only
+            )
         else:
-            inst_io = {p.name: p for p in moddef.ports if p.direction in directions}
-        param_values = emacs.effective_param_values(
-            moddef, emacs.read_inst_param_values(text, open_idx, text_masked)
-        )
-        for pin, expr in emacs.inst_pin_connections(text, open_idx):
-            if pin not in inst_io:
-                continue
-            stripped = emacs._strip_comments(expr).strip()
-            # only a `define/literal NET carries no declaration; a backtick
-            # inside a bit-select (net[`MACRO-1:0]) is fine
-            if (
-                not stripped
-                or stripped.startswith(("'", "`"))
-                or stripped[0].isdigit()
-            ):
-                continue
-            if stripped.startswith(("(", "{")):
-                # verilog-auto-ignore-concat: skip (default) or extract.
-                # CONCAT_OK is fact recording (AW/AREG "driven" sets, AIO
-                # "is this net wired internally anywhere"): there the
-                # identifiers in a {...}/(...) expression always count as
-                # connected, regardless of the candidacy exemption.
-                if not _IGNORE_CONCAT or concat_ok:
-                    for net, ewidth in _expr_nets(stripped):
-                        if param_values:
-                            ewidth = emacs._apply_param_values(ewidth, param_values)
-                        if const_map:
-                            ewidth = emacs._apply_param_values(ewidth, const_map)
-                        _note_net(nets, InstNet(net, ewidth, inst, module))
-                continue
-            # Issue #1526: SV cast type'(expr) — extract inner expr for the
-            # simple-net check, so t'(x) counts as signal x for AIO candidacy
-            cast_m = re.match(r"^[a-zA-Z_]\w*'\s*\((.*)\)$", stripped)
-            check_expr = cast_m.group(1).strip() if cast_m else stripped
-            if simple_only and not _ELEM_NET.match(check_expr):
-                continue
-            net = conn_net_name(check_expr)
-            if net is None:
-                continue
-            port = inst_io[pin]
-            raw = port.width  # 'msb:lsb', None for scalar
-            width = "c0" if raw is None else raw.split(":")[0].strip()
-            if param_values:
-                width = emacs._apply_param_values(width, param_values)
-            if const_map:
-                width = emacs._apply_param_values(width, const_map)
-            # multi-dim packed port: prefer the dims in the EAI connection
-            # note (already param-value substituted), else the port's own
-            # packed ranges
-            pdims = _conn_packed_dims(expr) or (
-                tuple(_clean_dim(d) for d in port.packed)
-                if len(port.packed) > 1 else ()
+            pin_exprs, param_values = payload
+            _process_named_instance(
+                nets, module, inst, moddef_or_dirs, pin_exprs, param_values,
+                directions, simple_only, concat_ok, const_map, ignore_concat,
             )
-            if pdims and param_values:
-                pdims = tuple(
-                    _clean_dim(emacs._apply_param_values(d, param_values))
-                    for d in pdims
-                )
-            if pdims and const_map:
-                pdims = tuple(
-                    _clean_dim(emacs._apply_param_values(d, const_map))
-                    for d in pdims
-                )
-            from ._trace import trace_sig, tracing
-
-            if tracing(net):
-                trace_sig(
-                    net,
-                    f"conn-dims pin={pin} pdims={list(pdims)} width={width} "
-                    f"inst={inst} module={module}",
-                )
-            _note_net(
-                nets,
-                InstNet(
-                    net, width, inst, module, pdims, port.unpacked,
-                    port.direction, port.signed, port.net_type, port.data_type,
-                ),
-            )
-            # unpacked-array element index: the note's ``.[idx]`` part, or
-            # the connection's own select when the port is unpacked
-            uidx = ""
-            um = re.search(r"\.\s*\[([^\]:]+)\]\s*\*/", expr)
-            if um:
-                uidx = um.group(1).strip()
-            elif port.unpacked:
-                em = _ELEM_NET.match(stripped)
-                if em:
-                    ranges = re.findall(r"\[([^\]]+)\]", em.group(2))
-                    # a select equal to the PACKED range is a packed
-                    # bit-select of the whole array, not an element index
-                    packed_txt = re.sub(r"\s+", "", port.packed[-1] if port.packed else "")
-                    if ranges and re.sub(r"\s+", "", ranges[-1]) != packed_txt:
-                        uidx = ranges[-1].strip()
-            if uidx:
-                rec = nets[net]
-                if uidx not in rec.unpacked_idx:
-                    from dataclasses import replace
-
-                    nets[net] = replace(
-                        rec, unpacked_idx=tuple(rec.unpacked_idx) + (uidx,)
-                    )
-
-    markers = emacs.find_auto_markers(lines, "autoinst")
-    stacks = emacs._scan_parens_at(text, [m.offset for m in markers])
-    for marker in markers:
-        st = stacks[marker.offset]
-        if not st:
-            continue
-        open_idx = st[-1]
-        try:
-            module, inst = emacs._resolve_instance_at(text, open_idx, text_masked)
-        except ValueError:
-            continue
-        moddef = modules.get(module)
-        if moddef is None:
-            # Gate primitive (or/buf/etc.): parse positional ports.
-            # Array instance resolution (u_or [31:0]) is handled in
-            # _resolve_instance_at.
-            if module in emacs._GATE_PRIMITIVES:
-                _primitive_nets(
-                    text, open_idx, module, inst,
-                    emacs._GATE_PRIMITIVES[module],
-                    nets, directions, simple_only,
-                )
-            continue
-        _scan(open_idx, module, inst, moddef)
-    # marker-less instances whose module name resolves in MODULES (the same
-    # rule autodef documents): their named .port(net) connections are
-    # drivers too.  A marked instance is matched here as well; rescanning
-    # it is a no-op (same-driver records are idempotent in _note_net).
-    from .autodef import _instance_headers
-
-    line_off = [0]
-    for ln in lines:
-        line_off.append(line_off[-1] + len(ln) + 1)
-    for i, (module, inst, hdr_end) in _instance_headers(lines, modules).items():
-        hl = i if hdr_end < 0 else hdr_end
-        pos = lines[hl].find(inst)
-        if pos < 0:
-            continue
-        rel = lines[hl].find("(", pos + len(inst))
-        if rel < 0:
-            continue
-        _scan(line_off[hl] + rel, module, inst, modules[module])
     return nets
 
 
@@ -673,25 +776,36 @@ def _regen(
 # AUTOWIRE (verilog-auto-wire)
 
 
-def auto_wire(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[str]:
+def auto_wire(
+    lines: Sequence[str],
+    modules: Mapping[str, ModuleDef],
+    pin_scan_cache: "dict | None" = None,
+) -> list[str]:
     """Regenerate the /*AUTOWIRE*/ wire declarations of a module.
 
     Declares every net driven by an output/inout port of an /*autoinst*/
     instance that is not already declared (port, wire/reg/usrdef, parameter,
     or `define).  MODULES maps instance module names to their parsed
     definitions, as in :func:`verilog_tooling.inst.auto_inst`.
+    PIN_SCAN_CACHE shares the per-span instance pin scan with the
+    AUTOLOGIC/AUTOREG passes (see _cached_pin_scan); None scans inline.
     """
     lines = kill_auto_wire(lines)
     full = list(lines)
     from .inst import map_module_spans
 
     return map_module_spans(
-        lines, _AUTOWIRE_MARK_FULL, lambda span: _auto_wire_single(span, modules, full)
+        lines,
+        _AUTOWIRE_MARK_FULL,
+        lambda span: _auto_wire_single(span, modules, full, pin_scan_cache),
     )
 
 
 def _auto_wire_single(
-    lines: Sequence[str], modules: Mapping[str, ModuleDef], full: Sequence[str]
+    lines: Sequence[str],
+    modules: Mapping[str, ModuleDef],
+    full: Sequence[str],
+    pin_scan_cache: "dict | None" = None,
 ) -> list[str]:
     """AUTOWIRE for ONE module span (FULL is the whole buffer, for the
     compilation-unit `define set)."""
@@ -704,7 +818,10 @@ def _auto_wire_single(
     from .autodef import set_param_value
 
     set_param_value(parse_param_value(full))
-    driven = _inst_driven_nets(lines, modules, concat_ok=True)
+    driven = _inst_driven_nets(
+        lines, modules, concat_ok=True,
+        _pin_scan=_cached_pin_scan(pin_scan_cache, lines, modules),
+    )
     if not driven:
         return list(lines)
     ports, usrdef, _ = _module_tables(lines)
@@ -796,25 +913,36 @@ def _auto_wire_single(
 # AUTOREG (verilog-auto-reg)
 
 
-def auto_reg(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = None) -> list[str]:
+def auto_reg(
+    lines: Sequence[str],
+    modules: Mapping[str, ModuleDef] | None = None,
+    pin_scan_cache: "dict | None" = None,
+) -> list[str]:
     """Regenerate the /*AUTOREG*/ reg declarations of a module.
 
     Declares every output port of the current module that carries no
     wire/reg keyword and is not otherwise declared, assign-driven, or driven
     by an instance output/inout.  MODULES (optional) is used for the
     instance-driven exclusion, as in :func:`auto_wire`.
+    PIN_SCAN_CACHE shares the per-span instance pin scan with the
+    AUTOLOGIC/AUTOWIRE passes (see _cached_pin_scan); None scans inline.
     """
     lines = kill_auto_reg(lines)
     full = list(lines)
     from .inst import map_module_spans
 
     return map_module_spans(
-        lines, _AUTOREG_MARK_FULL, lambda span: _auto_reg_single(span, modules, full)
+        lines,
+        _AUTOREG_MARK_FULL,
+        lambda span: _auto_reg_single(span, modules, full, pin_scan_cache)
     )
 
 
 def _auto_reg_single(
-    lines: Sequence[str], modules: Mapping[str, ModuleDef] | None, full: Sequence[str]
+    lines: Sequence[str],
+    modules: Mapping[str, ModuleDef] | None,
+    full: Sequence[str],
+    pin_scan_cache: "dict | None" = None,
 ) -> list[str]:
     """AUTOREG for ONE module span (FULL for the compilation-unit `define set)."""
     set_ignore_concat(parse_ignore_concat(full))
@@ -822,7 +950,12 @@ def _auto_reg_single(
 
     set_param_value(parse_param_value(full))
     ports, usrdef, assigns = _module_tables(lines)
-    driven = set(_inst_driven_nets(lines, modules or {}, concat_ok=True))
+    driven = set(
+        _inst_driven_nets(
+            lines, modules or {}, concat_ok=True,
+            _pin_scan=_cached_pin_scan(pin_scan_cache, lines, modules or {}),
+        )
+    )
     excluded = set(usrdef.signals) | assigns | driven
     excluded |= get_all_defs(full) | get_all_paras(lines)
     from ._trace import trace_sig, tracing

@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 from verilog_tooling import arg as arg_mod
-from verilog_tooling import autodef, inout, inst, wire
+from verilog_tooling import autodef, inout, inst, misc, wire
 from verilog_tooling.inst import _resolve_module_files
 
 SUB = """\
@@ -303,3 +303,47 @@ def test_aall_periph_sys_unresolved_regressions(tmp_path, capsys):
     # D: the '0 literal is not a signal
     assert "0" not in unresolved
 
+
+
+TRIO_TOP = """\
+module top (
+    /*autoarg*/
+);
+input        clk;
+input  [7:0] din;
+output       done;
+output [7:0] q;
+/*autodef*/
+/*AUTOWIRE*/
+/*AUTOREG*/
+/*AUTOLOGIC*/
+/*AUTOINPUT*/
+/*AUTOOUTPUT*/
+
+sub u_sub0 (.clk(clk), .din(din), .dout(q), .sub_done(done));
+sub u_sub1 (.clk(clk), .din(din), .dout(q), .sub_done(done));
+endmodule
+"""
+
+
+def test_pin_scan_cache_shared_by_logic_wire_reg(tmp_path):
+    """Perf: AUTOLOGIC/AUTOWIRE/AUTOREG share one _inst_pin_scan per module
+    span (3 full instance scans -> 1).  The cached trio must be
+    byte-identical to the uncached sequential runs, and the later passes
+    must hit the cache instead of rescanning."""
+    modules = {"sub": inst.parse_module_ports(SUB.splitlines(), with_params=True)}
+    lines = TRIO_TOP.splitlines()
+
+    ref = misc.auto_logic(lines, modules)
+    ref = wire.auto_wire(ref, modules)
+    ref = wire.auto_reg(ref, modules)
+    assert "q" in "\n".join(ref)  # the scan really found driven nets
+
+    cache: dict = {}
+    got = misc.auto_logic(lines, modules, cache)
+    assert len(cache) == 1  # one span: AUTOLOGIC fills the cache
+    assert len(cache["top"]["instances"]) == 2
+    got = wire.auto_wire(got, modules, cache)
+    got = wire.auto_reg(got, modules, cache)
+    assert len(cache) == 1  # AUTOWIRE/AUTOREG reused it — no rescan
+    assert got == ref

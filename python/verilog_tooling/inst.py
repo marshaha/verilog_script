@@ -2669,11 +2669,14 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     lines = xfer.auto_assign_modport(lines, ifaces)
     _log("aall: AUTOASSIGNMODPORT done")
     # 13. AUTOLOGIC; 14. AUTOWIRE; 15. AUTOREG; 16. AUTOREGINPUT;
-    # 17. AUTOOUTPUTEVERY
-    lines = misc.auto_logic(lines, modules_w)
+    # 17. AUTOOUTPUTEVERY.  The trio shares one per-span instance pin scan:
+    # none of them modifies instances, only declaration lines, so the pin
+    # data extracted once stays valid for all three (3 full scans -> 1).
+    pin_scan_cache: dict = {}
+    lines = misc.auto_logic(lines, modules_w, pin_scan_cache)
     _log("aall: AUTOLOGIC done")
-    lines = wire.auto_wire(lines, modules_w)
-    lines = wire.auto_reg(lines, modules_w)
+    lines = wire.auto_wire(lines, modules_w, pin_scan_cache)
+    lines = wire.auto_reg(lines, modules_w, pin_scan_cache)
     lines = autodef.auto_def_t(lines, modules_w)
     _log("aall: AUTOWIRE/AUTOREG/autodef done")
     lines = xfer.auto_reginput(lines, modules_w)
