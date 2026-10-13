@@ -726,6 +726,17 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
         if _local_arg_sort(lines):
             inputs, outputs, inouts = sorted(inputs), sorted(outputs), sorted(inouts)
         declared = set(inputs) | set(outputs) | set(inouts)
+        # A signal explicitly declared as wire/reg/logic in the body is
+        # internal by user intent — do not infer it as an inout port even
+        # if it connects to an inout pin (user feedback: internal inout
+        # nets were wrongly promoted to top-level ports).
+        for _ln in _filter_lines(body):
+            _m = re.match(
+                r"\s*(?:wire|reg|logic)\b[^;]*?\b([a-zA-Z_]\w*)\s*(?:\[.*?\])?\s*[;,=]",
+                _ln,
+            )
+            if _m:
+                declared.add(_m.group(1))
         infer = sorted(
             name for name in old_names if name in inout_nets and name not in declared
         )
