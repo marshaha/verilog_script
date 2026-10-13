@@ -307,11 +307,14 @@ def _inout_sigs(
     /*AUTOWIRE*/ territory, declared as wire, not inout).
     """
     inout_nets = _inst_driven_nets(lines, modules, ("inout",), simple_only=True)
-    ports, _, _ = _module_tables(lines)
+    ports, usrdef, _ = _module_tables(lines)
     excluded = set(ports.signals) | _declared_port_names(lines)
     excluded |= _connected_names(lines, modules, ("input",)) | _connected_names(
         lines, modules, ("output",)
     )
+    # Nets explicitly declared as wire/reg/logic in the body are internal by
+    # user intent — never promote them to top-level inout ports.
+    excluded |= set(usrdef.signals)
     from .libdirs import parse_typedef_regexp
     from .inst import set_typedef_regexp
 
@@ -326,10 +329,6 @@ def _inout_sigs(
         if typedef_re and re.search(typedef_re, name):
             continue
         net = inout_nets[name]
-        # Internal bus: connected to multiple instances' inout pins —
-        # AUTOWIRE territory (wire), not an inout port.
-        if net.multi:
-            continue
         if not _declarable(net, local_syms):
             continue
         sigs.append(

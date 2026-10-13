@@ -793,3 +793,49 @@ endmodule
     # re-declared as a module input (was: `input val;`)
     assert not any(ln.startswith("input") and "val" in ln for ln in out)
     assert any(ln.startswith("input") and "clk" in ln for ln in out)
+
+
+def test_autoinout_multi_instance_undeclared_promoted_to_port():
+    """An undeclared inout net connected to multiple instances becomes a
+    top-level inout port (verilog-mode autoinout_v2k.v parity)."""
+    sub_a = "module sub_a (inout [3:0] bus_io);\nendmodule"
+    sub_b = "module sub_b (inout [3:0] bus_io);\nendmodule"
+    from verilog_tooling.inst import parse_module_ports
+    mods = {
+        "sub_a": parse_module_ports(sub_a.splitlines()),
+        "sub_b": parse_module_ports(sub_b.splitlines()),
+    }
+    top = """\
+module top (
+/*AUTOINOUT*/
+);
+sub_a u_a (.bus_io(bus_io));
+sub_b u_b (.bus_io(bus_io));
+endmodule
+"""
+    out = auto_inout(top.splitlines(), mods)
+    assert any("inout" in ln and "bus_io" in ln for ln in out)
+
+
+def test_autoinout_wire_declared_multi_instance_stays_internal():
+    """An inout net explicitly declared as wire/reg/logic in the body is an
+    internal bus by user intent and must not be duplicated into an inout port."""
+    sub_a = "module sub_a (inout [3:0] bus_io);\nendmodule"
+    sub_b = "module sub_b (inout [3:0] bus_io);\nendmodule"
+    from verilog_tooling.inst import parse_module_ports
+    mods = {
+        "sub_a": parse_module_ports(sub_a.splitlines()),
+        "sub_b": parse_module_ports(sub_b.splitlines()),
+    }
+    top = """\
+module top (
+/*AUTOINOUT*/
+);
+wire [3:0] bus_io;
+sub_a u_a (.bus_io(bus_io));
+sub_b u_b (.bus_io(bus_io));
+endmodule
+"""
+    out = auto_inout(top.splitlines(), mods)
+    assert not any("inout" in ln and "bus_io" in ln for ln in out)
+

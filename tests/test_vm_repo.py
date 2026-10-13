@@ -41,6 +41,23 @@ VERILOG_MODE_EL = VM_REPO / "verilog-mode.el"
 RESULTS_PATH = Path(os.environ.get("VM_REPO_RESULTS", "/tmp/vm_repo_results.json"))
 
 if not (TESTS_OK.is_dir() and VERILOG_MODE_EL.is_file()):
+    try:
+        if not VM_REPO.is_dir():
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "https://github.com/veripool/verilog-mode.git", str(VM_REPO)],
+                check=True,
+                capture_output=True,
+            )
+        elif not VERILOG_MODE_EL.is_file():
+            subprocess.run(
+                ["curl", "-sL", "-o", str(VERILOG_MODE_EL), "https://raw.githubusercontent.com/veripool/verilog-mode/master/verilog-mode.el"],
+                check=True,
+                capture_output=True,
+            )
+    except Exception:
+        pass
+
+if not (TESTS_OK.is_dir() and VERILOG_MODE_EL.is_file()):
     pytest.skip(
         f"verilog-mode repo not found at {VM_REPO} (set VM_REPO_DIR)",
         allow_module_level=True,
