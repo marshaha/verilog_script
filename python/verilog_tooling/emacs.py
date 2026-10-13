@@ -640,6 +640,21 @@ def read_auto_python(text: str, upto: int) -> dict:
     return env
 
 
+def _read_auto_python_inline(text: str, upto: int, base_env: dict | None = None) -> dict:
+    """Evaluate inline ``/*AUTO_PYTHON(...)*/`` blocks before UPTO, starting
+    from a precomputed BASE_ENV (file-local Python files, hoisted by the
+    caller). This avoids re-scanning file-local vars per instance (perf)."""
+    env: dict = dict(base_env) if base_env else {}
+    for m in re.finditer(r"/\*\s*AUTO_PYTHON\s*\(", text[:upto]):
+        expr, _ = _balanced(text[:upto], m.end() - 1)
+        try:
+            code = compile(expr, "<AUTO_PYTHON>", "exec")
+            exec(code, {"__builtins__": {}}, env)
+        except Exception as exc:  # noqa: BLE001 - report and continue
+            raise ValueError(f"AUTO_PYTHON evaluation failed: {expr!r}: {exc}") from exc
+    return env
+
+
 # ---------------------------------------------------------------------------
 # module parameter parsing (verilog-decls-get-gparams: `parameter`, not
 # `localparam`, in declaration order)
@@ -1308,6 +1323,22 @@ def auto_inst(
     # mask once: _resolve_instance_at needs the masked text, and masking
     # the full buffer per-instance is O(n^2) on many instances (perf)
     m_full = mask_comments(text)
+    # file-local vars are per-file, not per-instance: hoist out of the loop
+    # (was O(n) regex scans on many instances)
+    template_required = _inst_template_required(lines)
+    inst_vector = _inst_vector(lines)
+    simplify = _local_simplify_expressions(lines)
+    # file-local Python files: load once, not per-instance
+    py_base_env: dict = {}
+    for py_file in _local_python_files(lines):
+        resolved = _resolve_python_file(py_file)
+        if resolved:
+            try:
+                py_base_env.update(_load_python_file(resolved))
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(
+                    f"AUTO_PYTHON file {py_file!r} load failed: {exc}"
+                ) from exc
     for marker in reversed(markers):
         stack = stacks[marker.offset]
         if not stack:
@@ -1336,11 +1367,12 @@ def auto_inst(
             text = _auto_inst_one(
                 text, marker, open_idx, close_idx, moddef, module, inst,
                 templates, sort, dot_name, column, param_value, is_star, star_save,
-                template_required=_inst_template_required(lines),
-                inst_vector=_inst_vector(lines),
-                simplify=_local_simplify_expressions(lines),
+                template_required=template_required,
+                inst_vector=inst_vector,
+                simplify=simplify,
                 m_full=m_full,
                 templated_comment=templated_comment,
+                py_base_env=py_base_env,
             )
         except ValueError as exc:
             # AUTO_LISP / @"..." template evaluation outside the Python
@@ -1358,15 +1390,17 @@ def _auto_inst_one(
     text, marker, open_idx, close_idx, moddef, module, inst,
     templates, sort, dot_name, column, param_value, is_star, star_save,
     template_required=False, inst_vector="t", simplify=True,
-    m_full=None, templated_comment=True,
+    m_full=None, templated_comment=True, py_base_env=None,
 ):
     # m_full: precomputed mask_comments(text) from the caller. The auto_inst
     # loop rewrites bottom-up, so text before open_idx is unchanged and the
     # cached mask stays valid for read_inst_param_values (which scans back).
+    # py_base_env: precomputed file-local Python env (auto_inst hoists it;
+    # per-instance inline AUTO_PYTHON blocks are still scanned here).
     lisp_env = read_auto_lisp(text, marker.offset)
     # AUTO_PYTHON user functions merge into the template expression scope
     # (Python-native alternative to elisp defun)
-    lisp_env.update(read_auto_python(text, marker.offset))
+    lisp_env.update(_read_auto_python_inline(text, marker.offset, py_base_env))
     tpl = (
         template_for_module(
             list(templates), module, before_line=text.count("\n", 0, marker.offset)
