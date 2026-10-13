@@ -658,6 +658,7 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
     bare_by_module: list[bool] = []
     skip_by_module: list[bool] = []
     orig_spans: list[list[str]] = []
+    dt_ports_by_module: list[list[str]] = []
     _k = 0
     while _k < len(lines):
         if re.match(r"\s*module\b", lines[_k]):
@@ -668,6 +669,16 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
             orig_spans.append(_span)
             bare_by_module.append(_header_region_is_bare_name_list(_span))
             skip_by_module.append(_autoarg_header_has_preproc(_span))
+            # Scan header for hand-written ports protected by //DT
+            _header_close = next((idx for idx, ln in enumerate(_span) if _CLOSE.search(ln)), len(_span))
+            _mod_dts: list[str] = []
+            for _hln in _span[: _header_close + 1]:
+                if re.search(r"//\s*DT\b", _hln, re.IGNORECASE):
+                    _code = re.sub(r"//.*$", "", _hln).strip().rstrip(",")
+                    _pm = re.search(r"\b([A-Za-z_]\w*)\s*$", _code)
+                    if _pm:
+                        _mod_dts.append(_pm.group(1))
+            dt_ports_by_module.append(_mod_dts)
             _k = _j + 1
         else:
             _k += 1
@@ -740,6 +751,11 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
         infer = sorted(
             name for name in old_names if name in inout_nets and name not in declared
         )
+        # Ports in the header protected by //DT are preserved by user intent
+        dt_ports = dt_ports_by_module[mod_idx] if mod_idx < len(dt_ports_by_module) else []
+        for _dp in dt_ports:
+            if _dp not in declared and _dp not in infer:
+                infer.append(_dp)
         # ANSI io declarations in the header move to the body (1995 style):
         # the regenerated name list would otherwise leave them dangling
         keep_bare = mod_idx < len(bare_by_module) and bare_by_module[mod_idx]

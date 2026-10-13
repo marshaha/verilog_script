@@ -805,3 +805,19 @@ def test_auto_arg_non_ansi_untouched_by_consume():
     out = auto_arg(lines)
     assert "input a;" in out and "output b;" in out
     assert auto_arg(out) == out
+
+
+def test_auto_arg_dt_protected_ports_not_dropped():
+    """Hand-written ports protected with //DT in the header must not be dropped."""
+    lines = [
+        "module m (/*autoarg*/",
+        "    custom_port, //DT",
+        ");",
+        "input clk;",
+        "endmodule",
+    ]
+    out = auto_arg(lines)
+    text = "\n".join(out)
+    assert "custom_port" in text
+    assert "clk" in text
+
