@@ -548,9 +548,14 @@ def _process_named_instance(
                     _note_net(nets, InstNet(net, ewidth, inst, module))
             continue
         # Issue #1526: SV cast type'(expr) — extract inner expr for the
-        # simple-net check, so t'(x) counts as signal x for AIO candidacy
-        cast_m = re.match(r"^[a-zA-Z_]\w*'\s*\((.*)\)$", stripped)
-        check_expr = cast_m.group(1).strip() if cast_m else stripped
+        # simple-net check, so t'(x) counts as signal x for AIO candidacy.
+        # Fast path: only run the cast regex when there's a quote (casts
+        # and literals are rare; the regex backtracks on every pin).
+        if "'" in stripped:
+            cast_m = re.match(r"^[a-zA-Z_]\w*'\s*\((.*)\)$", stripped)
+            check_expr = cast_m.group(1).strip() if cast_m else stripped
+        else:
+            check_expr = stripped
         if simple_only and not _ELEM_NET.match(check_expr):
             continue
         net = conn_net_name(check_expr)
