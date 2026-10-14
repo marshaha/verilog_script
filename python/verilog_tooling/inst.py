@@ -52,7 +52,7 @@ _LOG_T0: float | None = None
 
 
 _ARG_PORT_MARK = re.compile(r"/\*\s*\b(?:autoarg|AUTOARG)\b")
-_ARG_PORT_CLOSE = re.compile(r"\);\s*$")
+_ARG_PORT_CLOSE = re.compile(r"\)\s*;\s*$")
 _ARG_PORT_NOT_LIST = re.compile(
     r";|\b(?:input|output|inout|wire|reg|logic|assign|always|module|endmodule)\b"
 )

@@ -90,7 +90,7 @@ _INST_PORT = re.compile(r"^\s*\.\w+\s*\(\s*\w+.*\)")
 _PART_SELECT = re.compile(r"\b(\w+)\s*\[([^\]]*?)\s*([+|-])\s*:\s*([^\]]*?)\s*\]\s*")
 # genvar declarations / generate block labels (`begin : name`) — never signals
 _GENERATE_LABEL = re.compile(r"\bbegin\s*:\s*(\w+)")
-_GENVAR_DECL = re.compile(r"\bgenvar\s+(.+?);")
+_GENVAR_DECL = re.compile(r"\bgenvar\s+(.+?)\s*;")
 
 _MAX_LEN_FLOOR = 39  # automatic.vim s:autodef_max_len (AUTODEF only; AUTOWIRE uses dynamic)
 _TYPE_FIELD = 12  # 'wire '/'reg  ' padded to 12 columns (CalMargin(12, 5))
@@ -1672,7 +1672,7 @@ def _generate_regions(lines: Sequence[str]) -> list[tuple[int, int]]:
     return regions
 
 
-_INT_GENVAR_DECL = re.compile(r"\b(?:integer|genvar)\s+([^;]+);")
+_INT_GENVAR_DECL = re.compile(r"\b(?:integer|genvar)\s+([^;]+?)\s*;")
 
 
 def _declared_loop_vars(lines: Sequence[str]) -> set[str]:
