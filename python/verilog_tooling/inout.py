@@ -215,7 +215,7 @@ def _input_sigs(
     everything declared or driven inside the module.  An undeclared
     assign-driven net IS a candidate (verilog-mode parity — promote it to a
     port and drop the assign yourself)."""
-    in_nets = _inst_driven_nets(lines, modules, ("input",), simple_only=True)
+    in_nets = _inst_driven_nets(lines, modules, ("input",), simple_only=True, concat_ok=True)
     driven = _connected_names(lines, modules, None)
     ports, usrdef, _ = _module_tables(lines)
     declared = set(ports.signals) | _declared_port_names(lines)
@@ -260,7 +260,7 @@ def _output_sigs(
     this module's ports and nets feeding an instance input/inout (those are
     internal — /*AUTOWIRE*/ territory).  Declared wires/params are NOT
     excluded, exactly as verilog-mode."""
-    out_nets = _inst_driven_nets(lines, modules, ("output",), simple_only=True)
+    out_nets = _inst_driven_nets(lines, modules, ("output",), simple_only=True, concat_ok=True)
     ports, _, _ = _module_tables(lines)
     excluded = set(ports.signals) | _declared_port_names(lines)
     excluded |= _connected_names(lines, modules, ("input",)) | _connected_names(
@@ -306,7 +306,7 @@ def _inout_sigs(
     used internally (connected to multiple instances — those are
     /*AUTOWIRE*/ territory, declared as wire, not inout).
     """
-    inout_nets = _inst_driven_nets(lines, modules, ("inout",), simple_only=True)
+    inout_nets = _inst_driven_nets(lines, modules, ("inout",), simple_only=True, concat_ok=True)
     ports, usrdef, _ = _module_tables(lines)
     excluded = set(ports.signals) | _declared_port_names(lines)
     excluded |= _connected_names(lines, modules, ("input",)) | _connected_names(
