@@ -46,7 +46,7 @@ _ARG_MAX_COL = 40  # s:vlog_max_col
 
 _MARK = re.compile(r"/\*\s*\b(?:autoarg|AUTOARG)\b")
 _MARK_LINE = re.compile(r"/\*\s*\b(?:autoarg|AUTOARG)\b.*")
-_CLOSE = re.compile(r"\);\s*$")
+_CLOSE = re.compile(r"\)\s*;\s*$")
 
 _FUNCTION_OPEN = re.compile(r"^\s*function\b")
 _FUNCTION_CLOSE = re.compile(r"^\s*endfunction\b")
@@ -100,7 +100,7 @@ def _dir_segments(text: str) -> "list[tuple[str, str]]":
 
 # a generated port-list region ends with a bare `);` line (anything else on
 # the line means it is someone else's close paren, e.g. an instance's)
-_REGION_END = re.compile(r"^\s*\);\s*$")
+_REGION_END = re.compile(r"^\s*\)\s*;\s*$")
 # a generated port-list region holds only section comments, bare names and
 # blank lines; anything else (a `;`, a declaration/keyword) means the marker
 # sits OUTSIDE a header (e.g. after the header's own `);`) and the scan must
@@ -585,10 +585,15 @@ def _autoarg_header_has_preproc(lines: Sequence[str]) -> bool:
     mk = next((k for k, ln in enumerate(lines) if _MARK_LINE.search(ln)), None)
     if mk is None:
         return False
-    end = next(
-        (k for k in range(mk, len(lines)) if _REGION_END.search(lines[k])),
-        len(lines) - 1,
-    )
+    # If the marker line itself closes the header (e.g. `module m (/*AUTOARG*/) ;`),
+    # the header is just that line — don't scan the body.
+    if _CLOSE.search(lines[mk]):
+        end = mk
+    else:
+        end = next(
+            (k for k in range(mk, len(lines)) if _REGION_END.search(lines[k])),
+            len(lines) - 1,
+        )
     return any(_PREPROC_LINE.search(ln) for ln in lines[mk : end + 1])
 
 
