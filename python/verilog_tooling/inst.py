@@ -2498,6 +2498,12 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     from . import arg, autodef, emacs, fmt, inout, misc, sense, wire, xfer
     from .libdirs import parse_typedef_regexp
 
+    # Set file-local settings (verilog-auto-inst-param-value etc.)
+    from .autodef import set_param_value
+    set_param_value(wire.parse_param_value(lines))
+    from .wire import set_ignore_concat, parse_ignore_concat
+    set_ignore_concat(parse_ignore_concat(lines))
+
     # emacs verilog-delete-auto-buffer ("Clear existing autos else we'll be
     # screwed by existing ones"): drop last round's regions up front — left
     # in place, their declarations would poison this round's exclusions

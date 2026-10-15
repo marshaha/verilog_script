@@ -550,11 +550,18 @@ def _inst_driven_nets(
                     f"conn-dims pin={pin} pdims={list(pdims)} width={width} "
                     f"inst={inst} module={module}",
                 )
+            # Apply param substitution to data_type (e.g. OUT_t -> upper_t
+            # via #(.OUT_t(upper_t)) when verilog-auto-inst-param-value is on)
+            data_type = port.data_type
+            if data_type and param_values:
+                data_type = emacs._apply_param_values(data_type, param_values)
+            if data_type and const_map:
+                data_type = emacs._apply_param_values(data_type, const_map)
             _note_net(
                 nets,
                 InstNet(
                     net, width, inst, module, pdims, port.unpacked,
-                    port.direction, port.signed, port.net_type, port.data_type,
+                    port.direction, port.signed, port.net_type, data_type,
                 ),
             )
             # unpacked-array element index: the note's ``.[idx]`` part, or
