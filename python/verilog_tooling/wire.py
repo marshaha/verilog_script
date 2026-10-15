@@ -283,9 +283,9 @@ def _expr_nets(expr: str) -> "list[tuple[str, str]]":
 
 
 def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
-    """Add REC to NETS, first driver winning; a second driver from a
-    DIFFERENT instance marks the net multi (its comment gets ", ...",
-    like verilog-mode's sig comment for a repeated signal)."""
+    """Add REC to NETS; a second driver from a DIFFERENT instance marks the
+    net multi (its comment gets ", ...", like verilog-mode's sig comment
+    for a repeated signal) and keeps the maximum width."""
     prev = nets.get(rec.name)
     if prev is None:
         nets[rec.name] = rec
@@ -297,10 +297,46 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
                 f"first-driven inst={rec.inst} module={rec.module} "
                 f"width={rec.width} pdims={list(rec.packed_dims)}",
             )
-    elif (prev.inst, prev.module) != (rec.inst, rec.module) and not prev.multi:
+    elif (prev.inst, prev.module) != (rec.inst, rec.module):
         from dataclasses import replace
+        from .autodef import _eval_bound
 
-        nets[rec.name] = replace(prev, multi=True)
+        # Multiple drivers: keep the maximum width (max MSB, min LSB).
+        # Evaluate MSB expressions (e.g. "224*1-1" -> 223) and take max.
+        def _msb_val(w: str):
+            if w == "c0":
+                return 0
+            v = _eval_bound(w, {})
+            return v if isinstance(v, int) else None
+
+        def _parse_range(r: str):
+            # "223:128" -> (223, 128)
+            parts = r.split(":")
+            if len(parts) != 2:
+                return None
+            msb = _eval_bound(parts[0].strip(), {})
+            lsb = _eval_bound(parts[1].strip(), {})
+            if isinstance(msb, int) and isinstance(lsb, int):
+                return (msb, lsb)
+            return None
+
+        prev_v = _msb_val(prev.width)
+        rec_v = _msb_val(rec.width)
+        # Use the wider one's width text; if either is non-numeric, keep prev.
+        new_width = prev.width
+        new_pdims = prev.packed_dims
+        if prev_v is not None and rec_v is not None:
+            if rec_v > prev_v:
+                new_width = rec.width
+            # Merge packed dims: max MSB, min LSB
+            if prev.packed_dims and rec.packed_dims:
+                pr = _parse_range(prev.packed_dims[0])
+                rr = _parse_range(rec.packed_dims[0])
+                if pr and rr:
+                    max_msb = max(pr[0], rr[0])
+                    min_lsb = min(pr[1], rr[1])
+                    new_pdims = (f"{max_msb}:{min_lsb}",)
+        nets[rec.name] = replace(prev, multi=True, width=new_width, packed_dims=new_pdims)
         from ._trace import trace_sig
 
         trace_sig(prev.name, f"multi-driver inst={rec.inst} module={rec.module}")
