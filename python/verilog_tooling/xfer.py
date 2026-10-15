@@ -515,7 +515,7 @@ _ENDCLOCKING_RE = re.compile(r"^\s*endclocking\b")
 _MODPORT_HEAD_RE = re.compile(r"^\s*modport\s+(\w+)\s*\(")
 _DIR_ITEM_RE = re.compile(r"^\s*(input|output|inout)\b\s*(.*?)\s*$")
 _IFACE_VAR_RE = re.compile(
-    r"^\s*([a-zA-Z_]\w*)\s+(signed\s+)?((?:\[[^\]]+\]\s*)+)?"
+    r"^\s*([a-zA-Z_]\w*)\s*(signed\s+)?((?:\[[^\]]+\]\s*)+)?"
     r"([a-zA-Z_]\w*(?:\s*,\s*[a-zA-Z_]\w*)*)\s*;\s*$"
 )
 _IFACE_DECL_KW = frozenset(
