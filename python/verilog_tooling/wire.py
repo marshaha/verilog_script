@@ -452,11 +452,11 @@ def _inst_driven_nets(
                 or stripped[0].isdigit()
             ):
                 continue
-            if stripped.startswith(("(", "{")):
-                # verilog-auto-ignore-concat: skip (default) or extract.
+            if stripped.startswith("{"):
+                # verilog-auto-ignore-concat: skip {…} (default) or extract.
                 # CONCAT_OK is fact recording (AW/AREG "driven" sets, AIO
                 # "is this net wired internally anywhere"): there the
-                # identifiers in a {...}/(...) expression always count as
+                # identifiers in a {...} expression always count as
                 # connected, regardless of the candidacy exemption.
                 if not _IGNORE_CONCAT or concat_ok:
                     for net, ewidth in _expr_nets(stripped):
@@ -465,6 +465,16 @@ def _inst_driven_nets(
                         if const_map:
                             ewidth = emacs._apply_param_values(ewidth, const_map)
                         _note_net(nets, InstNet(net, ewidth, inst, module))
+                continue
+            if stripped.startswith("("):
+                # Parenthesized expression: not a concat, always extract.
+                # e.g. ((signal_e3)) -> signal_e3
+                for net, ewidth in _expr_nets(stripped):
+                    if param_values:
+                        ewidth = emacs._apply_param_values(ewidth, param_values)
+                    if const_map:
+                        ewidth = emacs._apply_param_values(ewidth, const_map)
+                    _note_net(nets, InstNet(net, ewidth, inst, module))
                 continue
             # Issue #1526: SV cast type'(expr) — extract inner expr for the
             # simple-net check, so t'(x) counts as signal x for AIO candidacy
