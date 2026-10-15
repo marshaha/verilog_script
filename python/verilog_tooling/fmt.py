@@ -315,6 +315,12 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         rest_dir = body_ns[dir_m.end() :] if dir_m else body_ns
         reg_m = re.match(r"(reg|wire|logic)\s+", rest_dir)
         kw = (reg_m.group(1) + " ") if reg_m else ""
+        if reg_m:
+            # optional signed after net type: ``input wire signed [15:0] x``
+            rest_after = rest_dir[reg_m.end():]
+            sign_m = re.match(r"(signed|unsigned)\s+", rest_after)
+            if sign_m:
+                kw += sign_m.group(1) + " "
         if not kw:
             # a user data type (or signed/unsigned) may sit where the net
             # type would: ``input ibex_mubi_t fetch_enable_i``.  Dropping
