@@ -211,6 +211,9 @@ class InstNet:
     net_type: str = ""
     data_type: str = ""
     unpacked_idx: tuple = ()  # element indexes connected (AUTOWIRE merges)
+    multidim: tuple = ()  # leading selects of a packed-only port's
+    # connection (verilog-mode multidim): unpacked dims rendered BEFORE the
+    # packed dims, first driver's wins
     multi: bool = False  # driven/used by several instances (", ..." comment)
 
 
@@ -481,10 +484,11 @@ def _inst_driven_nets(
                 width = emacs._apply_param_values(width, const_map)
             # multi-dim packed port: prefer the dims in the EAI connection
             # note (already param-value substituted), else the port's own
-            # packed ranges
-            pdims = _conn_packed_dims(expr) or (
-                tuple(_clean_dim(d) for d in port.packed)
-                if len(port.packed) > 1 else ()
+            # packed ranges — including a single packed range: width is
+            # msb-only, so a non-zero lsb ([1:-1], [8:1]) would be lost
+            # if the single dim were left to the width fallback ([1:0]).
+            pdims = _conn_packed_dims(expr) or tuple(
+                _clean_dim(d) for d in port.packed
             )
             if pdims and param_values:
                 pdims = tuple(
@@ -512,8 +516,13 @@ def _inst_driven_nets(
                 ),
             )
             # unpacked-array element index: the note's ``.[idx]`` part, or
-            # the connection's own select when the port is unpacked
+            # unpacked-array element index: the note's ``.[idx]`` part or the
+            # connection's own select when the port is unpacked (both render
+            # after the name, verilog-mode memory); a packed-only port whose
+            # connection carries a leading select (name[U][packed...]) takes
+            # it as an unpacked multidim, rendered before the packed dims.
             uidx = ""
+            mdim = ""
             um = re.search(r"\.\s*\[([^\]:]+)\]\s*\*/", expr)
             if um:
                 uidx = um.group(1).strip()
@@ -526,6 +535,17 @@ def _inst_driven_nets(
                     packed_txt = re.sub(r"\s+", "", port.packed[-1] if port.packed else "")
                     if ranges and re.sub(r"\s+", "", ranges[-1]) != packed_txt:
                         uidx = ranges[-1].strip()
+            else:
+                em = _ELEM_NET.match(stripped)
+                if em:
+                    ranges = re.findall(r"\[([^\]]+)\]", em.group(2))
+                    npacked = len(port.packed)
+                    if npacked and len(ranges) == npacked + 1:
+                        # name[U][packed...]: the leading select is an
+                        # unpacked dimension.  The first driver's wins, as
+                        # in verilog-signals-combine-bus (verified:
+                        # autoinput_2d_gaspar.v -> input [0] [127:0]).
+                        mdim = ranges[0].strip()
             if uidx:
                 rec = nets[net]
                 if uidx not in rec.unpacked_idx:
@@ -534,6 +554,12 @@ def _inst_driven_nets(
                     nets[net] = replace(
                         rec, unpacked_idx=tuple(rec.unpacked_idx) + (uidx,)
                     )
+            if mdim:
+                rec = nets[net]
+                if not rec.multidim:
+                    from dataclasses import replace
+
+                    nets[net] = replace(rec, multidim=(mdim,))
 
     markers = emacs.find_auto_markers(lines, "autoinst")
     stacks = emacs._scan_parens_at(text, [m.offset for m in markers])
@@ -769,6 +795,7 @@ def _auto_wire_single(
                 width=net.width, type="inst_wire", name=name,
                 packed_dims=net.packed_dims, signed=net.signed,
                 net_type=net.net_type, data_type=net.data_type, dims=dims,
+                multidim=net.multidim,
             )
         )
         if tracing(name):

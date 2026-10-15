@@ -242,7 +242,7 @@ def _input_sigs(
                 width=net.width, type="io_input", name=name,
                 packed_dims=net.packed_dims, signed=net.signed,
                 net_type=net.net_type, data_type=net.data_type,
-                dims=_sig_dims(net, local_syms),
+                dims=_sig_dims(net, local_syms), multidim=net.multidim,
             )
         )
         comments[name] = (
@@ -287,7 +287,7 @@ def _output_sigs(
                 width=net.width, type="io_output", name=name,
                 packed_dims=net.packed_dims, signed=net.signed,
                 net_type=net.net_type, data_type=net.data_type,
-                dims=_sig_dims(net, local_syms),
+                dims=_sig_dims(net, local_syms), multidim=net.multidim,
             )
         )
         comments[name] = (
@@ -336,7 +336,7 @@ def _inout_sigs(
                 width=net.width, type="io_inout", name=name,
                 packed_dims=net.packed_dims, signed=net.signed,
                 net_type=net.net_type, data_type=net.data_type,
-                dims=_sig_dims(net, local_syms),
+                dims=_sig_dims(net, local_syms), multidim=net.multidim,
             )
         )
         comments[name] = (

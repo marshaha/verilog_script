@@ -350,6 +350,9 @@ class Signal:
     io_dir: str = ""
     last_port: bool = False
     dims: tuple[str, ...] = ()  # unpacked dims from for-loop indices, e.g. ("0:3",)
+    multidim: tuple[str, ...] = ()  # unpacked dims from instance pin leading
+    # selects (verilog-mode multidim): rendered BEFORE the packed dims,
+    # both before the name ([U] [P] name)
     # dims came from loop-var selects without any packed range; a later
     # packed-range side (sig[PIPELINE_LENGTH-1:0]) proves they were plain
     # bit-selects of a packed vector and clears them
@@ -2723,6 +2726,10 @@ def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = 
             line += sig.net_type + " "
         if sig.signed:
             line += "signed "
+        if emacs_dims and sig.multidim:
+            # verilog-insert-one-definition: unpacked (multidim) dims precede
+            # the packed dims, both before the name ([U] [P] name)
+            line += "".join(f"[{d}]" for d in sig.multidim) + " "
         if sig.packed_dims:
             if emacs_dims:
                 # verilog-insert-one-definition: dims verbatim, one space
@@ -2751,10 +2758,15 @@ def _sig_decl_len(sig: Signal, *, emacs_dims: bool = False) -> int:
         return max(5, len(sig.data_type))
     extra = (len(sig.net_type) + 1 if sig.net_type else 0) + (7 if sig.signed else 0)
     if sig.packed_dims:
-        return 5 + extra + sum(len(d) + 2 for d in sig.packed_dims) + (
+        base = 5 + extra + sum(len(d) + 2 for d in sig.packed_dims) + (
             1 if emacs_dims and len(sig.packed_dims) > 1 else 0
         )
-    return 5 + extra if sig.width == "c0" else 5 + extra + len(sig.width) + 4
+    else:
+        base = 5 + extra if sig.width == "c0" else 5 + extra + len(sig.width) + 4
+    if emacs_dims and sig.multidim:
+        # unpacked (multidim) dims render before the packed dims ([U] [P])
+        base += sum(len(d) + 2 for d in sig.multidim) + 1
+    return base
 
 
 _CONN_DIM_COMMENT = re.compile(r"/\*\s*((?:\[[^\]]+\])+)\s*\*/")

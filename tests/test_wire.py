@@ -815,3 +815,25 @@ endmodule
     assert re.search(r"^wire\s+lo;\s*// From u0 of sub\.v$", text, re.M)
     # input-side val has no driver: not AW's job — ADT flags it unresolved
     assert "// unresolved: val" in text
+
+
+def test_autowire_single_packed_dim_keeps_nonzero_lsb():
+    """A single packed port range with a non-zero lsb ([1:-1]) must keep its
+    range verbatim — it must not degrade to [1:0] (width is msb-only; the
+    full range lives in packed_dims)."""
+    sub = """\
+module sub3 (output logic [1:-1] oned);
+endmodule
+"""
+    mods = {"sub3": parse_module_ports(sub.splitlines())}
+    top = """\
+module top;
+/*AUTOWIRE*/
+sub3 u1 (/*autoinst*/
+    .oned (oned)
+);
+endmodule
+"""
+    out = auto_wire(top.splitlines(), mods)
+    flat = [re.sub(r"\s+", "", ln) for ln in out]
+    assert any(ln.startswith("logic[1:-1]oned;") for ln in flat)

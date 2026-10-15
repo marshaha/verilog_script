@@ -839,3 +839,41 @@ endmodule
     out = auto_inout(top.splitlines(), mods)
     assert not any("inout" in ln and "bus_io" in ln for ln in out)
 
+
+
+def _nospace(lines):
+    import re
+    return [re.sub(r"\s+", "", ln) for ln in lines]
+
+
+def test_autoinput_leading_select_becomes_unpacked_multidim():
+    """A name[U][packed] pin connection on a packed-only port: the leading
+    select is an unpacked dimension rendered before the packed dims
+    (verilog-mode multidim; official case autoinput_2d_gaspar.v ->
+    input [0] [127:0] in_momo).  First driver's index wins."""
+    sub = """\
+module sub2 (
+    input  wire [127:0] in_momo,
+    output wire [127:0] out_momo
+);
+endmodule
+"""
+    mods = {"sub2": parse_module_ports(sub.splitlines())}
+    top = """\
+module top;
+/*AUTOINPUT*/
+/*AUTOOUTPUT*/
+sub2 u1 (/*autoinst*/
+    .in_momo  (in_momo[0][127:0]),
+    .out_momo (out_momo[0][127:0])
+);
+sub2 u2 (/*autoinst*/
+    .in_momo  (in_momo[1][127:0]),
+    .out_momo (out_momo[1][127:0])
+);
+endmodule
+"""
+    out = _nospace(auto_input(top.splitlines(), mods))
+    assert any(ln.startswith("input[0][127:0]in_momo;") for ln in out)
+    out = _nospace(auto_output(top.splitlines(), mods))
+    assert any(ln.startswith("output[0][127:0]out_momo;") for ln in out)
