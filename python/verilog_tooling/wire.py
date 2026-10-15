@@ -537,15 +537,6 @@ def _inst_driven_nets(
             pdims = _conn_packed_dims(expr) or tuple(
                 _clean_dim(d) for d in port.packed
             )
-            # Single-bit select like z[10]: treat as a one-bit range for
-            # multi-driver merging (e.g. z[10] + z[11] -> [11:10]).
-            # Only when pdims is empty (no explicit range from port or note).
-            if not pdims:
-                # expr is like 'z[10]' or 'z [ 10 ]'
-                bm = re.search(r"\[\s*(-?\d+)\s*\]$", expr.strip())
-                if bm:
-                    bit = bm.group(1)
-                    pdims = (f"{bit}:{bit}",)
             if pdims and param_values:
                 pdims = tuple(
                     _clean_dim(emacs._apply_param_values(d, param_values))
