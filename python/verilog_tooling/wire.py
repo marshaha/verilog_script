@@ -309,16 +309,13 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
             v = _eval_bound(w, {})
             return v if isinstance(v, int) else None
 
-        def _parse_range(r: str):
-            # "223:128" -> (223, 128)
+        def _parse_msb(r: str):
+            # "223:128" -> 223
             parts = r.split(":")
             if len(parts) != 2:
                 return None
             msb = _eval_bound(parts[0].strip(), {})
-            lsb = _eval_bound(parts[1].strip(), {})
-            if isinstance(msb, int) and isinstance(lsb, int):
-                return (msb, lsb)
-            return None
+            return msb if isinstance(msb, int) else None
 
         prev_v = _msb_val(prev.width)
         rec_v = _msb_val(rec.width)
@@ -328,14 +325,13 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
         if prev_v is not None and rec_v is not None:
             if rec_v > prev_v:
                 new_width = rec.width
-            # Merge packed dims: max MSB, min LSB
+            # Merge packed dims: max MSB, LSB is always 0
             if prev.packed_dims and rec.packed_dims:
-                pr = _parse_range(prev.packed_dims[0])
-                rr = _parse_range(rec.packed_dims[0])
-                if pr and rr:
-                    max_msb = max(pr[0], rr[0])
-                    min_lsb = min(pr[1], rr[1])
-                    new_pdims = (f"{max_msb}:{min_lsb}",)
+                pr_msb = _parse_msb(prev.packed_dims[0])
+                rr_msb = _parse_msb(rec.packed_dims[0])
+                if pr_msb is not None and rr_msb is not None:
+                    max_msb = max(pr_msb, rr_msb)
+                    new_pdims = (f"{max_msb}:0",)
         nets[rec.name] = replace(prev, multi=True, width=new_width, packed_dims=new_pdims)
         from ._trace import trace_sig
 
