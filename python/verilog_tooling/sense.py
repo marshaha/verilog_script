@@ -724,6 +724,12 @@ class _AlwaysScan:
                 j = text.find("*)", pos + 1)
                 pos = n if j < 0 else j + 2
                 continue
+            # Skip whitespace without resetting sig_tolk: a space/comment
+            # between function name and paren (ffs /*c*/ (...)) must not
+            # break the function-call detection.
+            if text[pos] in _WS:
+                pos += 1
+                continue
             m = _IDENT_RUN.match(text, pos)
             keywd = m.group(0) if m else text[pos]
             sig_last_tolk = sig_tolk
