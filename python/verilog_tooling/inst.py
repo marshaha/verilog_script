@@ -75,7 +75,10 @@ def auto_arg_port_names(lines: Sequence[str]) -> set[str]:
             if _ARG_PORT_NOT_LIST.search(lines[j]):
                 plausible = False
                 break
-            collected.extend(re.findall(r"\w+", re.sub(r"//.*$", "", lines[j])))
+            # Escaped identifiers (\o[10] ) must be kept as a unit, not split
+            # into \w+ pieces.
+            cleaned = re.sub(r"//.*$", "", lines[j])
+            collected.extend(re.findall(r"\\[^\s,;]+|\w+", cleaned))
             j += 1
         if plausible and j < n:
             names.update(collected)
@@ -381,7 +384,17 @@ class ModuleDef:
 
     @property
     def ports(self) -> list[Port]:
-        return [e for e in self.entries if isinstance(e, Port)]
+        # Deduplicate by name, keeping first occurrence (a module with
+        # duplicate port declarations like the bug302 test file should
+        # not emit duplicate pins).
+        seen: set[str] = set()
+        out: list[Port] = []
+        for e in self.entries:
+            if isinstance(e, Port):
+                if e.name not in seen:
+                    seen.add(e.name)
+                    out.append(e)
+        return out
 
     def port_names(self) -> list[str]:
         return [p.name for p in self.ports]

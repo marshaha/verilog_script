@@ -686,11 +686,23 @@ def _param_from_entry(entry: str) -> Param | None:
             entry = entry[j + 1 :].lstrip()
             continue
         break
-    m = re.match(r"(\w+)\s*(?:=\s*(.*?))?\s*[;,]?\s*$", entry, re.S)
+    m = re.match(r"(\w+)", entry)
     if not m:
         return None
-    value = m.group(2)
-    return Param(m.group(1), value.strip() if value else None)
+    name = m.group(1)
+    rest = entry[m.end():].lstrip()
+    # Skip unpacked dimensions after the name: No3 [No1:0][No2-1:0] = ...
+    while rest.startswith("["):
+        j = rest.find("]")
+        if j < 0:
+            return None
+        rest = rest[j + 1:].lstrip()
+    # Now rest should be [= value] [,;] or empty
+    vm = re.match(r"(?:=\s*(.*?))?\s*[;,]?\s*$", rest, re.S)
+    if not vm:
+        return None
+    value = vm.group(1)
+    return Param(name, value.strip() if value else None)
 
 
 def parse_module_params(lines: Sequence[str]) -> tuple[Param, ...]:
