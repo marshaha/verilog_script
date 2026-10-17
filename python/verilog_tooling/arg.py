@@ -106,7 +106,7 @@ _REGION_END = re.compile(r"^\s*\)\s*;\s*$")
 # sits OUTSIDE a header (e.g. after the header's own `);`) and the scan must
 # not consume real code
 _NOT_PORT_LIST = re.compile(
-    r";|\b(?:input|output|inout|wire|reg|logic|assign|always|module|endmodule)\b"
+    r";|\b(?:assign|always|module|endmodule)\b"
 )
 
 
@@ -237,13 +237,24 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
             segs = segs[:-1] + _dir_segments(merged)
         for direction, seg in segs:
             name = _PORT_PREFIX.sub("", seg)
-            first = re.match(r"[A-Za-z_][\w$]*", name.strip())
-            if first and first.group(0) not in _UDT_STRIP_EXEMPT:
-                name = _UDT_PREFIX.sub("", name, count=1)
+            # Escaped identifier (e.g. \o[10] ): opaque, do not strip
+            # brackets as unpacked dims — the [10] is part of the name.
+            is_escaped = "\\" in name
+            if not is_escaped:
+                # (* ... *) attribute spans are not part of the port name
+                # (an attribute may even carry '=', e.g. (* ATTRIB="val" *));
+                # leaving them in leaks attribute text into the regenerated
+                # header and can hang _bare_port_names on a later run.
+                name = re.sub(r"\(\*.*?\*\)", " ", name)
+            if not is_escaped:
+                first = re.match(r"[A-Za-z_][\w$]*", name.strip())
+                if first and first.group(0) not in _UDT_STRIP_EXEMPT:
+                    name = _UDT_PREFIX.sub("", name, count=1)
             name = _PORT_TAIL.sub("", name)  # body style: `input [7:0] a, b; // c`
             name = _PORT_TRAIL_COMMA.sub("", name)  # header style: `input clk,`
             name = _PORT_TRAIL_PAREN.sub("", name)  # single-line header: `input b)`
-            name = _UNPACKED_TAIL.sub("", name)  # `val[3:0]` / `val [3:0]`
+            if not is_escaped:
+                name = _UNPACKED_TAIL.sub("", name)  # `val[3:0]` / `val [3:0]`
             name = name.strip(" ,\t")
             if name:
                 buckets[direction].append(name)
@@ -521,14 +532,23 @@ def _bare_port_names(signal_text: str) -> list[str]:
         item = item.strip().strip(";").strip()
         if not item:
             continue
+        # Strip (* ... *) attribute spans first: an attribute may contain
+        # '=' (e.g. (* ATTRIB="val" *)) which the default-value split below
+        # would otherwise truncate at, leaving a leading '(' that the
+        # type-word stripper below can never consume (infinite loop).
+        item = re.sub(r"\(\*.*?\*\)", " ", item)
         item = item.split("=", 1)[0].strip()  # drop any default value
         item = re.sub(r"\[[^\]]*\]", " ", item).strip(" ,)")
         if not item:
             continue
         # Drop leading type words (possibly several: ``signed logic`` or a
         # pkg-scoped UDT) until only the name remains.  A single remaining
-        # identifier is the name itself and is not stripped.
-        while re.search(r"\s+[A-Za-z_]", item):
+        # identifier is the name itself and is not stripped.  The loop also
+        # stops when a strip makes no progress, so a malformed remainder can
+        # never spin forever.
+        prev = None
+        while re.search(r"\s+[A-Za-z_]", item) and item != prev:
+            prev = item
             item = re.sub(
                 r"^[A-Za-z_][\w$]*(?:::[A-Za-z_][\w$]*)*"
                 r"(?:\.[A-Za-z_][\w$]*)?\s+",
