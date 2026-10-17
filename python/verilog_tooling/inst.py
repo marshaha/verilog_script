@@ -587,6 +587,8 @@ def _parse_port_line_multi(line: str) -> list[Port]:
     # /* ... */ is comment text, not declaration text (incomplete pairs and
     # line comments are handled by the caller before this point)
     line = re.sub(r"/\*.*?\*/", " ", line)
+    # (* ... *) is a Verilog attribute, not part of the declaration
+    line = re.sub(r"\(\*.*?\*\)", " ", line)
     m = _PORT_KEYWORD.match(line)
     if not m:
         return []
