@@ -106,7 +106,7 @@ _REGION_END = re.compile(r"^\s*\)\s*;\s*$")
 # sits OUTSIDE a header (e.g. after the header's own `);`) and the scan must
 # not consume real code
 _NOT_PORT_LIST = re.compile(
-    r";|\b(?:assign|always|module|endmodule)\b"
+    r";|\b(?:input|output|inout|assign|always|module|endmodule)\b"
 )
 
 
@@ -901,17 +901,23 @@ def _expand_arg_markers(
         if close_idx is not None and idx > close_idx:
             out.append(line)  # misplaced marker (after the header): leave alone
             continue
-        # Ports already listed before the marker (e.g. "why," before
-        # /*AUTOARG*/) must not be duplicated in the generated list.
+        # Ports already explicitly listed before the marker in 1995 style
+        # (e.g. `why, /*AUTOARG*/`) must not be duplicated in the generated list.
         _pre_names: set[str] = set()
-        for _pl in lines[:idx]:
-            # stop at module line start; collect bare identifiers
-            for _nm in re.findall(r"[a-zA-Z_]\w*", _pl):
-                # skip keywords and the marker itself
-                if _nm.lower() not in ("module", "autoarg", "inputs", "outputs", "inouts"):
-                    _pre_names.add(_nm)
-        # Only keep names that appear in a port-list context (before marker,
-        # after the opening paren). Simpler: filter sections.
+        _text_before = "\n".join(lines[:idx + 1])
+        _mk_m = _MARK.search(lines[idx])
+        if _mk_m:
+            _mk_offset = sum(len(ln) + 1 for ln in lines[:idx]) + _mk_m.start()
+            _mod_m = re.search(r"\bmodule\s+\w+\s*(?:#\s*\([^)]*\)\s*)?\(", _text_before[:_mk_offset], re.DOTALL)
+            if _mod_m:
+                _port_text = _text_before[_mod_m.end():_mk_offset]
+                _port_text = re.sub(r"//.*", "", _port_text)
+                _port_text = re.sub(r"/\*.*?\*/", "", _port_text, flags=re.DOTALL)
+                if not re.search(r"\b(?:input|output|inout)\b", _port_text):
+                    for _item in _port_text.split(","):
+                        _item = _item.strip()
+                        if re.match(r"^[A-Za-z_][\w$]*$", _item):
+                            _pre_names.add(_item)
         _finputs = [p for p in inputs if p not in _pre_names]
         _foutputs = [p for p in outputs if p not in _pre_names]
         _finouts = [p for p in inouts if p not in _pre_names]
