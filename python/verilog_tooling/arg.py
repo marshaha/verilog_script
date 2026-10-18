@@ -901,17 +901,32 @@ def _expand_arg_markers(
         if close_idx is not None and idx > close_idx:
             out.append(line)  # misplaced marker (after the header): leave alone
             continue
-        if not any(ports for _, ports in sections):
+        # Ports already listed before the marker (e.g. "why," before
+        # /*AUTOARG*/) must not be duplicated in the generated list.
+        _pre_names: set[str] = set()
+        for _pl in lines[:idx]:
+            # stop at module line start; collect bare identifiers
+            for _nm in re.findall(r"[a-zA-Z_]\w*", _pl):
+                # skip keywords and the marker itself
+                if _nm.lower() not in ("module", "autoarg", "inputs", "outputs", "inouts"):
+                    _pre_names.add(_nm)
+        # Only keep names that appear in a port-list context (before marker,
+        # after the opening paren). Simpler: filter sections.
+        _finputs = [p for p in inputs if p not in _pre_names]
+        _foutputs = [p for p in outputs if p not in _pre_names]
+        _finouts = [p for p in inouts if p not in _pre_names]
+        _sections = (("//Outputs", _foutputs), ("//Inouts", _finouts), ("//Inputs", _finputs))
+        if not any(ports for _, ports in _sections):
             # nothing to declare: the collapsed one-line stub stays as-is
             out.append(line if ")" in line else line + ");")
             continue
         out.append(re.sub(r"\).*", "", line))
-        for pos, (header, ports) in enumerate(sections):
+        for pos, (header, ports) in enumerate(_sections):
             if not ports:
                 continue
-            if pos and any(ports_ for _, ports_ in sections[:pos]):
+            if pos and any(ports_ for _, ports_ in _sections[:pos]):
                 out.append("")
-            later = any(ports_ for _, ports_ in sections[pos + 1 :])
+            later = any(ports_ for _, ports_ in _sections[pos + 1 :])
             out.append(_ARG_MARGIN + header)
             if arg_format == "single":
                 out.extend(_single_ports(ports, trailing_comma=later))
