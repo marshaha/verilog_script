@@ -776,6 +776,16 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
         infer = sorted(
             name for name in old_names if name in inout_nets and name not in declared
         )
+        # Respect /*AUTOINOUT("regexp")*/ filter: do not infer inout ports
+        # that AUTOINOUT would reject (e.g. "^s" should not infer lower_io).
+        # The marker regexp is file-local; search the module span.
+        _aio_m = re.search(
+            r"/\*\s*AUTOINOUT\s*\(\s*\"((?:[^\"\\]|\\.)*)\"\s*\)\s*\*/",
+            "\n".join(lines), re.IGNORECASE,
+        )
+        if _aio_m:
+            _aio_rx = re.compile(_aio_m.group(1), re.IGNORECASE)
+            infer = [n for n in infer if _aio_rx.search(n)]
         # Ports in the header protected by //DT are preserved by user intent
         dt_ports = dt_ports_by_module[mod_idx] if mod_idx < len(dt_ports_by_module) else []
         for _dp in dt_ports:
