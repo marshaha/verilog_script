@@ -600,6 +600,10 @@ def _parse_port_line_multi(line: str) -> list[Port]:
     if mnet:
         net_type = mnet.group(1) if mnet.group(1) != "wire" else ""  # wire is the default
         rest = rest[mnet.end() :]
+    # SystemVerilog 'var' keyword (e.g. "input var real x"): not a net type,
+    # not part of the data type name — skip it.
+    if re.match(r"^var\b\s*", rest):
+        rest = re.sub(r"^var\b\s*", "", rest)
     signed = False
     if re.match(r"^signed\b\s*", rest):
         signed = True
@@ -649,6 +653,8 @@ def _parse_port_line_multi(line: str) -> list[Port]:
             if mnet2:
                 net_here = mnet2.group(1) if mnet2.group(1) != "wire" else ""
                 rest2 = rest2[mnet2.end() :]
+            if re.match(r"^var\b\s*", rest2):
+                rest2 = re.sub(r"^var\b\s*", "", rest2)
             signed_here = False
             if re.match(r"^signed\b\s*", rest2):
                 signed_here = True
