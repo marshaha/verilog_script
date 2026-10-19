@@ -202,8 +202,9 @@ def _auto_inst_format(self: VerilogBuffer) -> VerilogBuffer:
         tokens = rest.replace(",", " ").split()
         for token in tokens:
             out.append(token + ",")
-        if end_flag and tokens:
-            out[-1] = re.sub(r"\),$", ") ", out[-1])
+        if end_flag:
+            if tokens:
+                out[-1] = re.sub(r"\),$", ") ", out[-1])
             out.append(_INST_MARGIN + ");")
 
     # pass 2: measure prefix/suffix maxima over pin lines
