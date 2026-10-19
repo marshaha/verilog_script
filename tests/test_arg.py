@@ -57,6 +57,28 @@ def test_kill_auto_arg_uppercase_marker():
     assert kill_auto_arg(lines) == ["module top (/*AUTOARG*/);"]
 
 
+def test_kill_auto_arg_region_end_bare_close_paren_no_semicolon():
+    # Emacs verilog-mode generates regions terminated by a bare `)` line
+    # (no `;`, e.g. verify/golden/v2k_signed_kundsen.v) -- the region end
+    # must still be recognized or kill leaves the stale region behind and
+    # auto_arg appends a duplicate header.
+    lines = [
+        "module foo_bar (/*AUTOARG*/",
+        "   // Outputs",
+        "   result,",
+        "   // Inputs",
+        "   clk, rst, data, addr",
+        "   )",
+        "   input clk;",
+        "endmodule",
+    ]
+    assert kill_auto_arg(lines) == [
+        "module foo_bar (/*AUTOARG*/);",
+        "   input clk;",
+        "endmodule",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # auto_arg (AutoArg)
 

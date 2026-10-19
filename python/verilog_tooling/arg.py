@@ -256,16 +256,6 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
             if not is_escaped:
                 name = _UNPACKED_TAIL.sub("", name)  # `val[3:0]` / `val [3:0]`
             name = name.strip(" ,\t")
-            # Strip leading type keywords (signed/logic/var etc.) that
-            # _PORT_PREFIX deliberately keeps for Vim compat — AUTOARG needs
-            # the bare name for stable idempotency.
-            if not is_escaped:
-                name = re.sub(
-                    r"^(?:signed|unsigned|logic|bit|var|int|time|tri|supply0|supply1)\b\s*"
-                    r"(?:\[[^\]]*\]\s*)*",
-                    "",
-                    name,
-                ).strip()
             if name:
                 buckets[direction].append(name)
         i += 1
