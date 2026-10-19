@@ -79,6 +79,33 @@ def test_kill_auto_arg_region_end_bare_close_paren_no_semicolon():
     ]
 
 
+def test_auto_arg_fixed_point_on_emacs_bare_paren_region():
+    # v2k_signed_kundsen.v (verify/golden): kill the emacs-generated
+    # bare-`)' region, regenerate, and require a fixed point -- the 8f0a29b
+    # regression appended a duplicate header on the second run.  The
+    # regenerated list keeps the Vim-compat `signed [15:-15] data` form
+    # (s:VlogTypeDatas passes logic/signed through verbatim).
+    lines = [
+        "module foo_bar (/*AUTOARG*/",
+        "   // Outputs",
+        "   result,",
+        "   // Inputs",
+        "   clk, rst, data, addr",
+        "   )",
+        "",
+        "  input        clk;",
+        "   input       rst;",
+        "   input       signed [15:-15] data;",
+        "   input [11:0]                addr;",
+        "   output       signed [15:0]  result;",
+        "endmodule // foo_bar",
+    ]
+    once = auto_arg(kill_auto_arg(lines))
+    twice = auto_arg(kill_auto_arg(once))
+    assert once == twice
+    assert any("signed [15:-15] data" in l for l in once)
+
+
 # ---------------------------------------------------------------------------
 # auto_arg (AutoArg)
 

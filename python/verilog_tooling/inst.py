@@ -637,6 +637,11 @@ def _parse_port_line_multi(line: str) -> list[Port]:
         part = part.strip()
         if not part:
             continue
+        # SystemVerilog 'var' keyword on a comma-separated continuation
+        # (``input var real a, var b``): same skip as the line head --
+        # without it the continuation parses `var' as the port name.
+        if re.match(r"^var\b\s*", part):
+            part = re.sub(r"^var\b\s*", "", part).strip()
         dir_here, net_here, signed_here = m.group(1), net_type, signed
         packed_here = list(packed)
         if pi > 0 and _PORT_KEYWORD.match(part):

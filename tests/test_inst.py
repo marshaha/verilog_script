@@ -779,6 +779,26 @@ def test_parse_port_wire_no_space_and_signed():
     ]
 
 
+def test_parse_port_var_keyword_not_mistaken_for_name():
+    # e20189c (autowire_real.v): SystemVerilog `var` is neither a net type
+    # nor part of the data type -- `input var real Tx_vcm` previously parsed
+    # as name='real', losing Tx_vcm entirely.  Covers the line-head path
+    # and the comma-separated mid-line path.
+    lines = [
+        "module m (",
+        "    input var real Tx_vcm,",
+        "    input wire var_bits, var real Rx_vcm",
+        ");",
+        "endmodule",
+    ]
+    moddef = parse_module_ports(lines)
+    assert [(p.name, p.direction) for p in moddef.ports] == [
+        ("Tx_vcm", "input"),
+        ("var_bits", "input"),
+        ("Rx_vcm", "input"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # legal-Verilog formatting robustness (packed-range spacing, multi-line
 # declarations, inline comments) — A1-A4 / C10

@@ -52,6 +52,17 @@ def test_aif_is_idempotent():
     assert auto_inst_format(EXPLODED) == EXPLODED
 
 
+def test_aif_empty_inst_oneliner_preserves_close_paren_semicolon():
+    # 897fb57: the explode pass dropped ');' when the instance had no
+    # ports (tokens empty), producing unbalanced parens that crashed the
+    # second run (autoinst_overflow_bug250.v, autoinstparam_local.v,
+    # autoinst_template_required.v).
+    lines = ["empty u_empty_0 (/*autoinst*/);"]
+    out = auto_inst_format(lines)
+    assert out == ["empty u_empty_0 (/*autoinst*/", M + ");"]
+    assert auto_inst_format(out) == out
+
+
 def test_aif_normalizes_emacs_last_port_first():
     lines = [
         "small u_s (/*AUTOINST*/",
