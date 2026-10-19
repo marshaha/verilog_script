@@ -394,6 +394,13 @@ def conn_net_name(rest: str) -> str | None:
         return None  # sized literal tie (1'b0 …): no declarable net
     if re.match(r"\s*\w+\s*\.", inner):
         return None  # hierarchical/member reference (hi.ear.ial): not declarable here
+    # Escaped identifier: backslash followed by non-whitespace (e.g. \o[10] , \i&e )
+    # Must check before the normal identifier pattern.
+    m = re.search(r"\\[^\s]+", inner)
+    if m:
+        # Include the trailing whitespace terminator? No, just the name part.
+        # The escaped name is backslash + chars up to whitespace.
+        return m.group(0)
     m = re.search(r"[a-zA-Z_]\w*", inner)
     return m.group(0) if m else None
 
