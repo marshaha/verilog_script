@@ -818,17 +818,30 @@ def _split_top_commas(s: str) -> list[str]:
 def _split_ansi_ports(inner: str, interfaces: Iterable[str] | None = None) -> list[str]:
     """Split an ANSI port-list body into per-port declaration strings."""
     # a port decl may start a new direction mid-list; bare names after a decl
-    # share the previous direction — we only split when a direction keyword or
-    # a range introduces a port. Keep it simple: each comma part that contains
-    # a direction keyword or a [...] range is a decl boundary; bare-name parts
-    # are dropped (they belong to the previous decl, one-name-per-line rule).
+    # share the previous direction — one-name-per-line rule: emit each bare
+    # name as its own decl with the current direction (dropping them loses
+    # ports, e.g. ``input clk,rst`` must yield ``input clk`` + ``input rst``).
     # Interface-typed parts (``cpu_bus.master bus``) are kept when the type is
     # a known interface name.
     out = []
+    cur_dir = ""
     for p in _split_top_commas(inner):
         p = p.strip()
-        if re.search(r"\b(input|output|inout)\b", p):
+        m = re.search(r"\b(input|output|inout)\b", p)
+        if m:
+            cur_dir = m.group(1)
             out.append(p)
+        elif p and cur_dir and re.match(
+            r"^(?:\[[^\]]*\]\s*)?[A-Za-z_\\][\w$]*(?:\s*\[[^\]]*\])?$", p
+        ):
+            # bare name (optionally with a packed range and/or unpacked
+            # dims) sharing the previous direction — a qualified part like
+            # ``cpu_bus.master bus`` is an interface port and must reach
+            # the interface branch below instead.
+            for nm in p.split(","):
+                nm = nm.strip().rstrip(",")
+                if nm:
+                    out.append(f"{cur_dir} {nm}")
         elif interfaces:
             im = _IFACE_PORT_DECL.match(p)
             if im and im.group(1) in interfaces:

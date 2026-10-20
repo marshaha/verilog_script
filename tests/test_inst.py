@@ -908,6 +908,35 @@ def test_parse_module_ports_ansi_header_with_params():
     ]
 
 
+def test_parse_module_ports_ansi_bare_names_share_direction():
+    # Bug #46: _split_ansi_ports silently dropped bare names sharing the
+    # previous direction keyword in single-line ANSI headers —
+    # ``module t(input clk,rst)`` (autoinst_casefold_hou.v) lost ``rst``.
+    lines = [
+        "module t(input clk,rst, output [7:0] data, inout dq);",
+        "endmodule",
+    ]
+    moddef = parse_module_ports(lines)
+    assert [(p.name, p.direction, p.width) for p in moddef.ports] == [
+        ("clk", "input", None),
+        ("rst", "input", None),
+        ("data", "output", "7:0"),
+        ("dq", "inout", None),
+    ]
+
+
+def test_parse_module_ports_ansi_bare_name_follows_direction_change():
+    # A bare name after a mid-list direction change takes the NEW direction:
+    # ``output b, c`` after ``input a`` — ``c`` is an output, not an input.
+    lines = ["module t(input a, output b, c);", "endmodule"]
+    moddef = parse_module_ports(lines)
+    assert [(p.name, p.direction) for p in moddef.ports] == [
+        ("a", "input"),
+        ("b", "output"),
+        ("c", "output"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # SystemVerilog interface ports
 
