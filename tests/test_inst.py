@@ -1328,6 +1328,85 @@ def test_parse_ports_records_guard_conditions():
     assert g2["dout"] == ()
 
 
+# A non-ANSI module whose ports are declared in the body under
+# `ifdef/`else (the autoinst_ams_vorwerk shape), with the header port
+# list already expanded by an earlier AUTOARG pass.
+_VAMS_SUB = [
+    "module latch (/*AUTOARG*/",
+    "    //Outputs",
+    "    q, q,",
+    "",
+    "    //Inputs",
+    "    en, en, d, d",
+    ");",
+    "",
+    "`ifdef __VAMS_ENABLE__",
+    '    output (* integer groundSensitivity="gnd "; *) q;',
+    " `else",
+    "    output q;",
+    "`endif",
+    "",
+    "`ifdef __VAMS_ENABLE__",
+    "    input en;",
+    " `else",
+    "    input en;",
+    "`endif",
+    "",
+    "`ifdef __VAMS_ENABLE__",
+    "    input d;",
+    " `else",
+    "    input d;",
+    "`endif",
+    "endmodule",
+]
+
+
+def test_parse_ports_body_guards_survive_expanded_header():
+    """Body declarations keep their guards even after the header port
+    list has been expanded (closed): the `else branch flips polarity,
+    and a port declared in both branches merges to unconditional."""
+    moddef = parse_module_ports(_VAMS_SUB)
+    by_name = {}
+    for e in moddef.entries:
+        if isinstance(e, Port):
+            by_name.setdefault(e.name, []).append(e.guard)
+    assert by_name["q"] == [
+        (("__VAMS_ENABLE__", True),),
+        (("__VAMS_ENABLE__", False),),
+    ]
+    guards = {p.name: p.guard for p in moddef.ports}
+    assert guards == {"q": (), "en": (), "d": ()}
+
+
+def test_parse_ports_expanded_header_matches_unexpanded():
+    """The same module with a compact /*AUTOARG*/ header must parse to
+    the same ports and guards as the expanded-header form (this is
+    what makes AUTOINST idempotent on such modules)."""
+    compact = ["module latch (/*AUTOARG*/);"] + _VAMS_SUB[7:]
+    a = [(p.name, p.direction, p.guard) for p in parse_module_ports(_VAMS_SUB).ports]
+    b = [(p.name, p.direction, p.guard) for p in parse_module_ports(compact).ports]
+    assert a == b
+
+
+def test_parse_ports_else_only_body_port_gets_negative_guard():
+    moddef = parse_module_ports(
+        [
+            "module m (/*AUTOARG*/",
+            "    q",
+            ");",
+            "`ifdef FAST",
+            "    output q;",
+            " `else",
+            "    output slow_q;",
+            "`endif",
+            "endmodule",
+        ]
+    )
+    guards = {p.name: p.guard for p in moddef.ports}
+    assert guards["q"] == (("FAST", True),)
+    assert guards["slow_q"] == (("FAST", False),)
+
+
 def test_aiu_new_guarded_pin_is_wrapped():
     lines = [
         "module top;",

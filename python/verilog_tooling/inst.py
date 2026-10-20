@@ -376,6 +376,53 @@ def _render_new_pin_lines(
     return (trailing[0] if anchor else None), lines
 
 
+def _merge_port_guards(
+    guards: "list[tuple[tuple[str, bool], ...]]",
+) -> "tuple[tuple[str, bool], ...]":
+    """Merge the guards of duplicate declarations of one port.
+
+    A port declared in both branches of an `` `ifdef ``/`` `else ``
+    exists unconditionally (verilog-mode emits no guard for it): the
+    two conjunctions differ in exactly one literal, so their union is
+    the conjunction without that literal.  Apply literal elimination
+    (and absorption: a conjunction strictly containing another is
+    redundant) to a fixpoint; an empty conjunction absorbs everything.
+    If incomparable guards survive (the port exists under A or under
+    B, not expressible as one conjunction), keep the first
+    declaration's guard, as the plain dedup did before.
+    """
+    s = set(guards)
+    if () in s:
+        return ()
+    changed = True
+    while changed:
+        changed = False
+        absorbed = {g for g in s if not any(set(h) < set(g) for h in s)}
+        if absorbed != s:
+            s = absorbed
+            changed = True
+            if () in s:
+                return ()
+            continue
+        for g in sorted(s):
+            done = False
+            for i, (macro, pol) in enumerate(g):
+                twin = g[:i] + ((macro, not pol),) + g[i + 1 :]
+                if twin in s:
+                    s.discard(g)
+                    s.discard(twin)
+                    s.add(g[:i] + g[i + 1 :])
+                    changed = done = True
+                    break
+            if done:
+                break
+        if () in s:
+            return ()
+    if len(s) == 1:
+        return next(iter(s))
+    return guards[0]
+
+
 @dataclass(frozen=True)
 class ModuleDef:
     name: str
@@ -386,14 +433,27 @@ class ModuleDef:
     def ports(self) -> list[Port]:
         # Deduplicate by name, keeping first occurrence (a module with
         # duplicate port declarations like the bug302 test file should
-        # not emit duplicate pins).
-        seen: set[str] = set()
-        out: list[Port] = []
+        # not emit duplicate pins).  The surviving port's guard merges
+        # all declarations' guards: a name declared in both branches of
+        # an `ifdef/`else is unconditional (see _merge_port_guards).
+        first: dict[str, Port] = {}
+        guards: dict[str, list] = {}
+        order: list[str] = []
         for e in self.entries:
             if isinstance(e, Port):
-                if e.name not in seen:
-                    seen.add(e.name)
-                    out.append(e)
+                if e.name not in first:
+                    first[e.name] = e
+                    guards[e.name] = [e.guard]
+                    order.append(e.name)
+                else:
+                    guards[e.name].append(e.guard)
+        out: list[Port] = []
+        for name in order:
+            p = first[name]
+            merged = _merge_port_guards(guards[name])
+            if merged != p.guard:
+                p = replace(p, guard=merged)
+            out.append(p)
         return out
 
     def port_names(self) -> list[str]:
@@ -950,7 +1010,19 @@ def parse_module_ports(
             or (_LINE_COMMENT.match(line) and not re.match(r"^\s*//\s*\{\{\{", line))
             or _BLANK.match(line)
         ):
-            if portlist_closed or not (portlist_opened or have_port):
+            if portlist_closed:
+                # No Keep lines are collected from the body, but the
+                # preprocessor frames must keep tracking: a non-ANSI
+                # module declares its ports in the body, and a body
+                # declaration under `ifdef/`else carries that guard.
+                # Once an earlier AUTOARG pass has expanded the header
+                # port list, the header scan above closes the list, and
+                # without this the body guards (and the `else polarity
+                # flip) would be lost on the second pass.
+                if _DIRECTIVE.match(line):
+                    _guard_stack_after(guard_stack, line)
+                continue  # outside the module's port list
+            if not (portlist_opened or have_port):
                 continue  # outside the module's port list
             _guard_stack_after(guard_stack, line)
             if (

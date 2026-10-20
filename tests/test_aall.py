@@ -303,3 +303,54 @@ def test_aall_periph_sys_unresolved_regressions(tmp_path, capsys):
     # D: the '0 literal is not a signal
     assert "0" not in unresolved
 
+
+AMS = """\
+module top_ams;
+
+  latch latch (/*AUTOINST*/);
+
+endmodule
+
+module latch (/*AUTOARG*/);
+
+`ifdef __VAMS_ENABLE__
+    output (* integer groundSensitivity="gnd "; integer supplySensitivity="vdd "; *) q;
+ `else
+    output q;
+`endif
+
+`ifdef __VAMS_ENABLE__
+    input (* integer groundSensitivity="gnd "; integer supplySensitivity="vdd "; *) en;
+ `else
+    input en;
+`endif
+
+`ifdef __VAMS_ENABLE__
+    input (* integer groundSensitivity="gnd "; integer supplySensitivity="vdd "; *) d;
+ `else
+    input d;
+`endif
+
+endmodule
+"""
+
+
+def test_aall_ams_vorwerk_idempotent(tmp_path, capsys):
+    """autoinst_ams_vorwerk shape: latch's ports are declared in both
+    `ifdef/`else branches, so they are unconditional and their
+    AUTOINST pins carry no `ifdef wrapper.  The second aall run used
+    to drop the wrappers the first run had emitted (the expanded
+    AUTOARG header made the parser stop tracking body guards), so the
+    two runs disagreed; they must now be byte-identical."""
+    src = tmp_path / "ams.v"
+    src.write_text(AMS)
+    capsys.readouterr()
+    p1 = tmp_path / "p1.v"
+    inst.main(["aall", "-i", str(src), "-o", str(p1)])
+    p2 = tmp_path / "p2.v"
+    inst.main(["aall", "-i", str(p1), "-o", str(p2)])
+    out1, out2 = p1.read_text(), p2.read_text()
+    assert out1 == out2
+    top_section = out1.split("endmodule")[0]
+    assert ".q" in top_section and "`ifdef" not in top_section
+
