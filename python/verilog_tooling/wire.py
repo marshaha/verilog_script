@@ -560,9 +560,12 @@ def _inst_driven_nets(
             # A plain net connection's own bracket suffixes are stronger
             # evidence still (verilog-read-sub-decls-expr): a template []
             # already consumed the port's leading dims, so the suffixes
-            # ARE the net's dims (autoinst_array_braket.v).
+            # ARE the net's dims (autoinst_array_braket.v).  But when the
+            # connection carries a /*...*/ dims note, the note wins: for
+            # the [].[@] / []. [range] forms the executable suffix is an
+            # element select, and the note holds the real packed dims.
             pdims = (
-                _expr_suffix_dims(stripped, net)
+                (() if "/*" in expr else _expr_suffix_dims(stripped, net))
                 or _conn_packed_dims(expr)
                 or tuple(_clean_dim(d) for d in port.packed)
             )
