@@ -2455,13 +2455,29 @@ def create_by_args(args_l=None):
     )
     parser.add_argument(
         "--star-expand",
+        dest="star_expand",
         action="store_true",
-        help="eai: expand SystemVerilog .* instances (verilog-auto-star-expand)",
+        default=None,
+        help="eai: expand SystemVerilog .* instances (verilog-auto-star-expand; default: on, as in Emacs, unless the buffer's Local Variables say nil)",
+    )
+    parser.add_argument(
+        "--no-star-expand",
+        dest="star_expand",
+        action="store_false",
+        help="eai: do not expand SystemVerilog .* instances",
     )
     parser.add_argument(
         "--star-save",
+        dest="star_save",
         action="store_true",
-        help="eai: keep .* expansion with // Implicit .* tags (verilog-auto-star-save)",
+        default=None,
+        help="eai: keep .* expansion with // Implicit .* tags (verilog-auto-star-save; default: off, as in Emacs, unless the buffer's Local Variables say t)",
+    )
+    parser.add_argument(
+        "--no-star-save",
+        dest="star_save",
+        action="store_false",
+        help="eai: do not keep .* expansions (restore .*)",
     )
     return parser.parse_args(args_l)
 
@@ -2739,6 +2755,11 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     _log("aall: autoarg done")
     lines = misc.auto_insert_last(lines)
     _log("aall: AUTOINSERTLAST done")
+    if args.star_expand and not args.star_save:
+        # verilog-auto-star-save is nil: the .* expansions fed the passes
+        # above but are deleted again before the text is saved
+        lines = emacs.delete_auto_star_implicit(lines)
+        _log("aall: star expansions collapsed back to .*")
     lines = fmt.all_format(lines)
     _log("aall: format done")
     return lines
@@ -2798,7 +2819,7 @@ def _main_emacs(command: str, text: str, lines: list[str], args) -> list[str]:
                 modules[name] = parse_module_ports(
                     src, with_params=True, interfaces=interfaces, typedef_regexp=td_re
                 )
-        return emacs.auto_inst(
+        out = emacs.auto_inst(
             lines,
             modules,
             which=which,
@@ -2809,6 +2830,10 @@ def _main_emacs(command: str, text: str, lines: list[str], args) -> list[str]:
             star_expand=args.star_expand,
             star_save=args.star_save,
         )
+        if args.star_expand and not args.star_save:
+            # star-save nil: writing the file deletes the expansions again
+            out = emacs.delete_auto_star_implicit(out)
+        return out
     module_params = {}
     for name in names:
         src = _module_lines(name, files, buffer_mods)
@@ -2835,6 +2860,18 @@ def main(argv=None) -> None:
         # substitution on, like emacs file-local variables
         if re.search(r"^\s*//\s*verilog-auto-inst-param-value\s*:\s*t\b", text, re.M):
             args.param_value = True
+    if args.command in ("eai", "eap", "ait", "aall", "ainj"):
+        # .* star settings: an explicit CLI flag wins, then the buffer's
+        # Local Variables, then the Emacs defaults (expand=t, save=nil) —
+        # previously the CLI flags defaulted off and the buffer settings
+        # were ignored, so (.*) instances were invisible to AUTOWIRE & co.
+        from .libdirs import parse_star_settings
+
+        _star = parse_star_settings(lines)
+        if args.star_expand is None:
+            args.star_expand = _star.get("expand", True)
+        if args.star_save is None:
+            args.star_save = _star.get("save", False)
     if args.command == "aall":
         _t0 = time.monotonic()
         out = _main_aall(text, lines, args)

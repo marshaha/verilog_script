@@ -111,6 +111,57 @@ def test_star_without_expand_is_untouched():
     assert auto_inst(buf, {"m": mod()}) == buf
 
 
+def test_star_manual_pins_not_expanded():
+    # Bug #47 follow-up: a .* instance already carrying a hand-written pin
+    # is not star-expanded by verilog-mode — expanding would drop the
+    # manual connection (autoinst_star.v instance 1).
+    buf = ["module top;", "m u_s (.*, .i (custom));", "endmodule"]
+    out = auto_inst(buf, {"m": mod()}, star_expand=True, star_save=True)
+    assert out == buf
+
+
+def test_star_expand_no_save_tags_and_collapses():
+    # With star_save=False the pins are still tagged // Implicit .* so the
+    # caller can collapse them back (the aall/eai on-save behaviour).
+    buf = ["module top;", "m u_s (.*);", "endmodule"]
+    expanded = auto_inst(buf, {"m": mod()}, star_expand=True, star_save=False)
+    assert "// Implicit .*" in "\n".join(expanded)
+    assert delete_auto_star_implicit(expanded) == buf
+
+
+def test_delete_star_implicit_templated_pin_gets_own_close_line():
+    # The last surviving pin is // Templated: fusing ");" onto its line
+    # would bury the close inside the comment and unbalance the instance
+    # (autoinst_star.v instance 3) — it goes on its own line instead.
+    lines = [
+        "m u_s (.*,",
+        "      // Inouts",
+        "        .o (templated),// Templated",
+        "      // Inputs",
+        "        .i (i) );// Implicit .*",
+    ]
+    out = delete_auto_star_implicit(lines)
+    body = "\n".join(out)
+    assert "(templated)," not in body  # trailing comma stripped
+    assert out[-1].strip() == ");"
+    assert "// Inputs" not in body  # orphaned section comment dropped
+
+
+def test_delete_star_implicit_fold_leaves_no_orphan_sections():
+    # All pins implicit: the close folds onto the .* line and the section
+    # comments that followed it are orphans at paren depth 0.
+    lines = [
+        "m u_s (.*,",
+        "      // Outputs",
+        "        .o (o),// Implicit .*",
+        "      // Inputs",
+        "        .i (i) );// Implicit .*",
+        "endmodule",
+    ]
+    out = delete_auto_star_implicit(lines)
+    assert out == ["m u_s (.*);", "endmodule"]
+
+
 # ---------------------------------------------------------------------------
 # AUTO_LISP
 

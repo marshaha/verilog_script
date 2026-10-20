@@ -1294,9 +1294,11 @@ def auto_inst(
     (``verilog-auto-inst-param-value``).
 
     ``star_expand=True`` also expands SystemVerilog ``.*`` instances as if
-    they were AUTOINST (``verilog-auto-star-expand``); ``star_save=True``
-    keeps the expansion on re-runs instead of deleting it back to ``.*``
-    (``verilog-auto-star-save``).
+    they were AUTOINST (``verilog-auto-star-expand``).  Star pins are
+    always tagged ``// Implicit .*``; a caller producing final output
+    with ``star_save=False`` must run :func:`delete_auto_star_implicit`
+    over the result to restore the bare ``.*``
+    (``verilog-auto-star-save`` nil behaviour).
 
     Every ``/*AUTO_LISP(...)*/`` before each instance is evaluated first and
     its bindings feed ``@"..."`` template expressions (Python subset).
@@ -1317,6 +1319,11 @@ def auto_inst(
     # Regions extend to end-of-line: the debris comment trails the `));`.
     regions = []
     for m in markers:
+        if text[m.offset : m.end] == ".*":
+            # star regions are regenerated wholesale (pins follow the
+            # marker and are discarded), and their // Templated tags must
+            # survive: they distinguish auto pins from hand-written ones
+            continue
         st = stacks[m.offset]
         if st:
             try:
@@ -1370,6 +1377,11 @@ def auto_inst(
         close_idx = _matching_paren(text, open_idx)
         is_star = text[marker.offset : marker.end] == ".*"
         if is_star and not star_expand:
+            continue
+        if is_star and _star_region_has_manual_pins(text[marker.end : close_idx]):
+            # a .* instance already carrying hand-written pins
+            # (``.*, .foo (x)``) is NOT star-expanded by verilog-mode —
+            # regenerating the region would drop the manual connections
             continue
         try:
             module, inst = _resolve_instance_at(text, open_idx, m_full)
@@ -1479,11 +1491,13 @@ def _auto_inst_one(
                 continue  # verilog-auto-inst-template-required: omit the port
             if dot_name and conn == port.name:
                 conn = None
-            # star expansions tag non-templated pins so they can be
-            # deleted again on save (verilog-delete-auto-star-implicit)
+            # star expansion pins are ALWAYS tagged // Implicit .* — the
+            # tag is the marker a caller deletes on when the expansion is
+            # not to be saved (verilog-delete-auto-star-implicit); whether
+            # it survives is the caller's star_save decision, not ours.
             if templated and templated_comment:
                 comment = "// Templated"
-            elif is_star and star_save:
+            elif is_star:
                 comment = "// Implicit .*"
             else:
                 comment = None
@@ -1625,6 +1639,21 @@ def _auto_param_one(
 # ---------------------------------------------------------------------------
 # .* save handling (verilog-delete-auto-star-implicit)
 
+def _star_region_has_manual_pins(region: str) -> bool:
+    """True when the text after a ``.*`` marker (up to the pin-list close)
+    holds a hand-written pin — a ``.name (`` on a line carrying neither
+    the ``// Implicit .*`` nor the ``// Templated`` tag.  verilog-mode
+    leaves such instances alone: their author opted out of star
+    expansion.  (The pin may share the marker's line: ``(.* , .i (x))``.)
+    """
+    for line in region.split("\n"):
+        if _IMPLICIT_STAR.search(line) or "// Templated" in line:
+            continue
+        if re.search(r"\.\s*\w+\s*\(", line):
+            return True
+    return False
+
+
 _IMPLICIT_STAR = re.compile(r"\s*// Implicit \.\*")
 
 
@@ -1647,34 +1676,51 @@ def delete_auto_star_implicit(lines: Sequence[str]) -> list[str]:
             body = _strip_comments(line)
             if re.search(r"\)\s*;\s*$", body):
                 j = len(out) - 1
-                while j >= 0 and not re.search(r"\.\s*\w+\s*\(|\.\*", out[j]):
+                while j >= 0 and not re.search(r"\.\s*\w+\s*\(|\.\*", _strip_comments(out[j])):
                     j -= 1
-                if j >= 0 and re.search(r"\.\s*\w+\s*\(", out[j]):
-                    out[j] = out[j].rstrip()
-                    if out[j].endswith(","):
-                        out[j] = out[j][:-1].rstrip()
-                    out[j] += ");"
-                elif j >= 0 and re.search(r"\.\*", out[j]):
+                if j >= 0 and re.search(r"\.\s*\w+\s*\(", _strip_comments(out[j])):
+                    raw = out[j].rstrip()
+                    code, sep, comment = raw.partition("//")
+                    code = code.rstrip()
+                    if code.endswith(","):
+                        code = code[:-1].rstrip()
+                    if sep:
+                        # fusing ");" onto the line would bury it inside
+                        # the trailing comment (e.g. // Templated) and
+                        # unbalance the instance — close on its own line
+                        out[j] = code + sep + comment
+                        indent = re.match(r"\s*", raw).group(0)
+                        out.insert(j + 1, indent + ");")
+                    else:
+                        out[j] = code + ");"
+                elif j >= 0 and re.search(r"\.\*", _strip_comments(out[j])):
                     # nothing but .* left: close the pin list on the .* line
-                    out[j] = re.sub(r"\.\*\s*,?\s*$", ".*);", out[j])
+                    code, sep, comment = out[j].partition("//")
+                    code = re.sub(r"\.\*\s*,?\s*$", ".*);", code.rstrip())
+                    out[j] = code + (sep + comment if sep else "")
                 i += 1
                 continue
             i += 1
             continue
         out.append(line)
         i += 1
-    # drop orphaned section comments (no pin line between it and the close)
+    # drop orphaned section comments: a `// Outputs`-style comment is only
+    # meaningful inside a pin list, and the fold above can leave one
+    # stranded after the folded `.*);` (or after an inserted `);` line).
+    # Walk the comment-masked text tracking paren depth and drop section
+    # comments sitting at depth 0.
+    masked = mask_comments("\n".join(out)).split("\n")
     result: list[str] = []
+    depth = 0
     for idx, line in enumerate(out):
-        if re.match(r"^\s*//\s*(Outputs|Inouts|Inputs|Interfaces|Interfaced)\s*$", line):
-            keep = False
-            for later in out[idx + 1 :]:
-                if re.search(r"\.\s*\w+\s*\(", later):
-                    keep = True
-                    break
-                if re.search(r"\)\s*;\s*$", later):
-                    break
-            if not keep:
-                continue
+        if (
+            depth == 0
+            and re.match(r"^\s*//\s*(Outputs|Inouts|Inputs|Interfaces|Interfaced)\s*$", line)
+        ):
+            continue
         result.append(line)
+        code = masked[idx] if idx < len(masked) else ""
+        depth += code.count("(") - code.count(")")
+        if depth < 0:
+            depth = 0
     return result

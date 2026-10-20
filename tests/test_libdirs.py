@@ -488,3 +488,21 @@ def test_module_lines_tolerates_non_utf8_libdir(tmp_path):
     p.write_bytes(b"// \xa9\nmodule latin1mod(input clk);\nendmodule\n")
     assert _module_lines("latin1mod", {"latin1mod": p}, {})[1] == \
         "module latin1mod(input clk);"
+
+
+# ---------------------------------------------------------------------------
+# verilog-auto-star-expand / verilog-auto-star-save (Bug #47)
+
+
+def test_parse_star_settings():
+    from verilog_tooling.libdirs import parse_star_settings
+
+    assert parse_star_settings(["module m;", "endmodule"]) == {}
+    assert parse_star_settings(
+        ["// Local Variables:", "// verilog-auto-star-save: t", "// End:"]
+    ) == {"save": True}
+    assert parse_star_settings(
+        ["// verilog-auto-star-expand: nil", "// verilog-auto-star-save: t"]
+    ) == {"expand": False, "save": True}
+    # unparseable values are ignored, not errors
+    assert parse_star_settings(["// verilog-auto-star-expand: maybe"]) == {}

@@ -158,6 +158,29 @@ def parse_align_typedef_words(lines: Iterable[str]) -> list[str]:
     return []
 
 
+def _elisp_bool(tok: str) -> bool | None:
+    if tok in ("t", "true", "1"):
+        return True
+    if tok in ("nil", "false", "0"):
+        return False
+    return None
+
+
+def parse_star_settings(lines: Iterable[str]) -> dict:
+    """The buffer's ``verilog-auto-star-expand`` / ``verilog-auto-star-save``
+    Local Variables, as ``{"expand": bool, "save": bool}`` (keys absent when
+    the buffer does not set them).  Emacs defaults are expand=t, save=nil;
+    callers layer those under any explicit CLI choice."""
+    out: dict = {}
+    for line in lines:
+        m = re.search(r"verilog-auto-star-(expand|save)\s*:\s*(\S+)", line)
+        if m:
+            val = _elisp_bool(m.group(2))
+            if val is not None:
+                out[m.group(1)] = val
+    return out
+
+
 def parse_typedef_regexp(lines: Iterable[str]) -> str | None:
     """The buffer's ``// verilog-typedef-regexp:"..."`` Local Variable (a
     regexp matching names that are TYPES, not nets — they must never be
