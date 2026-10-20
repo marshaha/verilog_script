@@ -211,6 +211,8 @@ class InstNet:
     net_type: str = ""
     data_type: str = ""
     unpacked_idx: tuple = ()  # element indexes connected (AUTOWIRE merges)
+    unpacked_ranges: tuple = ()  # explicit unpacked ranges from /*[D].[R]*/
+    # connection notes (tpl_arr_edge.v): merged with the indexes at emit
     multidim: tuple = ()  # leading selects of a packed-only port's
     # connection (verilog-mode multidim): unpacked dims rendered BEFORE the
     # packed dims, first driver's wins
@@ -640,6 +642,28 @@ def _inst_driven_nets(
                     nets[net] = replace(
                         rec, unpacked_idx=tuple(rec.unpacked_idx) + (uidx,)
                     )
+            # explicit unpacked RANGES from the connection note
+            # (/*[15:0].[-2:-1]*/ from a `net[].[-2:-1]` template): the
+            # dot-part brackets carrying a colon are range evidence for
+            # the declaration merge (tpl_arr_edge.v)
+            from .autodef import _CONN_DIM_NOTE
+
+            nm = _CONN_DIM_NOTE.search(expr)
+            if nm:
+                rev = tuple(
+                    d.strip()
+                    for d in re.findall(r"\[([^\]]+)\]", nm.group(2))
+                    if ":" in d
+                )
+                if rev:
+                    rec = nets[net]
+                    new = tuple(x for x in rev if x not in rec.unpacked_ranges)
+                    if new:
+                        from dataclasses import replace
+
+                        nets[net] = replace(
+                            rec, unpacked_ranges=tuple(rec.unpacked_ranges) + new
+                        )
             if mdim:
                 rec = nets[net]
                 if not rec.multidim:
@@ -864,12 +888,18 @@ def _auto_wire_single(
         if typedef_re and re.search(typedef_re, name):
             continue  # a typedef, not a net (verilog-typedef-regexp)
         net = driven[name]
-        # unpacked array: merge the element indexes from all instances into
-        # one range (abc[0]+abc[2] -> [0:2]); a whole-array connection of an
+        # unpacked array: merge the element indexes and explicit ranges
+        # from all instances into one dim (abc[0]+abc[2] -> [0:2],
+        # [-2:-1]+[0:2] -> [-2:2]); a whole-array connection of an
         # unpacked port keeps the port's own dims
         dims: tuple = ()
-        if net.unpacked_idx:
-            merged = _merge_unpacked_indexes(net.unpacked_idx, local_syms)
+        merge_conflict = False
+        if net.unpacked_idx or net.unpacked_ranges:
+            from .autodef import _merge_unpacked_evidence
+
+            merged, merge_conflict = _merge_unpacked_evidence(
+                net.unpacked_idx, net.unpacked_ranges
+            )
             if merged is None:
                 continue
             dims = (merged,)
@@ -899,6 +929,7 @@ def _auto_wire_single(
         comments[name] = (
             f"// {direction} {net.inst} of {net.module}{mod_suffix}"
             + (", ..." if net.multi else "")
+            + (", Couldn't Merge" if merge_conflict else "")
         )
     if not _wire_comment_enabled(full):
         comments = {}

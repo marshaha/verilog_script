@@ -4597,3 +4597,28 @@ def test_inst_driven_nets_sv_cast():
     mods = {"t3": parse_module_ports(submod3)}
     in_nets = _inst_driven_nets(top, mods, ("input",), simple_only=True)
     assert "x" in in_nets
+
+
+def test_merge_unpacked_evidence_rules():
+    # Bug #50 (tpl_arr_edge.v): the unpacked-evidence merge behind
+    # AUTOWIRE/AUTOINPUT/AUTOLOGIC declarations.
+    from verilog_tooling.autodef import (
+        _merge_unpacked_evidence,
+        _merge_unpacked_indexes,
+    )
+
+    # element indexes merge into their covering range; negatives count
+    assert _merge_unpacked_evidence(["0", "2", "4"], []) == ("0:4", False)
+    assert _merge_unpacked_evidence(["-2"], []) == ("-2:-2", False)
+    assert _merge_unpacked_indexes(["-2"], set()) == "-2:-2"
+    # explicit ranges widen positionally, no conflict
+    assert _merge_unpacked_evidence([], ["-2:-1", "0:2"]) == ("-2:2", False)
+    assert _merge_unpacked_evidence([], ["0:2", "1:4"]) == ("0:4", False)
+    assert _merge_unpacked_evidence([], ["3:0"]) == ("3:0", False)
+    # an explicit range wins over bare indexes -> conflict
+    assert _merge_unpacked_evidence(["0"], ["3:0"]) == ("3:0", True)
+    # a symbolic dim wins over numeric evidence -> conflict
+    assert _merge_unpacked_evidence(["IDX", "0"], []) == ("IDX", True)
+    # a lone symbolic is used verbatim, no conflict
+    assert _merge_unpacked_evidence(["IDX"], []) == ("IDX", False)
+    assert _merge_unpacked_evidence([], []) == (None, False)

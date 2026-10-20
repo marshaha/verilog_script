@@ -634,11 +634,13 @@ def _wire_like_single(
         # port's own unpacked decl — emitted symbolically like verilog-mode
         # (no visibility gate: AUTOLOGIC is AUTO-WIRE with logic type, and
         # verilog-auto-wire declares whatever the submodule port says)
-        from .autodef import _merge_unpacked_indexes
+        from .autodef import _merge_unpacked_evidence
 
         dims: tuple = ()
-        if net.unpacked_idx:
-            merged = _merge_unpacked_indexes(net.unpacked_idx, local_syms)
+        if net.unpacked_idx or net.unpacked_ranges:
+            merged, _conflict = _merge_unpacked_evidence(
+                net.unpacked_idx, net.unpacked_ranges
+            )
             dims = (merged,) if merged is not None else tuple(net.unpacked_dims)
         elif net.unpacked_dims:
             dims = tuple(net.unpacked_dims)

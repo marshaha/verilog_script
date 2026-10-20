@@ -159,20 +159,21 @@ def _declarable(net, local_syms: set[str]) -> bool:
     NOT visibility-checked: an instance-derived width (an output's
     driver dimension, or the dimension of the pin a net feeds) is
     declared as written when it does not fold to local constants."""
-    from .autodef import _merge_unpacked_indexes
+    from .autodef import _merge_unpacked_evidence
 
-    if net.unpacked_idx:
-        return _merge_unpacked_indexes(net.unpacked_idx, local_syms) is not None
+    if net.unpacked_idx or net.unpacked_ranges:
+        merged, _c = _merge_unpacked_evidence(net.unpacked_idx, net.unpacked_ranges)
+        return merged is not None
     return True
 
 
 def _sig_dims(net, local_syms: set[str]) -> tuple:
     """Unpacked dims for the emitted declaration: merged element indexes,
     else the port's own unpacked decl."""
-    from .autodef import _merge_unpacked_indexes
+    from .autodef import _merge_unpacked_evidence
 
-    if net.unpacked_idx:
-        merged = _merge_unpacked_indexes(net.unpacked_idx, local_syms)
+    if net.unpacked_idx or net.unpacked_ranges:
+        merged, _c = _merge_unpacked_evidence(net.unpacked_idx, net.unpacked_ranges)
         return (merged,) if merged is not None else ()
     return tuple(net.unpacked_dims)
 

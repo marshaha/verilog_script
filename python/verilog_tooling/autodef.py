@@ -2440,7 +2440,7 @@ def _merge_unpacked_indexes(idxs: Sequence[str], known: set[str]) -> str | None:
     syms: set[str] = set()
     for x in idxs:
         x = x.strip()
-        if re.fullmatch(r"\d+", x):
+        if re.fullmatch(r"-?\d+", x):
             nums.append(int(x))
         elif re.fullmatch(r"[a-zA-Z_]\w*", x):
             syms.add(x)
@@ -2453,6 +2453,53 @@ def _merge_unpacked_indexes(idxs: Sequence[str], known: set[str]) -> str | None:
     if not nums:
         return None
     return f"{min(nums)}:{max(nums)}"
+
+
+def _merge_unpacked_evidence(
+    idxs: Sequence[str], ranges: Sequence[str]
+) -> "tuple[str | None, bool]":
+    """Merge ALL unpacked evidence for one net into a single dim text.
+
+    Returns ``(dim, conflict)``: DIM is the unpacked range text for the
+    declaration (None when nothing usable was collected); CONFLICT marks
+    evidence that had to be discarded, which verilog-mode reports as
+    ``Couldn't Merge`` on the declaration comment.
+
+    Rules (verilog-signals-combine-bus, as exercised by tpl_arr_edge.v):
+    numeric ranges widen positionally (min of first endpoints, max of
+    second endpoints — ``[-2:-1]`` + ``[0:2]`` -> ``-2:2``); element
+    indexes merge into their covering range; an explicit range WINS
+    over bare indexes (the indexes are dropped -> conflict); a symbolic
+    dim (``IDX``, from a template or an index) wins over every numeric
+    evidence (also a conflict when numerics were present).  A lone
+    symbolic or a lone range is used verbatim, without conflict.
+    """
+    num_ranges: list[tuple[int, int]] = []
+    sym_ev: list[str] = []
+    for r in ranges:
+        r = r.strip()
+        m = re.fullmatch(r"(-?\d+)\s*:\s*(-?\d+)", r)
+        if m:
+            num_ranges.append((int(m.group(1)), int(m.group(2))))
+        elif r:
+            sym_ev.append(r)
+    nums: list[int] = []
+    for x in idxs:
+        x = x.strip()
+        if re.fullmatch(r"-?\d+", x):
+            nums.append(int(x))
+        elif x:
+            sym_ev.append(x)
+    if sym_ev:
+        return sym_ev[0], bool(num_ranges or nums or len(set(sym_ev)) > 1)
+    if num_ranges:
+        dim = (
+            f"{min(a for a, _ in num_ranges)}:{max(b for _, b in num_ranges)}"
+        )
+        return dim, bool(nums)
+    if nums:
+        return f"{min(nums)}:{max(nums)}", False
+    return None, False
 
 
 def _width_syms_known(width: str, known: set[str]) -> bool:
