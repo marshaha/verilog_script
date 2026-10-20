@@ -322,6 +322,16 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         # (output reg [DW-1:0] Q — dropping it turns the port into a wire)
         dir_m = re.match(r"\s*(?:input|output|inout)\s*", body_ns)
         rest_dir = body_ns[dir_m.end() :] if dir_m else body_ns
+        # a SystemVerilog ``var`` may precede the data type (``input var
+        # real Tx_vcm``): it belongs to the keyword slot — dropping it
+        # also drops the type it introduces, and the next run then
+        # re-derives the port as an implicit wire.  Consume it here and
+        # let the net-type / UDT logic below classify what follows.
+        kw_prefix = ""
+        var_m = re.match(r"var\s+", rest_dir)
+        if var_m:
+            kw_prefix = "var "
+            rest_dir = rest_dir[var_m.end() :]
         reg_m = re.match(r"(reg|wire|logic)\s+", rest_dir)
         kw = (reg_m.group(1) + " ") if reg_m else ""
         if reg_m:
@@ -340,6 +350,7 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
             )
             if tm:
                 kw = tm.group(1) + " "
+        kw = kw_prefix + kw
         # the name is the identifier at the end of the declaration,
         # optionally followed by unpacked dimensions (``arr_i [2]``):
         # the dims are kept with the name — end-anchored ``\w+\s*$``

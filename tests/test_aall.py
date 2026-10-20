@@ -385,6 +385,58 @@ def test_aall_name_bug245_idempotent(tmp_path, capsys):
     assert "a_NO[2:0]" in out1           # subscript not suppressed
 
 
+AUTOWIRE_REAL = """\
+module sc_top (
+  input var real  Tx_vcm,
+  input var real  i_DAC_in,
+  input           i_Tx_SC_en,
+  output var real Tx_vsc
+);
+
+endmodule
+
+module cm_top (
+  input           i_Tx_CM_en,
+  output var real Tx_vcm
+);
+
+endmodule
+
+module top (
+/*AUTOOUTPUT*/
+/*AUTOINPUT*/
+);
+
+/*AUTOWIRE*/
+
+cm_top cm_buf (/*AUTOINST*/);
+
+sc_top sc_buf (/*AUTOINST*/);
+
+endmodule
+"""
+
+
+def test_aall_autowire_real_idempotent(tmp_path, capsys):
+    """autowire_real shape: APF dropped the ``var`` keyword (and the
+    ``real`` type it introduces) from the submodules' own headers on
+    the first run, so the second run re-derived their ports as plain
+    wires (``real Tx_vcm;`` decayed to ``wire Tx_vcm;`` and the
+    AUTOINPUT/AUTOOUTPUT declarations lost ``real``)."""
+    src = tmp_path / "wr.v"
+    src.write_text(AUTOWIRE_REAL)
+    capsys.readouterr()
+    p1 = tmp_path / "p1.v"
+    inst.main(["aall", "-i", str(src), "-o", str(p1)])
+    p2 = tmp_path / "p2.v"
+    inst.main(["aall", "-i", str(p1), "-o", str(p2)])
+    out1, out2 = p1.read_text(), p2.read_text()
+    assert out1 == out2
+    assert "input var real" in out1 and "output var real" in out1
+    assert "real" in out1 and "Tx_vcm;" in out1
+    assert not any(ln.startswith("wire") for ln in out1.splitlines())
+
+
 def test_aall_ams_vorwerk_idempotent(tmp_path, capsys):
     """autoinst_ams_vorwerk shape: latch's ports are declared in both
     `ifdef/`else branches, so they are unconditional and their

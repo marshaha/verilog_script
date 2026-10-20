@@ -223,6 +223,19 @@ def test_apf_leaves_escaped_identifier_port_untouched():
     assert "escaped*dot*named" in out[0]
 
 
+def test_apf_keeps_var_type_prefix():
+    # autowire_real: ``input var real Tx_vcm`` — APF did not know the
+    # ``var`` keyword slot and rebuilt the port as ``input Tx_vcm``,
+    # dropping the type with it; the next run then re-derived the
+    # port's nets as plain wires.
+    out = auto_port_format(["  input var real  Tx_vcm,"])
+    assert "var real" in out[0], out
+    assert out[0].rstrip().endswith("Tx_vcm,"), out
+    # var with an implicit type is kept too
+    out = auto_port_format(["  output var Tx_vsc,"])
+    assert out[0].split("Tx_vsc")[0].strip() == "output var", out
+
+
 def test_apf_aligns_ports_and_preserves_terminator_and_comment():
     out = auto_port_format(APF_BUF)
     assert out == [
