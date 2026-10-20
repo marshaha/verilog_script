@@ -842,15 +842,19 @@ endmodule
 def test_expr_suffix_dims():
     # Bug #49: a plain connection's own bracket suffixes are the driven
     # net's declaration dims (verilog-read-sub-decls-expr) — last group
-    # is the vector, earlier groups are multidim.
+    # is the vector, earlier groups are multidim.  NPACKED is the port's
+    # packed-dim count: more suffix groups than that is the gaspar
+    # multidim case (leading selects are unpacked), not packed evidence.
     from verilog_tooling.wire import _expr_suffix_dims
 
-    assert _expr_suffix_dims("b_twod[2:-1]", "b_twod") == ("2:-1",)
-    assert _expr_suffix_dims("c_twod[x][2:-1]", "c_twod") == ("x", "2:-1")
-    assert _expr_suffix_dims("c_threed[x][y][3:-3]", "c_threed") == ("x", "y", "3:-3")
+    assert _expr_suffix_dims("b_twod[2:-1]", "b_twod", 2) == ("2:-1",)
+    assert _expr_suffix_dims("c_twod[x][2:-1]", "c_twod", 2) == ("x", "2:-1")
+    assert _expr_suffix_dims("c_threed[x][y][3:-3]", "c_threed", 3) == ("x", "y", "3:-3")
+    # gaspar: 2 groups on a 1-packed-dim port -> leading select is unpacked
+    assert _expr_suffix_dims("in_momo[0][127:0]", "in_momo", 1) == ()
     # bare index (element select) and bare names carry no packed evidence
-    assert _expr_suffix_dims("net[i]", "net") == ()
-    assert _expr_suffix_dims("net", "net") == ()
+    assert _expr_suffix_dims("net[i]", "net", 1) == ()
+    assert _expr_suffix_dims("net", "net", 1) == ()
     # not a plain net connection
-    assert _expr_suffix_dims("{a, b}[2:-1]", "a") == ()
-    assert _expr_suffix_dims("other[2:-1]", "net") == ()
+    assert _expr_suffix_dims("{a, b}[2:-1]", "a", 1) == ()
+    assert _expr_suffix_dims("other[2:-1]", "net", 1) == ()
