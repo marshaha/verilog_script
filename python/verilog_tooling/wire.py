@@ -418,6 +418,29 @@ def _primitive_nets(
             nets[net_name] = rec
 
 
+def _expr_suffix_dims(stripped: str, net: str) -> tuple[str, ...]:
+    """Packed dims carried by a plain ``net[G1][G2]...`` connection itself.
+
+    verilog-read-sub-decls-expr: the connection's own bracket suffixes
+    are the declaration evidence — the last group is the vector, earlier
+    groups are multidim — NOT the submodule port's ranges.  This is what
+    a template ``[]`` (expanded to the port's last dim) produces:
+    ``b_twod[2:-1]`` declares ``[2:-1] b_twod``, ``c_twod[x][2:-1]``
+    declares ``[x] [2:-1] c_twod``.  Only a trailing RANGE group (with a
+    colon) qualifies; a bare index (``net[i]``) is an element select and
+    is left to the unpacked-dim logic.
+    """
+    m = re.match(
+        r"^\s*" + re.escape(net) + r"((?:\s*\[[^\]]+\])+)\s*$", stripped
+    )
+    if not m:
+        return ()
+    groups = re.findall(r"\[([^\]]+)\]", m.group(1))
+    if not groups or ":" not in groups[-1]:
+        return ()
+    return tuple(_clean_dim(g) for g in groups)
+
+
 def _inst_driven_nets(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef],
@@ -534,8 +557,14 @@ def _inst_driven_nets(
             # packed ranges — including a single packed range: width is
             # msb-only, so a non-zero lsb ([1:-1], [8:1]) would be lost
             # if the single dim were left to the width fallback ([1:0]).
-            pdims = _conn_packed_dims(expr) or tuple(
-                _clean_dim(d) for d in port.packed
+            # A plain net connection's own bracket suffixes are stronger
+            # evidence still (verilog-read-sub-decls-expr): a template []
+            # already consumed the port's leading dims, so the suffixes
+            # ARE the net's dims (autoinst_array_braket.v).
+            pdims = (
+                _expr_suffix_dims(stripped, net)
+                or _conn_packed_dims(expr)
+                or tuple(_clean_dim(d) for d in port.packed)
             )
             if pdims and param_values:
                 pdims = tuple(

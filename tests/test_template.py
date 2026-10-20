@@ -262,3 +262,22 @@ def test_template_brackets_multidim_uses_packed_note():
     # single [] still uses the packed range
     out1 = expand_connection("sig[]", "0", "7:0", packed_note="/*[7:0]*/")
     assert out1 == "sig[7:0]", out1
+
+
+def test_expand_connection_bracket_placeholders():
+    # Bug #49 (autoinst_array_braket.v): a single [] in a template takes
+    # the port's LAST packed dimension (verilog-mode vl-bits); [][] takes
+    # the full dimensions note (dflt-bits).  Literal [x] groups pass
+    # through untouched.
+    assert expand_connection(
+        "b_twod[]", "", None, packed_note="/*[1:-1][2:-1]*/", packed_last="[2:-1]"
+    ) == "b_twod[2:-1]"
+    assert expand_connection(
+        "c_twod[x][]", "", None, packed_note="/*[1:-1][2:-1]*/", packed_last="[2:-1]"
+    ) == "c_twod[x][2:-1]"
+    assert expand_connection(
+        "d_twod[][]", "", None, packed_note="/*[1:-1][2:-1]*/", packed_last="[2:-1]"
+    ) == "d_twod/*[1:-1][2:-1]*/"
+    # single-dim port: port_width path, and [][] falls back to it too
+    assert expand_connection("b_oned[]", "", "1:-1") == "b_oned[1:-1]"
+    assert expand_connection("d_oned[][]", "", "1:-1") == "d_oned[1:-1]"

@@ -1162,6 +1162,7 @@ def _connect(
     # stripping and pure-numeric folding (2*16-1 -> 31); symbols stay
     # verbatim.
     packed_note = ""
+    packed_last = ""
     if port.is_multidim:
         from .autodef import _clean_dim
 
@@ -1172,11 +1173,15 @@ def _connect(
         if port.unpacked:
             inner += "." + "".join(f"[{u}]" for u in port.unpacked)
         packed_note = f"/*{inner}*/"
+        # verilog-mode vl-bits: the LAST packed dimension — what a single
+        # [] in a template expands to (autoinst_array_braket.v)
+        if dims:
+            packed_last = f"[{_clean_dim(dims[-1])}]"
     if template is not None:
         conn = template_connection(
             template, port.name, at_value, width, env,
             vl_cell_name=inst_name, vl_dir=port.direction or "",
-            packed_note=packed_note,
+            packed_note=packed_note, packed_last=packed_last,
         )
         if conn is not None:
             if param_values:

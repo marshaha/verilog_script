@@ -496,7 +496,7 @@ def _range_to_width(range_str: str | None) -> str:
 def expand_connection(
     expr: str, at_value: str, port_width: str | None, env: dict | None = None,
     *, vl_name: str = "", vl_cell_name: str = "", vl_dir: str = "",
-    packed_note: str = "",
+    packed_note: str = "", packed_last: str = "",
 ) -> str:
     """Apply ``@``, ``@"expr"`` and ``[]`` expansion to a connection.
 
@@ -564,7 +564,10 @@ def expand_connection(
     if "[][]" in expr:
         rng_multi = packed_note if packed_note else (f"[{port_width}]" if port_width else "")
         expr = expr.replace("[][]", rng_multi)
-    rng = f"[{port_width}]" if port_width else packed_note
+    # a single [] takes the port's LAST packed dimension (verilog-mode's
+    # vl-bits) — for a multidim port that is packed[-1], NOT the full
+    # /*[D1][D2]*/ note; the note is only the [][] (dflt-bits) expansion.
+    rng = f"[{port_width}]" if port_width else (packed_last or packed_note)
     expr = expr.replace("[]", rng)
     return expr
 
@@ -579,6 +582,7 @@ def template_connection(
     vl_cell_name: str = "",
     vl_dir: str = "",
     packed_note: str = "",
+    packed_last: str = "",
     on_hit: "Callable[[TemplateEntry], None] | None" = None,
 ) -> str | None:
     """Connection for PORT_NAME under TEMPLATE, or None when no entry matches.
@@ -598,7 +602,7 @@ def template_connection(
             return expand_connection(
                 entry.connection, at_value, port_width, env,
                 vl_name=port_name, vl_cell_name=vl_cell_name, vl_dir=vl_dir,
-                packed_note=packed_note,
+                packed_note=packed_note, packed_last=packed_last,
             )
     for entry in template.entries:  # top-most matching regexp wins
         if not entry.is_regex:
@@ -618,6 +622,6 @@ def template_connection(
             return expand_connection(
                 expr, at_value, port_width, env,
                 vl_name=port_name, vl_cell_name=vl_cell_name, vl_dir=vl_dir,
-                packed_note=packed_note,
+                packed_note=packed_note, packed_last=packed_last,
             )
     return None
