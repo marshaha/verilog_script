@@ -420,7 +420,7 @@ def _primitive_nets(
             nets[net_name] = rec
 
 
-def _expr_suffix_dims(stripped: str, net: str) -> tuple[str, ...]:
+def _expr_suffix_dims(stripped: str, net: str, npacked: int) -> tuple[str, ...]:
     """Packed dims carried by a plain ``net[G1][G2]...`` connection itself.
 
     verilog-read-sub-decls-expr: the connection's own bracket suffixes
@@ -428,9 +428,14 @@ def _expr_suffix_dims(stripped: str, net: str) -> tuple[str, ...]:
     groups are multidim — NOT the submodule port's ranges.  This is what
     a template ``[]`` (expanded to the port's last dim) produces:
     ``b_twod[2:-1]`` declares ``[2:-1] b_twod``, ``c_twod[x][2:-1]``
-    declares ``[x] [2:-1] c_twod``.  Only a trailing RANGE group (with a
-    colon) qualifies; a bare index (``net[i]``) is an element select and
-    is left to the unpacked-dim logic.
+    declares ``[x] [2:-1] c_twod`` (autoinst_array_braket.v).  Only a
+    trailing RANGE group (with a colon) qualifies; a bare index
+    (``net[i]``) is an element select and is left to the unpacked-dim
+    logic.  MORE groups than the port has packed dims is the multidim
+    case instead (autoinput_2d_gaspar.v ``in_momo[0][127:0]`` on a
+    ``[127:0]`` port): the leading extra groups are unpacked element
+    selects and must fall through to the mdim/unpacked logic — claiming
+    them here double-counts the select (``[0] [0] [127:0]``).
     """
     m = re.match(
         r"^\s*" + re.escape(net) + r"((?:\s*\[[^\]]+\])+)\s*$", stripped
@@ -439,6 +444,8 @@ def _expr_suffix_dims(stripped: str, net: str) -> tuple[str, ...]:
         return ()
     groups = re.findall(r"\[([^\]]+)\]", m.group(1))
     if not groups or ":" not in groups[-1]:
+        return ()
+    if len(groups) > npacked:
         return ()
     return tuple(_clean_dim(g) for g in groups)
 
@@ -567,7 +574,7 @@ def _inst_driven_nets(
             # the [].[@] / []. [range] forms the executable suffix is an
             # element select, and the note holds the real packed dims.
             pdims = (
-                (() if "/*" in expr else _expr_suffix_dims(stripped, net))
+                (() if "/*" in expr else _expr_suffix_dims(stripped, net, len(port.packed)))
                 or _conn_packed_dims(expr)
                 or tuple(_clean_dim(d) for d in port.packed)
             )
