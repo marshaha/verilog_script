@@ -335,6 +335,56 @@ endmodule
 """
 
 
+NAME_BUG245 = """\
+module top_nb (
+   );
+
+   /*AUTOINPUT*/
+
+   /*AUTOOUTPUT*/
+
+   Sub sub (
+            /*AUTOINST*/);
+
+endmodule
+
+module Sub
+  (
+   input  logic clk,
+   output [2:0] a_NO,
+   input \\escaped*dot*named 
+   );
+endmodule
+
+// Local Variables:
+// verilog-auto-inst-dot-name: t
+// verilog-auto-inst-vector: nil
+// End:
+"""
+
+
+def test_aall_name_bug245_idempotent(tmp_path, capsys):
+    """autoinst_name_bug245 shape, two failure modes on the second run:
+    (1) APF rewrote Sub's ``input \\escaped*dot*named `` header line to
+    ``input named``, inventing a phantom port that AUTOINST/AUTOINPUT
+    then picked up; (2) with verilog-auto-inst-vector: nil, the
+    subscript on .a_NO was suppressed by the AUTOOUTPUT declaration
+    the first run itself had generated — only a MANUAL parent
+    declaration may suppress it.  Both runs must be byte-identical."""
+    src = tmp_path / "nb.v"
+    src.write_text(NAME_BUG245)
+    capsys.readouterr()
+    p1 = tmp_path / "p1.v"
+    inst.main(["aall", "-i", str(src), "-o", str(p1)])
+    p2 = tmp_path / "p2.v"
+    inst.main(["aall", "-i", str(p1), "-o", str(p2)])
+    out1, out2 = p1.read_text(), p2.read_text()
+    assert out1 == out2
+    assert "\\escaped*dot*named" in out1  # escaped name survives verbatim
+    assert "named;//" not in out1        # no phantom port declaration
+    assert "a_NO[2:0]" in out1           # subscript not suppressed
+
+
 def test_aall_ams_vorwerk_idempotent(tmp_path, capsys):
     """autoinst_ams_vorwerk shape: latch's ports are declared in both
     `ifdef/`else branches, so they are unconditional and their

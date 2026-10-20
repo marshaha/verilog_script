@@ -208,6 +208,21 @@ def test_apf_leaves_port_with_initializer_untouched():
     assert "cx = START_X" in out[0] and "cy = START_Y" in out[1]
 
 
+def test_apf_leaves_escaped_identifier_port_untouched():
+    # autoinst_name_bug245: ``input \escaped*dot*named `` — an escaped
+    # identifier runs to the next whitespace and may hold almost any
+    # character; the \w+-anchored name extraction kept only the last
+    # fragment and silently renamed the port to ``named``, which the
+    # next AUTOINST pass then treated as a real extra port.
+    lines = [
+        "   input \\escaped*dot*named ",
+        "    input clk,",
+    ]
+    out = auto_port_format(lines)
+    assert out[0] == lines[0]
+    assert "escaped*dot*named" in out[0]
+
+
 def test_apf_aligns_ports_and_preserves_terminator_and_comment():
     out = auto_port_format(APF_BUF)
     assert out == [

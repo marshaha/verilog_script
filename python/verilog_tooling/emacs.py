@@ -1449,7 +1449,15 @@ def _auto_inst_one(
     )
     # Parent module signal declarations (for inst-vector:nil width matching):
     # every wire/reg/logic AND io declaration of the enclosing module —
-    # multi-name decls included (misc._scan_decls handles both)
+    # multi-name decls included (misc._scan_decls handles both).  Only
+    # MANUAL declarations count: verilog-mode skips the subscript "when
+    # it matches the entire bus as declared in the module (AUTOWIRE
+    # signals always are subscripted, you must manually declare the
+    # wire to have the subscripts removed)", so declarations inside an
+    # AUTO-generated region (// Beginning of automatic ... // End of
+    # automatics) must not suppress it — otherwise the second run,
+    # which sees the first run's AUTOOUTPUT/AUTOWIRE declarations,
+    # drops subscripts the first run emitted.
     parent_signals: dict[str, str] = {}
     if inst_vector == "nil":
         from .inst import module_spans
@@ -1458,7 +1466,18 @@ def _auto_inst_one(
         tlines = text.split("\n")
         for lo, hi in module_spans(tlines):
             if lo <= text.count("\n", 0, marker.offset) <= hi:
-                for d in _scan_decls(tlines[lo : hi + 1]):
+                seg: list[str] = []
+                in_auto = False
+                for ln in tlines[lo : hi + 1]:
+                    if re.match(r"\s*// Beginning of automatic\b", ln):
+                        in_auto = True
+                    if in_auto:
+                        seg.append("")
+                        if "// End of automatics" in ln:
+                            in_auto = False
+                    else:
+                        seg.append(ln)
+                for d in _scan_decls(seg):
                     if d.bits:
                         rng = re.sub(r"\s+", "", d.bits).strip("[]")
                         parent_signals.setdefault(d.name, rng)

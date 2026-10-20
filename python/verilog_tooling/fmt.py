@@ -310,6 +310,14 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         if _INIT_ASSIGN_RE.search(body):
             out.append(line)
             continue
+        # An escaped identifier (``\escaped*dot*named ``) runs to the
+        # next whitespace and may contain almost any character; the
+        # \w+-anchored name extraction below would keep only its last
+        # word fragment, silently renaming the port (``named``) and
+        # inventing a phantom port on the next run.  Leave it untouched.
+        if "\\" in body_ns:
+            out.append(line)
+            continue
         # an optional reg/wire/logic after the direction must be kept
         # (output reg [DW-1:0] Q — dropping it turns the port into a wire)
         dir_m = re.match(r"\s*(?:input|output|inout)\s*", body_ns)
