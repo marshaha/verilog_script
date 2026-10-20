@@ -40,7 +40,7 @@ _AUTO_MARK = re.compile(r"/\*\s*\bauto\w+\b", re.IGNORECASE)  # any AUTO marker 
 _INST_PIN = re.compile(r"^\s*\..*[^\\]\(.*\)\s*.*$")
 _PORT_DECL = re.compile(r"^\s*(input|output|inout)\b")
 _DEFINE_DECL = re.compile(r"^\s*(wire|reg|logic|integer|genvar)\b")
-_WIDTH = re.compile(r"\[.*\]\s*[A-Za-z]")
+_WIDTH = re.compile(r"\[.*\]\s*[A-Za-z_]")
 
 _DEFINE_BONUS = {"wire": 3, "reg": 4, "integer": 0, "genvar": 1}
 _INIT_ASSIGN_RE = re.compile(r"(?<![<>=!])=(?![=])")
@@ -67,7 +67,7 @@ def _extract_width(text: str) -> str:
     m = _WIDTH.search(text)
     if not m:
         return ""
-    return re.sub(r"\]\s*[A-Za-z]", "]", m.group(0))
+    return re.sub(r"\]\s*[A-Za-z_]", "]", m.group(0))
 
 
 def _inst_pin_parts(line: str) -> tuple[str, str, str, str, str] | None:

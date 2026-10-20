@@ -288,6 +288,15 @@ def test_adf_name_after_expression_width():
     assert out[0].endswith("a,b;")
 
 
+def test_adf_underscore_led_name_keeps_width():
+    # Bug #48: _WIDTH required [A-Za-z] after the range, so a declaration
+    # whose name starts with '_' (e.g. AUTOASCIIENUM's _stateascii_r)
+    # silently lost its packed width in ADF.
+    out = auto_define_format(["reg [39:0] _stateascii_r; // Decode of state_r"])
+    assert out[0].startswith("reg[39:0]")
+    assert "_stateascii_r;" in out[0]
+
+
 # ---------------------------------------------------------------------------
 # auto_define_len
 
