@@ -39,6 +39,32 @@ cd verilog_script
 ./install.sh --check    # 只做环境检查
 ```
 
+## 配置
+
+可选的 Vim 设置——只设你需要的那几个：
+
+```vim
+let g:verilog_tooling_python = '/usr/bin/python3'   " 解释器覆盖
+let g:verilog_tooling_libdirs = ['/path/to/rtl']    " 额外的 -y 搜索目录
+let g:verilog_tooling_eai_flags = ['--sort']        " 额外的 EAI 标志
+let g:verilog_tooling_no_mappings = 1               " 不要默认映射
+let g:verilog_abbrev_enable = 1                     " 可选插入缩写
+let g:verilog_tooling_interfaces = ['axera_apb_interface', 'axera_axi_interface']  " 用户已知的 SV 接口类型
+let g:verilog_tooling_quiet = 1                     " 不要管线进度日志
+```
+
+`g:verilog_tooling_interfaces` 列出库扫描找不到的 SystemVerilog 接口
+类型名（文件不在任何 `-y` 目录下）。这样 `axera_apb_interface.master apb`
+这样的端口会被 EAI/AIT/AIU 解析为接口端口——EAI 把它放进
+`// Interfaces` 段、连接为 `name.modport`——也不会被 AW/AD 误当作 wire。
+
+进度日志默认开启；关闭办法：vimrc 里 `let g:verilog_tooling_quiet = 1`、
+`let $VERILOG_TOOLING_QUIET = 1`，或 shell 里 `VERILOG_TOOLING_QUIET=1`。
+关掉之后，只剩插件自己的 `running ...` / 完成摘要消息。
+
+按文件生效的设置（`verilog-auto-*` / `verilog-library-*` 变量）写在
+缓冲区本身里——见[核心概念 §3](#3-文件局部变量--verilog-xxxx-value)。
+
 ## 核心概念
 
 三条约定决定了本工具生成内容的大部分行为。读命令详解之前先读这一节。
@@ -1084,26 +1110,7 @@ doc/verilog_tooling.txt      vim help
 install.sh                   一键安装 / 环境检查
 ```
 
-可选设置：
-
-```vim
-let g:verilog_tooling_python = '/usr/bin/python3'   " 解释器覆盖
-let g:verilog_tooling_libdirs = ['/path/to/rtl']    " 额外的 -y 搜索目录
-let g:verilog_tooling_eai_flags = ['--sort']        " 额外的 EAI 标志
-let g:verilog_tooling_no_mappings = 1               " 不要默认映射
-let g:verilog_abbrev_enable = 1                     " 可选插入缩写
-let g:verilog_tooling_interfaces = ['axera_apb_interface']  " 用户已知的 SV 接口类型
-let g:verilog_tooling_quiet = 1                     " 不要管线进度日志
-```
-
-进度日志默认开启；关闭办法：vimrc 里 `let g:verilog_tooling_quiet = 1`、
-`let $VERILOG_TOOLING_QUIET = 1`，或 shell 里 `VERILOG_TOOLING_QUIET=1`。
-关掉之后，只剩插件自己的 `running ...` / 完成摘要消息。
-
-`g:verilog_tooling_interfaces` 列出库扫描找不到的 SystemVerilog 接口
-类型名（文件不在任何 `-y` 目录下）。这样 `axera_apb_interface.master apb`
-这样的端口会被 EAI/AIT/AIU 解析为接口端口——EAI 把它放进
-`// Interfaces` 段、连接为 `name.modport`——也不会被 AW/AD 误当作 wire。
+Vim 设置（`g:verilog_tooling_*`）：见[配置](#配置)。
 
 ### 信号维度追踪（`VERILOG_TOOLING_TRACE`）
 

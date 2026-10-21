@@ -40,6 +40,35 @@ cd verilog_script
 ./install.sh --check    # environment check only
 ```
 
+## Configuration
+
+Optional Vim settings — set only what you need:
+
+```vim
+let g:verilog_tooling_python = '/usr/bin/python3'   " interpreter override
+let g:verilog_tooling_libdirs = ['/path/to/rtl']    " extra -y search dirs
+let g:verilog_tooling_eai_flags = ['--sort']        " extra EAI flags
+let g:verilog_tooling_no_mappings = 1               " no default mappings
+let g:verilog_abbrev_enable = 1                     " opt-in insert abbrevs
+let g:verilog_tooling_interfaces = ['axera_apb_interface', 'axera_axi_interface']  " user-known SV interface types
+let g:verilog_tooling_quiet = 1                     " no pipeline progress logs
+```
+
+`g:verilog_tooling_interfaces` lists SystemVerilog interface type names
+the library scan cannot find (the file is not under any `-y` dir). Ports
+like `axera_apb_interface.master apb` then parse as interface ports for
+EAI/AIT/AIU — EAI puts them in the `// Interfaces` section with a
+`name.modport` connection — and are never mistaken for wires by AW/AD.
+
+Progress logs are on by default; silence them with
+`let g:verilog_tooling_quiet = 1` in vimrc, `let $VERILOG_TOOLING_QUIET = 1`,
+or `VERILOG_TOOLING_QUIET=1` in the shell. With logs quieted, only the
+plugin's own `running ...` / completion summary messages remain.
+
+Per-file settings (the `verilog-auto-*` / `verilog-library-*` variables)
+live in the buffer itself — see
+[Key concepts §3](#3-file-local-variables--verilog-xxxx-value).
+
 ## Key concepts
 
 Three conventions drive almost everything the tool generates. Read this
@@ -1165,29 +1194,7 @@ doc/verilog_tooling.txt      vim help
 install.sh                   one-click installer / env checker
 ```
 
-Optional settings:
-
-```vim
-let g:verilog_tooling_python = '/usr/bin/python3'   " interpreter override
-let g:verilog_tooling_libdirs = ['/path/to/rtl']    " extra -y search dirs
-let g:verilog_tooling_eai_flags = ['--sort']        " extra EAI flags
-let g:verilog_tooling_no_mappings = 1               " no default mappings
-let g:verilog_abbrev_enable = 1                     " opt-in insert abbrevs
-let g:verilog_tooling_interfaces = ['axera_apb_interface']  " user-known SV interface types
-let g:verilog_tooling_quiet = 1                     " no pipeline progress logs
-```
-
-Progress logs are on by default; silence them with
-`let g:verilog_tooling_quiet = 1` in vimrc, `let $VERILOG_TOOLING_QUIET = 1`,
-or `VERILOG_TOOLING_QUIET=1` in the shell. With logs quieted, only the
-plugin's own `running ...` / completion summary messages remain.
-
-`g:verilog_tooling_interfaces` lists SystemVerilog interface type names
-the library scan cannot find (the file is not under any `-y` dir).
-Ports like `axera_apb_interface.master apb` then parse as interface
-ports for EAI/AIT/AIU — EAI puts them in the `// Interfaces` section
-with a `name.modport` connection — and are never mistaken for wires by
-AW/AD.
+Vim settings (`g:verilog_tooling_*`): see [Configuration](#configuration).
 
 ### Signal-dimension tracing (`VERILOG_TOOLING_TRACE`)
 
