@@ -23,6 +23,8 @@
 "                             emacs verilog-batch-auto order)
 "   AIT AIU AIU1 KI           instance commands (automatic.vim AIT/AIU/AIU1 + kill)
 "   EAI EAP                   verilog-mode AUTOINST / AUTOINSTPARAM
+"   EA ED                     emacs backend: verilog-batch-auto / -delete-auto
+"                             (emacsauto.vim merge; :EA post-formats with AF)
 "   AIF APF ADF AF            format family (buffer-local)
 "   AR KAR                    automatic.vim AutoArg / KillAutoArg
 "   AD ADT KADT               automatic.vim AutoDef(T) / KillAutoDefT
@@ -412,6 +414,77 @@ command! -nargs=0 AINJ   call s:Run('verilog_tooling.inst', 'ainj', s:InterfaceA
 command! -nargs=0 ADIF   call s:DiffAuto()
 command! -nargs=0 ATLINT call s:LintTemplates()
 
+" ---------------------------------------------------------------------
+" emacs verilog-mode backend (merged from emacsauto.vim — the old
+" <leader>e flow, kept so '-e' still drives the ORIGINAL emacs elisp).
+"   :EA  emacs -batch verilog-batch-auto over the buffer, then post-format
+"   :ED  emacs -batch verilog-batch-delete-auto
+" emacsauto.vim's post-processing FixInstFormat() / ModifyEmacsInstFormat()
+" / AutoInstFormat() were legacy automatic.vim functions; their job is now
+" fmt.py's `af` (AIF+APF+ADF), run as the AF pass after :EA — the emacs
+" output lands in the Python pipeline's house style and stays idempotent
+" with AALL.
+" Optional globals:
+"   g:verilog_tooling_emacs           — emacs executable (default 'emacs')
+"   g:verilog_tooling_verilog_mode_el — verilog-mode.el path
+"                                       (default ~/.elisp/verilog-mode.el)
+function! s:EmacsEl() abort
+    return expand(get(g:, 'verilog_tooling_verilog_mode_el', '~/.elisp/verilog-mode.el'))
+endfunction
+
+function! s:EmacsAutoDelete(mode) abort
+    let l:emacscmd = get(g:, 'verilog_tooling_emacs', 'emacs')
+    if !executable(l:emacscmd)
+        echohl ErrorMsg
+        echom '[verilog_tooling] emacs not found: ' . l:emacscmd
+              \ . ' (set g:verilog_tooling_emacs)'
+        echohl None
+        return
+    endif
+    let l:el = s:EmacsEl()
+    if !filereadable(l:el)
+        echohl ErrorMsg
+        echom '[verilog_tooling] verilog-mode.el not found: ' . l:el
+              \ . ' (set g:verilog_tooling_verilog_mode_el)'
+        echohl None
+        return
+    endif
+    let l:bufnr = bufnr('%')
+    let l:tmp = tempname() . '.' . expand('%:e')
+    call writefile(getline(1, '$'), l:tmp)
+    let l:fn = a:mode ==# 'auto' ? 'verilog-batch-auto' : 'verilog-batch-delete-auto'
+    let l:argv = [l:emacscmd, '-batch', '-l', l:el, l:tmp, '-f', l:fn]
+    echom printf('[verilog_tooling] emacs %s: running ...', a:mode)
+    let l:out = system(join(map(l:argv, 'shellescape(v:val)'), ' '))
+    let l:code = v:shell_error
+    if l:code != 0
+        call delete(l:tmp)
+        echohl ErrorMsg
+        echom printf('[verilog_tooling] emacs %s: failed (exit %d) — buffer untouched: %s',
+              \ a:mode, l:code,
+              \ strpart(substitute(l:out, '\n', ' | ', 'g'), 0, 200))
+        echohl None
+        return
+    endif
+    let l:new = readfile(l:tmp)
+    call delete(l:tmp)
+    call s:ApplyResult(l:bufnr, l:new, 'emacs-' . a:mode)
+    if &expandtab && l:new !=# getline(1, '$')
+        " emacs emits tabs: the emacsauto.vim retab dance (tabstop=8)
+        let l:save_tabstop = &tabstop
+        let &tabstop = 8
+        silent! retab!
+        let &tabstop = l:save_tabstop
+    endif
+    if a:mode ==# 'auto'
+        " FixInstFormat()+ModifyEmacsInstFormat()+AutoInstFormat() -> AF
+        call s:Run('verilog_tooling.inst', 'af', [], -1)
+    endif
+endfunction
+
+command! -nargs=0 EA call s:EmacsAutoDelete('auto')
+command! -nargs=0 ED call s:EmacsAutoDelete('delete')
+
 " Auto-generate the new-file skeleton when creating a .v/.sv file
 " (the old automatic.vim AutoTemplate BufNewFile behaviour, Python-backed).
 autocmd BufNewFile *.v,*.sv call s:AutoTemplateBuffer()
@@ -464,6 +537,7 @@ function! s:InstallDefaultMaps() abort
     call s:DefMap('<leader>ame',  'AME')
     call s:DefMap('<leader>eai',  'EAI')
     call s:DefMap('<leader>eap',  'EAP')
+    call s:DefMap('<leader>e',    'EA')
     call s:DefMap('<leader>aio',  'AIO')
     call s:DefMap('<leader>as',   'ASEN')
     call s:DefMap('<leader>arst', 'ARST')
