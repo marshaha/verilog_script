@@ -554,3 +554,162 @@ def test_aall_same_named_module_spans_no_cache_collision(tmp_path, capsys):
     assert "net_b" not in first and "done_b" not in first
     assert "net_b" in second and "done_b" in second
     assert "net_a" not in second and "done_a" not in second
+
+
+BITSEL_TPL = """\
+`define DW 16
+module sub (
+   output [`DW-1:0] bb
+   );
+endmodule
+
+module top (
+   /*AUTOOUTPUT*/
+   );
+
+   /*sub AUTO_TEMPLATE (
+    .bb (test_b[3]),
+    );*/
+   sub u_inst0 (/*AUTOINST*/);
+
+endmodule
+"""
+
+
+def test_aall_template_bit_select_width(tmp_path, capsys):
+    """#54: a template connection that bit-selects one bit of a wider
+    port — .bb (test_b[3]) on a [`DW-1:0] port — declares the promoted
+    net [3:3] (verilog-mode records the select as the sig's vec), not
+    the port's raw width expression [`DW-1:0]."""
+    src = tmp_path / "bitsel.v"
+    src.write_text(BITSEL_TPL)
+    capsys.readouterr()
+    p1 = tmp_path / "p1.v"
+    inst.main(["aall", "-i", str(src), "-o", str(p1)])
+    out1 = p1.read_text()
+    assert "output[3:3]" in out1 and "test_b" in out1
+    assert not re.search(r"output\[`DW-1:0\]\s+test_b", out1)
+    p2 = tmp_path / "p2.v"
+    inst.main(["aall", "-i", str(p1), "-o", str(p2)])
+    assert p2.read_text() == out1  # idempotent
+
+
+PAREN_CONN = """\
+module sub (
+   output [3:0] bb,
+   output [3:0] cc,
+   output [3:0] dd
+   );
+endmodule
+
+module top (
+   /*AUTOOUTPUT*/
+   );
+
+   sub u_inst0 (
+      .bb ({test_b}),
+      .cc ((test_c)),
+      .dd (test_d)
+      );
+
+endmodule
+"""
+
+
+def test_aall_paren_wrapped_connection_exempt(tmp_path, capsys):
+    """A (...) wrapped plain net is exempt from AUTOOUTPUT candidacy
+    exactly like a {...} one (verilog-auto-ignore-concat, default on);
+    with the setting nil it extracts WITH the port's width — before
+    the fix ((test_c)) was promoted as a scalar, its width lost in
+    the parenthesized-expression path."""
+    src = tmp_path / "paren.v"
+    src.write_text(PAREN_CONN)
+    capsys.readouterr()
+    p1 = tmp_path / "p1.v"
+    inst.main(["aall", "-i", str(src), "-o", str(p1)])
+    out1 = p1.read_text()
+    assert "test_d" in out1 and "output[3:0]" in out1  # plain control
+    assert not re.search(r"^\s*output.*\btest_b\b", out1, re.M)  # {} exempt
+    assert not re.search(r"^\s*output.*\btest_c\b", out1, re.M)  # () exempt
+    src2 = tmp_path / "paren_nil.v"
+    src2.write_text(PAREN_CONN + "// verilog-auto-ignore-concat:nil\n")
+    p2 = tmp_path / "p2.v"
+    inst.main(["aall", "-i", str(src2), "-o", str(p2)])
+    out2 = p2.read_text()
+    assert re.search(r"output\[3:0\]\s+test_c", out2)  # promoted, width kept
+
+
+BITSEL_WIRE = """\
+module sub (
+   output [7:0] bb
+   );
+endmodule
+module sink (
+   input [7:0] x
+   );
+endmodule
+module top;
+   /*AUTOWIRE*/
+   /*sub AUTO_TEMPLATE (
+    .bb (mid[3]),
+    );*/
+   sub u0 (/*AUTOINST*/);
+   /*sink AUTO_TEMPLATE (
+    .x (mid),
+    );*/
+   sink u1 (/*AUTOINST*/);
+endmodule
+"""
+
+
+def test_aall_bit_select_internal_net_autowire_width(tmp_path, capsys):
+    """#54, AUTOWIRE side: a net driven through a lone bit-select and
+    consumed whole stays internal; its wire declaration takes the
+    select's [3:3] shape, not the driving port's [7:0]."""
+    src = tmp_path / "bitsel_wire.v"
+    src.write_text(BITSEL_WIRE)
+    capsys.readouterr()
+    p1 = tmp_path / "p1.v"
+    inst.main(["aall", "-i", str(src), "-o", str(p1)])
+    out1 = p1.read_text()
+    assert re.search(r"wire\[3:3\]\s+mid;", out1)
+
+
+ARG_DUP = """\
+module latch (/*AUTOARG*/);
+`ifdef __VAMS_ENABLE__
+    output q;
+ `else
+    output q;
+`endif
+`ifdef __VAMS_ENABLE__
+    input en;
+ `else
+    input en;
+`endif
+`ifdef __VAMS_ENABLE__
+    input d;
+ `else
+    input d;
+`endif
+endmodule
+"""
+
+
+def test_aall_autoarg_dedups_ifdef_else_redeclaration(tmp_path, capsys):
+    """autoinst_ams_vorwerk shape: a port declared in both `ifdef/`else
+    branches enters the AUTOARG header once — verilog-mode's decl table
+    is keyed by name.  Before the fix the header read `q, q,` and
+    `en, en, d, d`."""
+    src = tmp_path / "dup.v"
+    src.write_text(ARG_DUP)
+    capsys.readouterr()
+    p1 = tmp_path / "p1.v"
+    inst.main(["aall", "-i", str(src), "-o", str(p1)])
+    out1 = p1.read_text()
+    assert "q, q" not in out1 and "en, en" not in out1 and "d, d" not in out1
+    assert re.search(r"//Outputs\s+q,", out1)
+    assert re.search(r"//Inputs\s+en, d", out1)
+    p2 = tmp_path / "p2.v"
+    inst.main(["aall", "-i", str(p1), "-o", str(p2)])
+    assert p2.read_text() == out1  # idempotent
