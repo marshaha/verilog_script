@@ -62,8 +62,20 @@ let g:verilog_tooling_quiet = 1                     " 不要管线进度日志
 `let $VERILOG_TOOLING_QUIET = 1`，或 shell 里 `VERILOG_TOOLING_QUIET=1`。
 关掉之后，只剩插件自己的 `running ...` / 完成摘要消息。
 
+### 与 Emacs 不一样的文件局部设置
+
 按文件生效的设置（`verilog-auto-*` / `verilog-library-*` 变量）写在
-缓冲区本身里——见[核心概念 §3](#3-文件局部变量--verilog-xxxx-value)。
+缓冲区本身里。绝大多数与 verilog-mode 完全一致——同名、同默认值；
+完整表格在[核心概念 §3](#3-文件局部变量--verilog-xxxx-value)。不一样的
+是这五个：
+
+| 变量 | Emacs | 本工具 |
+|---|---|---|
+| `verilog-auto-ignore-concat` | 默认 `nil` | **默认开** —— `{...}`/`(...)` 连接不上端口（见 [§1](#1--豁免--让信号不上端口verilog-auto-ignore-concat)） |
+| `verilog-auto-read-includes` | 默认 `nil` | **默认开** —— 各分析读穿 `` `include`` |
+| `verilog-autodef-user-boundary` | ——（无此变量） | **开** —— 手写声明归用户所有；冲突标注 `//AD_CONFLICT:`（见 [§2](#2-dt--不要动我手写的声明)） |
+| `verilog-auto-inst-templated-comment` | ——（标记总是写） | **开**；设 `nil` 去掉 `// Templated` 标记 |
+| `verilog-auto-python-file` | ——（无 AUTO_PYTHON） | 指定一个 `.py` 文件，为模板 `@"..."` 表达式提供辅助函数 |
 
 ## 核心概念
 

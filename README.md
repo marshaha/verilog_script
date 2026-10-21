@@ -65,9 +65,21 @@ Progress logs are on by default; silence them with
 or `VERILOG_TOOLING_QUIET=1` in the shell. With logs quieted, only the
 plugin's own `running ...` / completion summary messages remain.
 
+### File-local settings that differ from Emacs
+
 Per-file settings (the `verilog-auto-*` / `verilog-library-*` variables)
-live in the buffer itself — see
-[Key concepts §3](#3-file-local-variables--verilog-xxxx-value).
+live in the buffer itself. Most behave exactly as in verilog-mode — same
+names, same defaults; the full table is
+[Key concepts §3](#3-file-local-variables--verilog-xxxx-value). These
+five do not:
+
+| Variable | Emacs | Here |
+|---|---|---|
+| `verilog-auto-ignore-concat` | default `nil` | **default on** — `{...}`/`(...)` connections stay off your ports (see [§1](#1-the--exemption--keep-a-signal-off-your-ports-verilog-auto-ignore-concat)) |
+| `verilog-auto-read-includes` | default `nil` | **default on** — analyses read through `` `include``s |
+| `verilog-autodef-user-boundary` | — (no such variable) | **on** — hand-written declarations are user-owned; conflicts get `//AD_CONFLICT:` (see [§2](#2-dt--never-touch-my-hand-written-declaration)) |
+| `verilog-auto-inst-templated-comment` | — (tag always written) | **on**; set `nil` to drop the `// Templated` tag |
+| `verilog-auto-python-file` | — (no AUTO_PYTHON) | names a `.py` file of helpers for template `@"..."` expressions |
 
 ## Key concepts
 
