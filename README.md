@@ -74,26 +74,39 @@ Details:
 
 ### 2. `//DT` — never touch my hand-written declaration
 
-AD/ADT regenerate the `/*autodef*/` declarations. A hand-written
-`wire`/`reg` outside the region is normally *refreshed* when the inferred
-width is provably stale ("width growth"). End the declaration with `//DT`
-and the tool leaves it alone completely:
+A trailing `//DT` comment marks a hand-written line as user-owned. It is
+honored in two places:
+
+**AD / ADT** (declaration regeneration) — a hand-written `wire`/`reg`
+outside the `/*autodef*/` region is normally *refreshed* when the inferred
+width is provably stale ("width growth"); with `//DT` it is left alone
+completely — never rewritten, never flagged:
 
 ```verilog
 wire [7:0] old_bus; //DT     <- never rewritten, never flagged
 ```
 
-Related mechanics:
+**AR** (header port list regeneration) — a port written in the module
+header with `//DT` survives the `/*autoarg*/` rebuild: the regenerated
+list always keeps the name, even when it would otherwise be dropped:
 
-- module **port declarations themselves** (`input`/`output`/`inout`
-  lines) are never rewritten by AD — no width growth, no conflict flag —
-  so `//DT` is not needed there; it guards the companion hand-written
+```verilog
+module top (
+    input  [7:0] user_port, //DT   <- always kept in the /*autoarg*/ list
+    /*autoarg*/);
+```
+
+Notes:
+
+- module **port declarations themselves** (`input`/`output`/`inout` lines)
+  are never rewritten by AD — no width growth, no conflict flag — so
+  `//DT` is not needed there; it guards the companion hand-written
   `wire`/`reg` redeclaration of the port;
-- without `//DT`, a provably stale width is grown in place; a *conflicting*
-  one (not provably stale, e.g. a different symbolic width) is kept but
-  annotated `//AD_CONFLICT:` on the line so you can reconcile by hand;
-- `verilog-autodef-user-boundary: nil` disables the whole mechanism: AD then
-  rewrites hand-written declarations freely.
+- without `//DT` (AD scope): a provably stale width is grown in place; a
+  *conflicting* one (not provably stale, e.g. a different symbolic width)
+  is kept but annotated `//AD_CONFLICT:` so you can reconcile by hand;
+- `verilog-autodef-user-boundary: nil` disables the AD-scope mechanism: AD
+  then rewrites hand-written declarations freely.
 
 ### 3. File-local variables — `// verilog-xxxx: value`
 
@@ -544,7 +557,9 @@ module top (/*AUTOARG*/
 endmodule
 ```
 
-(section order is Outputs, Inouts, Inputs — the emacs order).
+(section order is Outputs, Inouts, Inputs — the emacs order).  A
+hand-written header port tagged `//DT` always survives the rebuild —
+see [`//DT`](#2-dt--never-touch-my-hand-written-declaration).
 
 **Inout inference**: a port-list name with only a `wire` declaration or
 no direction at all is not a legal Verilog port and would be dropped
