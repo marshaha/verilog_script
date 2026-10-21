@@ -79,7 +79,7 @@ five do not:
 | `verilog-auto-read-includes` | default `nil` | **default on** — analyses read through `` `include``s |
 | `verilog-autodef-user-boundary` | — (no such variable) | **on** — hand-written declarations are user-owned; conflicts get `//AD_CONFLICT:` (see [§2](#2-dt--never-touch-my-hand-written-declaration)) |
 | `verilog-auto-inst-templated-comment` | — (tag always written) | **on**; set `nil` to drop the `// Templated` tag |
-| `verilog-auto-python-file` | — (no AUTO_PYTHON) | names a `.py` file of helpers for template `@"..."` expressions |
+| `verilog-auto-python-file` | — (no AUTO_PYTHON) | names a `.py` file of helpers for template `@"..."` expressions — usage: [AUTO_PYTHON and AUTO_LISP](#auto_python-and-auto_lisp) |
 
 ## Key concepts
 
@@ -1145,12 +1145,42 @@ alike, the template variables are available both in their elisp
 spelling (`vl-name`, `vl-cell-name`, `vl-width`, `vl-dir`) and as
 underscore aliases (`vl_name`, …).
 
-Helper functions shared by many files can live in real `.py` files,
-loaded via the file-local `verilog-auto-python-file` (searched in the
-`-y`/vc library directories, then the buffer's own directory;
-definitions cached by file mtime; file-local files load first, then
-inline `/*AUTO_PYTHON*/` blocks — on a name clash the later definition
-wins). Everything runs under the same no-builtins sandbox.
+Helper functions shared by many files can live in real `.py` files —
+see the next section.
+
+### `verilog-auto-python-file` — shared Python files
+
+Instead of pasting the same `/*AUTO_PYTHON*/` block into every buffer,
+put the helpers in a real `.py` file and name it with a file-local
+variable:
+
+```verilog
+// Local Variables:
+// verilog-auto-python-file: "funcs.py"
+// End:
+```
+
+(same quoted, whitespace-separated syntax as `verilog-library-files`;
+parentheses optional, later files override earlier ones). With
+`funcs.py` on the library path:
+
+```python
+def shout(sig):
+    return sig.upper() + "_INT"
+```
+
+a template calls it exactly like an inline definition — the template
+`.din (@"shout(vl_name)")` connects `din` to `DIN_INT`.
+
+Resolution and precedence:
+
+- files are searched in the `-y`/vc library directories, then the
+  buffer's own directory (`~` and a leading `$VAR` expand);
+- definitions are cached by file mtime — no stale helpers across runs;
+- file-local files load first, then inline `/*AUTO_PYTHON*/` blocks;
+  on a name clash the later definition wins (inline beats files);
+- everything runs under the same no-builtins sandbox, so a helper file
+  can define functions and constants but cannot touch the filesystem.
 
 ## Command line
 

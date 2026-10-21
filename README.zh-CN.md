@@ -75,7 +75,7 @@ let g:verilog_tooling_quiet = 1                     " 不要管线进度日志
 | `verilog-auto-read-includes` | 默认 `nil` | **默认开** —— 各分析读穿 `` `include`` |
 | `verilog-autodef-user-boundary` | ——（无此变量） | **开** —— 手写声明归用户所有；冲突标注 `//AD_CONFLICT:`（见 [§2](#2-dt--不要动我手写的声明)） |
 | `verilog-auto-inst-templated-comment` | ——（标记总是写） | **开**；设 `nil` 去掉 `// Templated` 标记 |
-| `verilog-auto-python-file` | ——（无 AUTO_PYTHON） | 指定一个 `.py` 文件，为模板 `@"..."` 表达式提供辅助函数 |
+| `verilog-auto-python-file` | ——（无 AUTO_PYTHON） | 指定一个 `.py` 文件，为模板 `@"..."` 表达式提供辅助函数 —— 用法见 [AUTO_PYTHON 与 AUTO_LISP](#auto_python-与-auto_lisp) |
 
 ## 核心概念
 
@@ -1064,11 +1064,39 @@ endmodule
 变量同时有 elisp 拼写（`vl-name`、`vl-cell-name`、`vl-width`、
 `vl-dir`）与下划线别名（`vl_name` 等）。
 
-多文件共享的辅助函数可以放在真正的 `.py` 文件里，用文件局部变量
-`verilog-auto-python-file` 加载（在 `-y`/vc 库目录里搜，然后是缓冲区
-自己的目录；定义按文件 mtime 缓存；文件局部的先加载，其次是行内的
-`/*AUTO_PYTHON*/` 块——同名冲突时后定义者胜）。一切都在同一个无
-builtins 沙箱下运行。
+多文件共享的辅助函数可以放在真正的 `.py` 文件里——见下一节。
+
+### `verilog-auto-python-file` —— 共享 Python 文件
+
+不必把同一段 `/*AUTO_PYTHON*/` 块粘进每个缓冲区：把辅助函数放进
+真正的 `.py` 文件，用文件局部变量点名：
+
+```verilog
+// Local Variables:
+// verilog-auto-python-file: "funcs.py"
+// End:
+```
+
+（与 `verilog-library-files` 相同的带引号、空白分隔语法；括号可选，
+后面的文件覆盖前面的）。`funcs.py` 在库路径上时：
+
+```python
+def shout(sig):
+    return sig.upper() + "_INT"
+```
+
+模板像调用行内定义一样调用它——模板 `.din (@"shout(vl_name)")` 把
+`din` 连到 `DIN_INT`。
+
+查找与优先级：
+
+- 先在 `-y`/vc 库目录里搜，然后是缓冲区自己的目录（`~` 与开头的
+  `$VAR` 会展开）；
+- 定义按文件 mtime 缓存——跨运行不会用到过期辅助函数；
+- 文件局部的先加载，其次是行内的 `/*AUTO_PYTHON*/` 块；同名冲突时
+  后定义者胜（行内胜过文件）；
+- 一切都在同一个无 builtins 沙箱下运行，所以辅助文件可以定义函数和
+  常量，但碰不到文件系统。
 
 ## 命令行
 
