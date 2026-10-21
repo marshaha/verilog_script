@@ -42,6 +42,114 @@ cd verilog_script
 ./install.sh --check    # environment check only
 ```
 
+## Key concepts
+
+Three conventions drive almost everything the tool generates. Read this
+section before the command reference.
+
+### 1. The `{}` exemption — keep a signal off your ports (`verilog-auto-ignore-concat`)
+
+AUTOINPUT / AUTOOUTPUT / AUTOINOUT promote every instance pin connection to
+a module port. Wrap a connection in `{...}` (or `(...)`) to say *this signal
+is hand-managed — never put it on my port list*:
+
+```verilog
+sub u_sub (
+    .dqs ({user_dqs}),   // stays a local signal — no port is created
+    .dq  (user_dq),      // becomes a module input/output port
+    /*autoinst*/);
+```
+
+This is the standard way to keep a manually wired connection — for example
+one written **before the `/*autoinst*/` marker** — off the generated ports.
+Details:
+
+- the exemption is *candidacy-only*: AUTOWIRE still sees the signal as
+  connected internally (it never invents a duplicate wire for it), so you
+  declare it yourself — which is the point;
+- ours defaults **`verilog-auto-ignore-concat` on** (emacs verilog-mode
+  defaults to nil — we deliberately chose the friendlier setting);
+- to exempt by name pattern instead, use `verilog-auto-input-ignore-regexp`
+  / `verilog-auto-output-ignore-regexp` / `verilog-auto-inout-ignore-regexp`.
+
+### 2. `//DT` — never touch my hand-written declaration
+
+AD/ADT regenerate the `/*autodef*/` declarations. A hand-written
+`wire`/`reg` outside the region is normally *refreshed* when the inferred
+width is provably stale ("width growth"). End the declaration with `//DT`
+and the tool leaves it alone completely:
+
+```verilog
+wire [7:0] old_bus; //DT     <- never rewritten, never flagged
+```
+
+Related mechanics:
+
+- without `//DT`, a provably stale width is grown in place; a *conflicting*
+  one (not provably stale, e.g. a different symbolic width) is kept but
+  annotated `//AD_CONFLICT:` on the line so you can reconcile by hand;
+- `verilog-autodef-user-boundary: nil` disables the whole mechanism: AD then
+  rewrites hand-written declarations freely.
+
+### 3. File-local variables — `// verilog-xxxx: value`
+
+Settings are read from comments **inside the buffer itself**: either inline
+(`// verilog-auto-inst-param-value:t` anywhere in the file) or in the
+classic `// Local Variables:` block at the end. Same format as emacs
+verilog-mode, so files round-trip between the two tools.
+
+```verilog
+// verilog-auto-inst-param-value:t
+// verilog-auto-ignore-concat:t
+```
+
+or:
+
+```verilog
+// Local Variables:
+// verilog-auto-inst-param-value:t
+// verilog-auto-ignore-concat:nil
+// End:
+```
+
+Supported variables (all optional):
+
+| Variable | Values (default) | What it controls |
+|---|---|---|
+| `verilog-auto-ignore-concat` | bool (**on**) | the `{}`/`()` exemption above — skip those connections for AUTOINPUT/OUTPUT/INOUT candidacy |
+| `verilog-auto-input-ignore-regexp` / `verilog-auto-output-ignore-regexp` / `verilog-auto-inout-ignore-regexp` | elisp/Python regexp | name patterns excluded from the generated ports |
+| `verilog-auto-wire-comment` | bool (**on**) | `nil` suppresses the `// To u_…` / `// From u_…` comments on generated declarations |
+| `verilog-auto-wire-type` | string | net type AW/AREG declare (e.g. `logic`) |
+| `verilog-auto-declare-nettype` | string | net type AUTOINPUT/AUTOOUTPUT ports declare (e.g. `logic`) |
+| `verilog-autodef-user-boundary` | bool (**on**) | hand-written declarations are user-owned: conflicts get `//AD_CONFLICT:` instead of a rewrite |
+| `verilog-auto-inst-param-value` | bool (off) | substitute `#(...)` parameter values into generated port ranges (`[AW-1:0]` → `[7:0]`); without it parameters stay symbolic |
+| `verilog-auto-inst-vector` | bool (**on**) | `nil` drops the bus subscript when the whole bus is connected (`vec` instead of `vec[7:0]`) |
+| `verilog-auto-inst-sort` | bool (off) | sort pins within each direction group |
+| `verilog-auto-inst-dot-name` | bool (off) | emit SystemVerilog `.name` shorthand connections |
+| `verilog-auto-inst-templated-comment` | bool (**on**) | `nil` drops the `// Templated` tag on template-driven pins |
+| `verilog-auto-inst-template-required` | bool (off) | non-nil omits ports that no AUTO_TEMPLATE entry matches |
+| `verilog-auto-simplify-expressions` | bool (**on**) | `nil` keeps width expressions verbatim instead of folding constants |
+| `verilog-library-directories` | `("-y" "dir" …)` | module search path (like `-y` CLI flags) |
+| `verilog-library-files` | `(“file” …)` | extra module library files |
+| `verilog-library-flags` | `("-f" "../filelist.vc")` | filelist(s) whose dirs join the search path |
+| `verilog-auto-read-includes` | bool (**on**) | also parse `` `include`` files for parameters/`` `define``s/interfaces |
+| `verilog-typedef-regexp` | regexp | names matching it are TYPES, never nets (skipped by AW/AD declarations) |
+| `verilog-align-typedef-words` | words | extra type words ADF aligns like `reg`/`wire` |
+| `verilog-auto-python-file` | filename | Python module for `/*AUTO_PYTHON*/` template expressions |
+| `verilog-active-low-regexp` | regexp | active-low reset names (AUTOSENSE/AUTORESET) |
+| `verilog-assignment-delay` | string | delay written into AUTORESET assignments |
+| `verilog-auto-reset-widths` | see AUTORESET | width policy for AUTORESET assignments |
+| `verilog-auto-reset-blocking-in-non` | bool | blocking assignments in the non-reset branch |
+| `verilog-auto-sense-defines-constant` | bool | treat `` `define``s as constants in AUTOSENSE |
+| `verilog-auto-sense-include-inputs` | bool | include input-only signals in AUTOSENSE |
+| `verilog-auto-tieoff-declaration` | string | declaration style for AUTOTIEOFF wires |
+| `verilog-auto-tieoff-ignore-regexp` | regexp | signals AUTOTIEOFF leaves alone |
+| `verilog-auto-unused-ignore-regexp` | regexp | signals AUTOUNUSED leaves alone |
+
+Boolean values follow the emacs convention: `:nil` turns a variable off,
+any other value (`:t`, `:T`, ...) turns it on; matching is
+case-insensitive.
+
 ## Quick start
 
 Put AUTO markers where you want generated text, then press `<leader>a`

@@ -41,6 +41,104 @@ cd verilog_script
 ./install.sh --check    # 只做环境检查
 ```
 
+## 核心概念
+
+有三個約定決定了工具生成代碼的幾乎全部行為，看命令手冊之前請先讀本節。
+
+### 1. `{}` 豁免 —— 讓信號不上端口（`verilog-auto-ignore-concat`）
+
+AUTOINPUT / AUTOOUTPUT / AUTOINOUT 會把實例的每個 pin 連接提升到模塊端口。用
+`{...}`（或 `(...)`）包住連接，表示「這個信號我手動管理，不要放到端口上」：
+
+```verilog
+sub u_sub (
+    .dqs ({user_dqs}),   // 只是局部信號 —— 不生成端口
+    .dq  (user_dq),      // 生成模塊 input/output 端口
+    /*autoinst*/);
+```
+
+這是讓手動連接（比如寫在 **`/*autoinst*/` 標記前面**的連接）不上端口的標準做法。細節：
+
+- 豁免只影響「候選」：AUTOWIRE 仍然認為該信號在內部已連接（不會重複聲明
+  wire），所以需要你自行聲明 —— 這正是目的；
+- 我們默認 **`verilog-auto-ignore-concat` 開**（emacs verilog-mode 默認關，
+  我們有意選了對這個工作流更友好的設置）；
+- 想按名字排除的話，用 `verilog-auto-input-ignore-regexp` /
+  `verilog-auto-output-ignore-regexp` / `verilog-auto-inout-ignore-regexp`。
+
+### 2. `//DT` —— 不要動我手寫的聲明
+
+AD/ADT 會重新生成 `/*autodef*/` 聲明區。區域外的手寫 `wire`/`reg` 通常在
+「推理位寬確定已過期」時被原位更新（寬度生長）。在聲明行尾加 `//DT` 註釋，
+工具就完全不碰它：
+
+```verilog
+wire [7:0] old_bus; //DT     <- 不重寫、不加標記
+```
+
+相關機制：
+
+- 不加 `//DT` 時：可證明過期的寬度原位生長；「衝突但無法證明過期」的（比如
+  不同的符號位寬）保留原樣，但在行尾標註 `//AD_CONFLICT:` 供人工核對；
+- `verilog-autodef-user-boundary: nil` 關閉整個機制：AD 可自由重寫手寫聲明。
+
+### 3. 文件局部變量 —— `// verilog-xxxx: value`
+
+配置從 **buffer 內的註釋**讀取：行內註釋（文件中任意位置寫
+`// verilog-auto-inst-param-value:t`）或文件末尾經典的
+`// Local Variables:` 塊都可以。格式與 emacs verilog-mode 完全一致，文件可
+以在兩個工具之間往返。
+
+```verilog
+// verilog-auto-inst-param-value:t
+// verilog-auto-ignore-concat:t
+```
+
+或：
+
+```verilog
+// Local Variables:
+// verilog-auto-inst-param-value:t
+// verilog-auto-ignore-concat:nil
+// End:
+```
+
+支持的變量（全部可選）：
+
+| 變量 | 取值（默認） | 作用 |
+|---|---|---|
+| `verilog-auto-ignore-concat` | 布爾（**開**） | 上述 `{}`/`()` 豁免：AUTOINPUT/OUTPUT/INOUT 候選時跳過 |
+| `verilog-auto-input-ignore-regexp` / `verilog-auto-output-ignore-regexp` / `verilog-auto-inout-ignore-regexp` | elisp/Python 正則 | 按名字模式排除，不上端口 |
+| `verilog-auto-wire-comment` | 布爾（**開**） | `nil` 關閉生成聲明上的 `// To u_…` / `// From u_…` 註釋 |
+| `verilog-auto-wire-type` | 字符串 | AW/AREG 聲明所用的網線類型（如 `logic`） |
+| `verilog-auto-declare-nettype` | 字符串 | AUTOINPUT/AUTOOUTPUT 端口聲明的網線類型（如 `logic`） |
+| `verilog-autodef-user-boundary` | 布爾（**開**） | 手寫聲明歸用戶所有：衝突標 `//AD_CONFLICT:` 而非重寫 |
+| `verilog-auto-inst-param-value` | 布爾（關） | 把 `#(...)` 參數值代入生成的端口位寬（`[AW-1:0]` → `[7:0]`）；不開則保持符號形式 |
+| `verilog-auto-inst-vector` | 布爾（**開**） | `nil` 時整根總線連接省略下標（`vec` 而非 `vec[7:0]`） |
+| `verilog-auto-inst-sort` | 布爾（關） | 每個方向組內對 pin 排序 |
+| `verilog-auto-inst-dot-name` | 布爾（關） | 生成 SystemVerilog `.name` 簡寫連接 |
+| `verilog-auto-inst-templated-comment` | 布爾（**開**） | `nil` 去掉模板驅動 pin 的 `// Templated` 標記 |
+| `verilog-auto-inst-template-required` | 布爾（關） | 非 nil 時沒有 AUTO_TEMPLATE 條目匹配的端口不生成 |
+| `verilog-auto-simplify-expressions` | 布爾（**開**） | `nil` 時位寬表達式保持原樣，不折疊常量 |
+| `verilog-library-directories` | `("-y" "dir" …)` | 模塊搜索路徑（同 `-y` 命令行參數） |
+| `verilog-library-files` | `("file" …)` | 額外的模塊庫文件 |
+| `verilog-library-flags` | `("-f" "../filelist.vc")` | filelist，其目錄加入搜索路徑 |
+| `verilog-auto-read-includes` | 布爾（**開**） | 同時解析 `` `include`` 文件里的參數/`` `define``/interface |
+| `verilog-typedef-regexp` | 正則 | 匹配的名字視為類型而非網線（AW/AD 聲明會跳過） |
+| `verilog-align-typedef-words` | 詞表 | ADF 對齊時當作 `reg`/`wire` 對待的額外類型詞 |
+| `verilog-auto-python-file` | 文件名 | `/*AUTO_PYTHON*/` 模板表達式用的 Python 模塊 |
+| `verilog-active-low-regexp` | 正則 | 低有效復位名（AUTOSENSE/AUTORESET） |
+| `verilog-assignment-delay` | 字符串 | AUTORESET 賦值語句的延遲 |
+| `verilog-auto-reset-widths` | 見 AUTORESET | AUTORESET 賦值的位寬策略 |
+| `verilog-auto-reset-blocking-in-non` | 布爾 | 非復位分支使用阻塞賦值 |
+| `verilog-auto-sense-defines-constant` | 布爾 | AUTOSENSE 中把 `` `define`` 當常量 |
+| `verilog-auto-sense-include-inputs` | 布爾 | AUTOSENSE 包含僅輸入的信號 |
+| `verilog-auto-tieoff-declaration` | 字符串 | AUTOTIEOFF 線網的聲明風格 |
+| `verilog-auto-tieoff-ignore-regexp` | 正則 | AUTOTIEOFF 豁免的信號 |
+| `verilog-auto-unused-ignore-regexp` | 正則 | AUTOUNUSED 豁免的信號 |
+
+布爾取值遵循 emacs 慣例：`:nil` 為關，其它任何值（`:t`、`:T` 等）為開，匹配大小寫不敏感。
+
 ## 快速上手
 
 在想生成代码的地方放好 AUTO 标记，然后按 `<leader>a`
