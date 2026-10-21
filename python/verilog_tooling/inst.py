@@ -2807,11 +2807,25 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     lines = xfer.auto_assign_modport(lines, ifaces)
     _log("aall: AUTOASSIGNMODPORT done")
     # 13. AUTOLOGIC; 14. AUTOWIRE; 15. AUTOREG; 16. AUTOREGINPUT;
-    # 17. AUTOOUTPUTEVERY
-    lines = misc.auto_logic(lines, modules_w)
+    # 17. AUTOOUTPUTEVERY.  The trio shares one per-span instance pin scan:
+    # none of them modifies instances, only declaration lines, so the pin
+    # data extracted once stays valid for all three (3 full scans -> 1).
+    # The cache keys on the span's module name (wire._span_module_name):
+    # two same-named module spans in one file (`ifdef/`else variants —
+    # module_spans is purely lexical and yields both) would collide, the
+    # later span's scan being served to the earlier one; there the trio
+    # falls back to inline scanning (master behaviour).
+    pin_scan_cache: "dict | None" = {}
+    span_names = [
+        wire._span_module_name(lines[s : e + 1]) for s, e in module_spans(lines)
+    ]
+    span_names = [n for n in span_names if n is not None]
+    if len(set(span_names)) != len(span_names):
+        pin_scan_cache = None
+    lines = misc.auto_logic(lines, modules_w, pin_scan_cache)
     _log("aall: AUTOLOGIC done")
-    lines = wire.auto_wire(lines, modules_w)
-    lines = wire.auto_reg(lines, modules_w)
+    lines = wire.auto_wire(lines, modules_w, pin_scan_cache)
+    lines = wire.auto_reg(lines, modules_w, pin_scan_cache)
     lines = autodef.auto_def_t(lines, modules_w)
     _log("aall: AUTOWIRE/AUTOREG/autodef done")
     lines = xfer.auto_reginput(lines, modules_w)

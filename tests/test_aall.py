@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 from verilog_tooling import arg as arg_mod
-from verilog_tooling import autodef, inout, inst, wire
+from verilog_tooling import autodef, inout, inst, misc, wire
 from verilog_tooling.inst import _resolve_module_files
 
 SUB = """\
@@ -417,6 +417,27 @@ endmodule
 """
 
 
+TRIO_TOP = """\
+module top (
+    /*autoarg*/
+);
+input        clk;
+input  [7:0] din;
+output       done;
+output [7:0] q;
+/*autodef*/
+/*AUTOWIRE*/
+/*AUTOREG*/
+/*AUTOLOGIC*/
+/*AUTOINPUT*/
+/*AUTOOUTPUT*/
+
+sub u_sub0 (.clk(clk), .din(din), .dout(q), .sub_done(done));
+sub u_sub1 (.clk(clk), .din(din), .dout(q), .sub_done(done));
+endmodule
+"""
+
+
 def test_aall_autowire_real_idempotent(tmp_path, capsys):
     """autowire_real shape: APF dropped the ``var`` keyword (and the
     ``real`` type it introduces) from the submodules' own headers on
@@ -456,3 +477,80 @@ def test_aall_ams_vorwerk_idempotent(tmp_path, capsys):
     top_section = out1.split("endmodule")[0]
     assert ".q" in top_section and "`ifdef" not in top_section
 
+
+def test_pin_scan_cache_shared_by_logic_wire_reg(tmp_path):
+    """Perf: AUTOLOGIC/AUTOWIRE/AUTOREG share one _inst_pin_scan per module
+    span (3 full instance scans -> 1).  The cached trio must be
+    byte-identical to the uncached sequential runs, and the later passes
+    must hit the cache instead of rescanning."""
+    modules = {"sub": inst.parse_module_ports(SUB.splitlines(), with_params=True)}
+    lines = TRIO_TOP.splitlines()
+
+    ref = misc.auto_logic(lines, modules)
+    ref = wire.auto_wire(ref, modules)
+    ref = wire.auto_reg(ref, modules)
+    assert "q" in "\n".join(ref)  # the scan really found driven nets
+
+    cache: dict = {}
+    got = misc.auto_logic(lines, modules, cache)
+    assert len(cache) == 1  # one span: AUTOLOGIC fills the cache
+    assert len(cache["top"]["instances"]) == 2
+    got = wire.auto_wire(got, modules, cache)
+    got = wire.auto_reg(got, modules, cache)
+    assert len(cache) == 1  # AUTOWIRE/AUTOREG reused it — no rescan
+    assert got == ref
+
+
+def test_inst_driven_nets_same_named_instances_both_collected():
+    """Two instances sharing one instance name (illegal Verilog, but the
+    official verilog-mode tests_ok/autoinst_regexp_inst.v has it): the
+    pin-scan dedup keys on the instance's opening-paren position, not
+    (module, inst), so the second instance's nets are still collected."""
+    modules = {"sub": inst.parse_module_ports(SUB.splitlines(), with_params=True)}
+    lines = [
+        "module top;",
+        "sub sub1 (.clk(clk), .din(din), .dout(q1), .sub_done(done1));",
+        "sub sub1 (.clk(clk), .din(din), .dout(q2), .sub_done(done2));",
+        "endmodule",
+    ]
+    nets = wire._inst_driven_nets(lines, modules)
+    assert {"q1", "q2", "done1", "done2"} <= set(nets)
+    # the cached phase-1 scan finds the same two instances
+    scan = wire._inst_pin_scan(lines, modules)
+    assert len(scan["instances"]) == 2
+
+
+DUP_SPAN_TOP = """\
+`ifdef ALT
+module dup_top;
+/*AUTOWIRE*/
+sub u_a (.clk(clk), .din(din), .dout(net_a), .sub_done(done_a));
+endmodule
+`else
+module dup_top;
+/*AUTOWIRE*/
+sub u_b (.clk(clk), .din(din), .dout(net_b), .sub_done(done_b));
+endmodule
+`endif
+"""
+
+
+def test_aall_same_named_module_spans_no_cache_collision(tmp_path, capsys):
+    """Two same-named module spans in one file (`ifdef/`else variants):
+    module_spans is purely lexical and yields both, and the aall pin-scan
+    cache keys on the span's module name — without the duplicate-name
+    fallback, the SECOND span's scan (processed first, bottom-up) would be
+    served to the first, leaving net_a undeclared.  Each span must declare
+    exactly its own driven net."""
+    libdir = tmp_path / "lib"
+    libdir.mkdir()
+    (libdir / "sub.v").write_text(SUB)
+    top = tmp_path / "dup.v"
+    top.write_text(DUP_SPAN_TOP)
+    capsys.readouterr()
+    out = _run_aall(top, libdir, tmp_path)
+    first, second = out.split("endmodule")[:2]
+    assert "net_a" in first and "done_a" in first
+    assert "net_b" not in first and "done_b" not in first
+    assert "net_b" in second and "done_b" in second
+    assert "net_a" not in second and "done_a" not in second

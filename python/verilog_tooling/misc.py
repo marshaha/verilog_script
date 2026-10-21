@@ -579,6 +579,7 @@ def _wire_like_single(
     wire_type: str,
     mark_re: "re.Pattern[str]",
     header: str,
+    pin_scan_cache: "dict | None" = None,
 ) -> list[str]:
     """verilog_tooling.wire._auto_wire_single generalized over the declaration
     WIRE_TYPE (``wire`` / ``logic``).
@@ -608,7 +609,10 @@ def _wire_like_single(
     set_typedef_regexp(typedef_re)
     _wire.set_ignore_concat(_wire.parse_ignore_concat(full))
     set_param_value(_wire.parse_param_value(full))
-    driven = _wire._inst_driven_nets(lines, modules)
+    driven = _wire._inst_driven_nets(
+        lines, modules,
+        _pin_scan=_wire._cached_pin_scan(pin_scan_cache, lines, modules),
+    )
     if not driven:
         return list(lines)
     ports, usrdef, _ = _wire._module_tables(lines)
@@ -669,7 +673,9 @@ def _wire_like_single(
 
 
 def auto_logic(
-    lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = None
+    lines: Sequence[str],
+    modules: Mapping[str, ModuleDef] | None = None,
+    pin_scan_cache: "dict | None" = None,
 ) -> list[str]:
     """Regenerate the /*AUTOLOGIC*/ ``logic`` declarations of each module.
 
@@ -677,6 +683,8 @@ def auto_logic(
     ``verilog-auto-wire-type`` set to ``"logic"`` (unless the file-local
     variable already sets it — cf. ``verilog-auto-logic-setup``); like emacs
     the region keeps the ``// Beginning of automatic wires`` header.
+    PIN_SCAN_CACHE shares the per-span instance pin scan with the
+    AUTOWIRE/AUTOREG passes (see wire._cached_pin_scan); None scans inline.
     """
     lines = kill_auto_logic(lines)
     full = list(lines)
@@ -688,7 +696,8 @@ def auto_logic(
         lines,
         _LOGIC_MARK,
         lambda span: _wire_like_single(
-            span, modules or {}, full, wire_type, _LOGIC_MARK, _wire._WIRE_HEADER
+            span, modules or {}, full, wire_type, _LOGIC_MARK, _wire._WIRE_HEADER,
+            pin_scan_cache,
         ),
     )
 
