@@ -65,6 +65,21 @@ Progress logs are on by default; silence them with
 or `VERILOG_TOOLING_QUIET=1` in the shell. With logs quieted, only the
 plugin's own `running ...` / completion summary messages remain.
 
+### The leader key
+
+All default mappings hang off Vim's `mapleader`. With the default
+leader (`\`), AALL is `\a`, AD is `\ad`, and so on. Set the leader in
+your `.vimrc` to whatever you like:
+
+```vim
+let mapleader = "-"     " AALL becomes -a, AD becomes -ad, …
+```
+
+The plugin installs its mappings at `VimEnter`, so a `mapleader` set
+anywhere in your vimrc is honored; a mapping you define yourself always
+wins, and `let g:verilog_tooling_no_mappings = 1` disables the whole
+default set.
+
 ### File-local settings that differ from Emacs
 
 Per-file settings (the `verilog-auto-*` / `verilog-library-*` variables)
@@ -196,7 +211,7 @@ case-insensitive.
 ## Quick start
 
 Put AUTO markers where you want generated text, then press `<leader>a`
-(that is `\a` with the default leader, `-a` with `let mapleader = "-"`)
+(the leader key is explained in [Configuration](#configuration))
 or run `:AALL`:
 
 ```verilog

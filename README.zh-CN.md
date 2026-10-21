@@ -62,6 +62,20 @@ let g:verilog_tooling_quiet = 1                     " 不要管线进度日志
 `let $VERILOG_TOOLING_QUIET = 1`，或 shell 里 `VERILOG_TOOLING_QUIET=1`。
 关掉之后，只剩插件自己的 `running ...` / 完成摘要消息。
 
+### leader 键
+
+所有默认映射都挂在 Vim 的 `mapleader` 上。默认 leader 是 `\`，所以
+AALL 是 `\a`、AD 是 `\ad`，依此类推。在 `.vimrc` 里把 leader 设成
+你喜欢的键：
+
+```vim
+let mapleader = "-"     " AALL 变成 -a，AD 变成 -ad，……
+```
+
+插件在 `VimEnter` 时安装映射，所以 vimrc 里任何位置设置的
+`mapleader` 都被尊重；你自己定义的映射永远优先，
+`let g:verilog_tooling_no_mappings = 1` 关闭整套默认映射。
+
 ### 与 Emacs 不一样的文件局部设置
 
 按文件生效的设置（`verilog-auto-*` / `verilog-library-*` 变量）写在
@@ -185,8 +199,8 @@ module top (
 
 ## 快速上手
 
-把 AUTO 标记放在你想生成内容的位置，然后按 `<leader>a`（默认 leader
-即 `\a`；`let mapleader = "-"` 时为 `-a`），或运行 `:AALL`：
+把 AUTO 标记放在你想生成内容的位置，然后按 `<leader>a`（leader 键见
+[配置](#配置)），或运行 `:AALL`：
 
 ```verilog
 module top (
