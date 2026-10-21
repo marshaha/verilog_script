@@ -42,8 +42,8 @@
 "   <leader>ar  :AR       <leader>aw  :AW     <leader>arg :AREG
 "   <leader>aif :AIF      <leader>adf :ADF    <leader>apf :APF  <leader>af :AF
 "   <leader>am  :AM       <leader>ame :AME    <leader>d   :KI
-"   <leader>eai :EAI      <leader>eap :EAP    <leader>aio :AIO
-"   <leader>as  :ASEN     <leader>arst:ARST    <leader>atie:ATIE
+"   <leader>eai :EAI      <leader>eap :EAP    <leader>o   :EA
+"   <leader>aio :AIO      <leader>as  :ASEN   <leader>arst:ARST    <leader>atie:ATIE
 "   <leader>ainj:AINJ     <leader>adif:ADIF
 " Disable the whole set with:  let g:verilog_tooling_no_mappings = 1
 
@@ -537,7 +537,7 @@ function! s:InstallDefaultMaps() abort
     call s:DefMap('<leader>ame',  'AME')
     call s:DefMap('<leader>eai',  'EAI')
     call s:DefMap('<leader>eap',  'EAP')
-    call s:DefMap('<leader>e',    'EA')
+    call s:DefMap('<leader>o',    'EA')
     call s:DefMap('<leader>aio',  'AIO')
     call s:DefMap('<leader>as',   'ASEN')
     call s:DefMap('<leader>arst', 'ARST')

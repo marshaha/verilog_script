@@ -97,7 +97,7 @@ endmodule
 |---|---|---|
 | `AALL` | 一次跑完整套 AUTO（emacs verilog-auto 顺序，26 步） | `<leader>a` |
 | `EAI` / `EAP` | verilog-mode 的 AUTOINST / AUTOINSTPARAM | `<leader>eai` `eap` |
-| `EA` / `ED` | **emacs 后端**：调用原版 emacs 的 `verilog-batch-auto` / `verilog-batch-delete-auto` 处理整个 buffer，随后用 `AF` 做格式归一（取代旧 emacsauto.vim 的 `FixInstFormat`/`AutoInstFormat`） | `<leader>e` |
+| `EA` / `ED` | **emacs 后端**：调用原版 emacs 的 `verilog-batch-auto` / `verilog-batch-delete-auto` 处理整个 buffer，随后用 `AF` 做格式归一（取代旧 emacsauto.vim 的 `FixInstFormat`/`AutoInstFormat`） | `<leader>o` |
 | `AIT` | 已废弃：委托给 `EAI`（verilog-mode 的 AUTOINST 展开；stderr 警告） | `<leader>ait` |
 | `AIU` / `AIU1` | 最小差异的实例更新（保留手动连接） | `<leader>aiu` `aiu1` |
 | `KI` | 把实例折叠回 `/*autoinst*/` 空壳 | `<leader>d` |

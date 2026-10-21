@@ -100,7 +100,7 @@ marker.
 |---|---|---|
 | `AALL` | full AUTO set in one pass, emacs `verilog-batch-auto` order (see below) | `<leader>a` |
 | `EAI` / `EAP` | verilog-mode AUTOINST / AUTOINSTPARAM | `<leader>eai` `eap` |
-| `EA` / `ED` | **emacs backend**: run the original emacs `verilog-batch-auto` / `verilog-batch-delete-auto` over the buffer, then post-format with `AF` (replaces the old emacsauto.vim `FixInstFormat`/`AutoInstFormat` step) | `<leader>e` |
+| `EA` / `ED` | **emacs backend**: run the original emacs `verilog-batch-auto` / `verilog-batch-delete-auto` over the buffer, then post-format with `AF` (replaces the old emacsauto.vim `FixInstFormat`/`AutoInstFormat` step) | `<leader>o` |
 | `AIT` | deprecated: delegates to `EAI` (verilog-mode AUTOINST expansion; warns on stderr) | `<leader>ait` |
 | `AIU` / `AIU1` | minimal-diff instance updates (keep manual connections) | `<leader>aiu` `aiu1` |
 | `KI` | collapse an instance back to the `/*autoinst*/` stub | `<leader>d` |
