@@ -85,6 +85,10 @@ wire [7:0] old_bus; //DT     <- never rewritten, never flagged
 
 Related mechanics:
 
+- module **port declarations themselves** (`input`/`output`/`inout`
+  lines) are never rewritten by AD — no width growth, no conflict flag —
+  so `//DT` is not needed there; it guards the companion hand-written
+  `wire`/`reg` redeclaration of the port;
 - without `//DT`, a provably stale width is grown in place; a *conflicting*
   one (not provably stale, e.g. a different symbolic width) is kept but
   annotated `//AD_CONFLICT:` on the line so you can reconcile by hand;
