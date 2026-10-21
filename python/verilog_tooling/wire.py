@@ -420,7 +420,24 @@ def _primitive_nets(
             nets[net_name] = rec
 
 
-def _expr_suffix_dims(stripped: str, net: str, npacked: int) -> tuple[str, ...]:
+def _unwrap_parens(s: str) -> "str | None":
+    """Inner text when S is fully wrapped in one balanced paren pair."""
+    if not s.startswith("("):
+        return None
+    depth = 0
+    for i, ch in enumerate(s):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return s[1:-1].strip() if i == len(s) - 1 else None
+    return None
+
+
+def _expr_suffix_dims(
+    stripped: str, net: str, npacked: int, nunpacked: int = 0
+) -> tuple[str, ...]:
     """Packed dims carried by a plain ``net[G1][G2]...`` connection itself.
 
     verilog-read-sub-decls-expr: the connection's own bracket suffixes
@@ -436,6 +453,14 @@ def _expr_suffix_dims(stripped: str, net: str, npacked: int) -> tuple[str, ...]:
     ``[127:0]`` port): the leading extra groups are unpacked element
     selects and must fall through to the mdim/unpacked logic — claiming
     them here double-counts the select (``[0] [0] [127:0]``).
+
+    One exception (#54): a LONE numeric bare index on a port with
+    exactly one packed dim and no unpacked dims is a bit-select, and
+    verilog-mode records it as the sig's whole vector — ``net[3]``
+    declares ``[3:3] net`` (verified in Emacs).  A symbolic index
+    (``net[i]``) keeps the element-select reading, and with unpacked
+    dims present the same text is an array-element select, so the
+    exception stays off there too.
     """
     m = re.match(
         r"^\s*" + re.escape(net) + r"((?:\s*\[[^\]]+\])+)\s*$", stripped
@@ -443,7 +468,17 @@ def _expr_suffix_dims(stripped: str, net: str, npacked: int) -> tuple[str, ...]:
     if not m:
         return ()
     groups = re.findall(r"\[([^\]]+)\]", m.group(1))
-    if not groups or ":" not in groups[-1]:
+    if not groups:
+        return ()
+    if ":" not in groups[-1]:
+        if (
+            len(groups) == 1
+            and npacked == 1
+            and nunpacked == 0
+            and _clean_dim(groups[-1]).isdigit()
+        ):
+            g = _clean_dim(groups[-1])
+            return (f"{g}:{g}",)
         return ()
     if len(groups) > npacked:
         return ()
@@ -521,6 +556,24 @@ def _inst_driven_nets(
                 or stripped[0].isdigit()
             ):
                 continue
+            # A fully paren-wrapped plain net — (sig), ((sig[3])) — is
+            # the net itself: verilog-read-sub-decls-expr strips
+            # redundant parens before classifying the connection, and
+            # the {} exemption treats (...) alike.  Unwrap so the
+            # plain-net path (port width, suffix dims) applies; under
+            # verilog-auto-ignore-concat the candidacy scan skips it
+            # exactly like a {...} connection, while fact callers
+            # (concat_ok) still record the net — with the port's width.
+            unwrapped = stripped
+            while unwrapped.startswith("("):
+                inner = _unwrap_parens(unwrapped)
+                if inner is None or not _ELEM_NET.match(inner):
+                    break
+                unwrapped = inner
+            if unwrapped != stripped:
+                if _IGNORE_CONCAT and not concat_ok:
+                    continue
+                stripped = unwrapped
             if stripped.startswith("{"):
                 # verilog-auto-ignore-concat: skip {…} (default) or extract.
                 # CONCAT_OK is fact recording (AW/AREG "driven" sets, AIO
@@ -574,7 +627,7 @@ def _inst_driven_nets(
             # the [].[@] / []. [range] forms the executable suffix is an
             # element select, and the note holds the real packed dims.
             pdims = (
-                (() if "/*" in expr else _expr_suffix_dims(stripped, net, len(port.packed)))
+                (() if "/*" in expr else _expr_suffix_dims(stripped, net, len(port.packed), len(port.unpacked)))
                 or _conn_packed_dims(expr)
                 or tuple(_clean_dim(d) for d in port.packed)
             )
