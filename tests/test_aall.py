@@ -575,3 +575,43 @@ def test_aall_bit_select_internal_net_autowire_width(tmp_path, capsys):
     inst.main(["aall", "-i", str(src), "-o", str(p1)])
     out1 = p1.read_text()
     assert re.search(r"wire\[3:3\]\s+mid;", out1)
+
+
+ARG_DUP = """\
+module latch (/*AUTOARG*/);
+`ifdef __VAMS_ENABLE__
+    output q;
+ `else
+    output q;
+`endif
+`ifdef __VAMS_ENABLE__
+    input en;
+ `else
+    input en;
+`endif
+`ifdef __VAMS_ENABLE__
+    input d;
+ `else
+    input d;
+`endif
+endmodule
+"""
+
+
+def test_aall_autoarg_dedups_ifdef_else_redeclaration(tmp_path, capsys):
+    """autoinst_ams_vorwerk shape: a port declared in both `ifdef/`else
+    branches enters the AUTOARG header once — verilog-mode's decl table
+    is keyed by name.  Before the fix the header read `q, q,` and
+    `en, en, d, d`."""
+    src = tmp_path / "dup.v"
+    src.write_text(ARG_DUP)
+    capsys.readouterr()
+    p1 = tmp_path / "p1.v"
+    inst.main(["aall", "-i", str(src), "-o", str(p1)])
+    out1 = p1.read_text()
+    assert "q, q" not in out1 and "en, en" not in out1 and "d, d" not in out1
+    assert re.search(r"//Outputs\s+q,", out1)
+    assert re.search(r"//Inputs\s+en, d", out1)
+    p2 = tmp_path / "p2.v"
+    inst.main(["aall", "-i", str(p1), "-o", str(p2)])
+    assert p2.read_text() == out1  # idempotent

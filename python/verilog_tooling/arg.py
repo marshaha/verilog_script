@@ -215,6 +215,7 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
     outputs: list[str] = []
     inouts: list[str] = []
     buckets = {"input": inputs, "output": outputs, "inout": inouts}
+    seen: dict[str, set[str]] = {"input": set(), "output": set(), "inout": set()}
     i = 0
     n = len(lines)
     while i < n:
@@ -257,6 +258,18 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
                 name = _UNPACKED_TAIL.sub("", name)  # `val[3:0]` / `val [3:0]`
             name = name.strip(" ,\t")
             if name:
+                # verilog-mode's declaration table is keyed by signal
+                # name, so a port declared twice — the `ifdef/`else
+                # shape, the same `output q;` in both branches — enters
+                # the AUTOARG list once.  Drop a later declaration whose
+                # every name is already listed for this direction; a
+                # partially-new declaration keeps its historical text.
+                # Escaped identifiers stay opaque (no name parsing).
+                if "\\" not in name:
+                    bare = _bare_port_names(name)
+                    if bare and all(b in seen[direction] for b in bare):
+                        continue
+                    seen[direction].update(bare)
                 buckets[direction].append(name)
         i += 1
     return inputs, outputs, inouts
