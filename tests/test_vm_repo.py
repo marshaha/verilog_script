@@ -115,7 +115,7 @@ KNOWN_FAILURES = frozenset(
     # diff is AUTOINPUT escaped-name extraction + type-column alignment
     # autoinstparam_local.v: crash fixed (897fb57 empty-INST ');'); remaining
     # diff is `( DATA_WIDTH )' paren padding vs our `(DATA_WIDTH)' house style
-    ['autowire_topv.v', 'autoinst_ifdef_fredrickson_200503_top.v', 'autoinout_lovell.v', 'autoinput_array_bug294.v', 'autoinput_concat_ignore.v', 'autoinput_concat_lau.v', 'autoinput_concat_lau2.v', 'autoinput_nohookup.v', 'autoinput_none.v', 'autoinst_array.v', 'autoinst_attr.v', 'autoinst_autonohookup.v', 'autoinst_belkind_concat.v', 'autoinst_cmtparen_tennant.sv', 'autoinst_dedefine.v', 'autoinst_ding.v', 'autoinst_for_myers.v', 'autoinst_func.v', 'autoinst_iface_noparam.v', 'autoinst_import2012.v', 'autoinst_interface.v', 'autoinst_interface_star.v', 'autoinst_lopaz.v', 'autoinst_ma_io_prefix.v', 'autoinst_mccoy.v', 'autoinst_moddefine.v', 'autoinst_modport_param.v', 'autoinst_mplist.sv', 'autoinst_mul.v', 'autoinst_name_bug245.v', 'autoinst_param_2d.v', 'autoinst_param_cmt.v', 'autoinst_param_type.v', 'autoinst_param_value.v', 'autoinst_paramvalue.v', 'autoinst_regexp_match.v', 'autoinst_rogoff.v', 'autoinst_star.v', 'autoinst_sv_kulkarni.v', 'autoinst_sv_kulkarni_wire.v', 'autoinst_swapped_vec.v', 'autoinst_tennant.v', 'autoinst_tieoff_vec.v', 'autoinst_unsigned_bug302.v', 'autoinst_vertrees.v', 'autoinst_wildcard.v', 'autoinst_wildcell.v', 'autoinstparam_iface_bruce.v', 'autoinstparam_local.v', 'autolisp_order_bug356.v', 'autooutput_simplify.v', 'autoreg_smith_multiassign.v', 'autotemplate_lisp_eq.v', 'autowire_apostrophe.sv', 'autowire_merge_bug303.v', 'autowire_merge_pm.v', 'autowire_paramvec_bug302.v', 'autowire_red_bracket.v', 'autowire_shifts_bug1346.v', 'autowire_thon_selects.v']
+    ['autowire_topv.v', 'autoinst_ifdef_fredrickson_200503_top.v', 'autoinout_lovell.v', 'autoinput_array_bug294.v', 'autoinput_concat_ignore.v', 'autoinput_concat_lau.v', 'autoinput_concat_lau2.v', 'autoinput_nohookup.v', 'autoinput_none.v', 'autoinst_array.v', 'autoinst_attr.v', 'autoinst_autonohookup.v', 'autoinst_belkind_concat.v', 'autoinst_cmtparen_tennant.sv', 'autoinst_dedefine.v', 'autoinst_ding.v', 'autoinst_for_myers.v', 'autoinst_func.v', 'autoinst_iface_noparam.v', 'autoinst_import2012.v', 'autoinst_interface.v', 'autoinst_interface_star.v', 'autoinst_lopaz.v', 'autoinst_ma_io_prefix.v', 'autoinst_moddefine.v', 'autoinst_modport_param.v', 'autoinst_mplist.sv', 'autoinst_mul.v', 'autoinst_name_bug245.v', 'autoinst_param_2d.v', 'autoinst_param_cmt.v', 'autoinst_param_type.v', 'autoinst_param_value.v', 'autoinst_paramvalue.v', 'autoinst_regexp_match.v', 'autoinst_rogoff.v', 'autoinst_star.v', 'autoinst_sv_kulkarni.v', 'autoinst_sv_kulkarni_wire.v', 'autoinst_swapped_vec.v', 'autoinst_tennant.v', 'autoinst_tieoff_vec.v', 'autoinst_unsigned_bug302.v', 'autoinst_vertrees.v', 'autoinst_wildcard.v', 'autoinst_wildcell.v', 'autoinstparam_iface_bruce.v', 'autoinstparam_local.v', 'autolisp_order_bug356.v', 'autooutput_simplify.v', 'autoreg_smith_multiassign.v', 'autotemplate_lisp_eq.v', 'autowire_apostrophe.sv', 'autowire_merge_bug303.v', 'autowire_merge_pm.v', 'autowire_paramvec_bug302.v', 'autowire_red_bracket.v', 'autowire_shifts_bug1346.v', 'autowire_thon_selects.v']
 )
 
 SKIP_TABLE = {
@@ -246,7 +246,8 @@ def run_pipeline(text: str, ref_file: str) -> list[str]:
     srcs = _read_module_srcs(files)
 
     def src_of(name: str):
-        return srcs.get(name) or buffer_mods.get(name)
+        # verilog-module-filenames: current buffer first
+        return buffer_mods.get(name) or srcs.get(name)
 
     resolved = {n for n in names_wire if src_of(n) is not None}
     td_re = parse_typedef_regexp(lines)

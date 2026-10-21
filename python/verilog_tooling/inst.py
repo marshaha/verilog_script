@@ -2451,11 +2451,14 @@ def map_module_spans(
 
 def _module_lines(
     name: str, files: Mapping[str, Path], buffer_mods: Mapping[str, list[str]]
-) -> list[str] | None:
-    """A module's definition lines: its library file, else this buffer."""
+) -> "list[str] | None":
+    """A module's definition lines: this buffer first (like verilog-mode's
+    verilog-module-filenames), else its library file."""
+    if name in buffer_mods:
+        return buffer_mods[name]
     if name in files:
         return read_source_lines(files[name])
-    return buffer_mods.get(name)
+    return None
 
 
 def create_by_args(args_l=None):
@@ -2680,7 +2683,9 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     srcs = _read_module_srcs(files)
 
     def src_of(name: str) -> "list[str] | None":
-        return srcs.get(name) or buffer_mods.get(name)
+        # verilog-mode's verilog-module-filenames checks the current
+        # buffer FIRST, then library dirs -- so must we.
+        return buffer_mods.get(name) or srcs.get(name)
 
     resolved = {n for n in names_wire if src_of(n) is not None}
     missing = sorted(names_emacs - resolved)
