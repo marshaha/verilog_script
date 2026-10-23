@@ -4673,3 +4673,35 @@ endmodule
     assert any(re.search(r"^reg\s+free_o;", line) for line in region)
     assert not any(re.search(r"^wire\s+clk;", line) for line in out)
     assert auto_def_t(out) == out  # idempotent
+
+
+def test_io_names_starting_with_type_words():
+    """A port NAMED reg_q / wire_x / logic_t is not a type word plus a
+    shorter name: _ and $ continue a Verilog identifier, so the
+    type-word check in extend_io_from_line must not split there.
+    Before the fix `output reg_q;` parsed as type reg + name q and the
+    real reg_q went unresolved."""
+    lines = """\
+module m (/*autoarg*/);
+   input clk;
+   input wire_x;
+   output reg_q;
+   output logic_t;
+   /*autodef*/
+   always @(posedge clk) reg_q <= wire_x;
+   assign logic_t = wire_x;
+endmodule
+""".splitlines()
+    out = auto_def_t(lines)
+    text = "\n".join(out)
+    assert "unresolved" not in text
+    region = out[out.index("// Define io wire here"):out.index("// Define flip-flop registers here")]
+    # reg_q is procedurally assigned: its reg completion uses its name
+    assert any(re.search(r"^reg\s+reg_q;", line) for line in region)
+    # logic_t keeps the historical wire companion, under its full name
+    assert any(re.search(r"^wire\s+logic_t;", line) for line in region)
+    # no phantom one-letter ports from the misparse
+    assert not re.search(r"(?m)^\s*(wire|reg)\s+q;", text)
+    assert not re.search(r"(?m)^\s*(wire|reg)\s+x;", text)
+    assert not re.search(r"(?m)^\s*(wire|reg)\s+t;", text)
+    assert auto_def_t(out) == out  # idempotent

@@ -454,15 +454,28 @@ class SignalTable:
             # the declaration itself is complete (AUTO region or ANSI
             # module header): no body wire/reg may be emitted for the port
             sig.has_defined = True
-        if rest.startswith("wire") and (len(rest) == 4 or not rest[4].isalnum()):
+
+        def _type_word(word: str) -> bool:
+            # REST starts with the net-type WORD, not merely with its
+            # letters: a port NAMED reg_q / wire_x / logic_t continues
+            # the identifier (letters, digits, _ and $ are identifier
+            # chars), so only a non-identifier next char — or the end
+            # of the text — makes it the keyword.
+            if not rest.startswith(word):
+                return False
+            return len(rest) == len(word) or not (
+                rest[len(word)].isalnum() or rest[len(word)] in "_$"
+            )
+
+        if _type_word("wire"):
             sig.has_defined = True
             sig.net_type = "wire"
             rest = re.sub(r"^wire\s*", "", rest)
-        if rest.startswith("logic") and (len(rest) == 5 or not rest[5].isalnum()):
+        if _type_word("logic"):
             sig.has_defined = True
             sig.net_type = "logic"
             rest = re.sub(r"^logic\s*", "", rest)
-        if rest.startswith("reg") and (len(rest) == 3 or not rest[3].isalnum()):
+        if _type_word("reg"):
             sig.has_defined = True
             sig.net_type = "reg"
             sig.type = "io_reg"
