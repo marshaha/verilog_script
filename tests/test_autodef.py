@@ -1375,10 +1375,12 @@ endmodule
     assert "clk;" not in io_region and "q;" not in io_region
 
 
-def test_verilog2001_body_io_decl_keeps_vim_companion():
-    # a bare `input clk;` in the BODY of a Verilog-2001 module is completed
-    # by the companion (`input clk;` + `wire clk;` is legal Verilog-2001 —
-    # only the ANSI-header redeclare is an error)
+def test_verilog2001_body_io_decl_companions():
+    # a bare `input a;` in the BODY of a Verilog-2001 module is already a
+    # complete declaration (direction + implicit wire): no companion is
+    # emitted for inputs (product call 2026-10-23 — an input needs no
+    # second declaration in the file).  Outputs keep the historical
+    # vim companion (`wire y;`).
     text = """\
 module t(a, y);
 input a;
@@ -1388,7 +1390,7 @@ assign y = a;
 endmodule
 """
     out = "\n".join(_adt(text))
-    assert "wire                                    a;" in out
+    assert "wire                                    a;" not in out
     assert "wire                                    y;" in out
     assert auto_def_t(out.splitlines()) == out.splitlines()
 
@@ -4622,3 +4624,52 @@ def test_merge_unpacked_evidence_rules():
     # a lone symbolic is used verbatim, no conflict
     assert _merge_unpacked_evidence(["IDX"], []) == ("IDX", False)
     assert _merge_unpacked_evidence([], []) == (None, False)
+
+
+def test_typeless_input_declarations_get_no_wire_companion():
+    """A type-less input statement (``input clk;``) is a complete
+    Verilog declaration — direction and implicit wire type in one —
+    so the io section must not restate it as a bare ``wire clk;``
+    companion (field report: AD added `wire` declarations for a
+    module's inputs clk/rst_n/data_in).  Scope is inputs only, per
+    the product call: outputs keep their historical companions."""
+    lines = """\
+module m (/*autoarg*/);
+   input clk;
+   input rst_n;
+   input [15:0] data_in;
+   output ack;
+   /*autodef*/
+   assign ack = rst_n & clk;
+endmodule
+""".splitlines()
+    out = auto_def_t(lines)
+    region = out[out.index("// Define io wire here"):out.index("// Define flip-flop registers here")]
+    text = "\n".join(out)
+    assert not re.search(r"(?m)^wire\s+clk;", text)
+    assert not re.search(r"(?m)^wire\s+rst_n;", text)
+    assert not re.search(r"(?m)^wire\[15:0\]\s+data_in;", text)
+    # outputs are untouched by the input-only fix: ack's companion stays
+    assert any(re.search(r"^wire\s+ack;", line) for line in region)
+    assert auto_def_t(out) == out  # idempotent
+
+
+def test_typeless_output_keeps_reg_completion():
+    """The `reg` completion is NOT redundant: an output assigned in an
+    always block (or not driven yet) has no legal declaration without
+    it.  Type-less outputs keep it; the input's wire companion is gone."""
+    lines = """\
+module m (/*autoarg*/);
+   input clk;
+   output q_ff;
+   output free_o;
+   /*autodef*/
+   always @(posedge clk) q_ff <= 1'b0;
+endmodule
+""".splitlines()
+    out = auto_def_t(lines)
+    region = out[out.index("// Define io wire here"):out.index("// Define flip-flop registers here")]
+    assert any(re.search(r"^reg\s+q_ff;", line) for line in region)
+    assert any(re.search(r"^reg\s+free_o;", line) for line in region)
+    assert not any(re.search(r"^wire\s+clk;", line) for line in out)
+    assert auto_def_t(out) == out  # idempotent

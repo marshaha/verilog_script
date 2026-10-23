@@ -544,6 +544,14 @@ class SignalTable:
             return seq  # incomplete decl (nameless header line): skip
         name = names[0]
         sig.seq = f"{seq:05d}"  # s:Seq2String pads to 5 chars
+        if io_dir == "input" and not sig.net_type and not sig.data_type and sig.type == "io_wire":
+            # Type-less input statement (``input clk;``): in Verilog the
+            # one statement declares the direction AND the implicit wire
+            # type — a complete declaration, so the io section owes it
+            # no `wire` companion (automatic.vim's split direction/type
+            # model generated one anyway).  Outputs/inouts keep the
+            # historical companion behavior.
+            sig.has_defined = True
         existing = self.signals.get(name)
         if existing is not None and existing.type == "usrdef":
             # a hand-written wire/reg declaration already exists for this net:

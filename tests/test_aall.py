@@ -713,3 +713,39 @@ def test_aall_autoarg_dedups_ifdef_else_redeclaration(tmp_path, capsys):
     p2 = tmp_path / "p2.v"
     inst.main(["aall", "-i", str(p1), "-o", str(p2)])
     assert p2.read_text() == out1  # idempotent
+
+
+def test_ainj_typeless_io_no_wire_companions(tmp_path, capsys):
+    """Field shape (tt.sv): hand-written type-less io declarations in a
+    name-list module.  ainj must not add `wire clk;`-style companions
+    for the inputs in the /*autodef*/ io section; the undriven output
+    still gets its `reg` from the AUTOREG region."""
+    src = tmp_path / "ttshape.sv"
+    src.write_text("""\
+module tt (/*autoarg*/);
+/*autoinput*/
+/*autooutput*/
+
+input                                   clk;
+input                                   rst_n;
+input        [7:0]                      data;
+output                                  ack;
+
+/*autodef*/
+/*autowire*/
+/*autoreg*/
+
+assign ack = rst_n;
+
+endmodule
+""")
+    capsys.readouterr()
+    p1 = tmp_path / "p1.sv"
+    inst.main(["ainj", "-i", str(src), "-o", str(p1)])
+    out1 = p1.read_text()
+    assert not re.search(r"(?m)^wire\s+clk;", out1)
+    assert not re.search(r"(?m)^wire\s+rst_n;", out1)
+    assert not re.search(r"(?m)^wire\[7:0\]\s+data;", out1)
+    p2 = tmp_path / "p2.sv"
+    inst.main(["ainj", "-i", str(p1), "-o", str(p2)])
+    assert p2.read_text() == out1  # idempotent
