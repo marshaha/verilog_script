@@ -5,6 +5,8 @@ arguments, parameter substitution, idempotency and kill — cross-checked
 against the real emacs verilog-mode where noted.
 """
 
+import re
+
 from verilog_tooling.inout import (
     _INPUT_HEADER,
     _OUTPUT_HEADER,
@@ -886,3 +888,38 @@ endmodule
     assert any(ln.startswith("input[0][127:0]in_momo;") for ln in out)
     out = _nospace(auto_output(top.splitlines(), mods))
     assert any(ln.startswith("output[0][127:0]out_momo;") for ln in out)
+
+
+SUB_REG = """\
+module sub (
+    output reg  [7:0] a,
+    output logic [3:0] b
+);
+endmodule
+"""
+
+
+def test_autooutput_pure_verilog_demotes_var_types():
+    """Unit pin for the _emit_io_line plumbing: with SV types disallowed
+    (a .v input file), promoted outputs drop reg/logic; with them
+    allowed (default, .sv) the submodule's types are preserved."""
+    top = """\
+module top;
+/*AUTOOUTPUT*/
+sub u_sub (/*autoinst*/
+    .a (na),
+    .b (nb)
+);
+endmodule
+""".splitlines()
+    mods = {"sub": parse_module_ports(SUB_REG.splitlines())}
+    out = auto_output(top, mods, allow_sv_types=False)
+    outputs = [ln for ln in out if ln.startswith("output") and "module" not in ln]
+    assert outputs == [
+        decl("output", "7", "na", "// From u_sub of sub.v"),
+        decl("output", "3", "nb", "// From u_sub of sub.v"),
+    ]
+    out2 = auto_output(top, mods)
+    text2 = "\n".join(out2)
+    assert re.search(r"(?m)^output\s+reg\s+\[7:0\]\s+na;", text2)
+    assert re.search(r"(?m)^output\s+logic\s+\[3:0\]\s+nb;", text2)

@@ -107,6 +107,14 @@ def set_ignore_concat(value: bool) -> None:
     _IGNORE_CONCAT = value
 
 
+# NOTE: whether generated wire declarations may carry the variable
+# types reg/logic inherited from a submodule port is an explicit
+# ALLOW_SV_TYPES parameter threaded through auto_wire (default True
+# preserves the submodule's type).  It is deliberately NOT a module
+# global (see the note in inout.py) and is NOT threaded through
+# auto_reg, whose reg declarations must stay reg.
+
+
 def _local_bool(lines: Sequence[str], name: str, default: bool) -> bool:
     """A boolean file-local variable: ``// {name}: nil`` -> False,
     ``// {name}: t`` (or anything else) -> True, absent -> DEFAULT."""
@@ -939,8 +947,8 @@ def _name_col_max(sigs: Sequence[Signal]) -> int:
     return max_len
 
 
-def _emit_decl(sig: Signal, max_len: int, keyword: str, indent: int, comment: str = "") -> str:
-    line = " " * indent + _emit_signal(sig, max_len, keyword, emacs_dims=True)
+def _emit_decl(sig: Signal, max_len: int, keyword: str, indent: int, comment: str = "", allow_sv_types: bool = True) -> str:
+    line = " " * indent + _emit_signal(sig, max_len, keyword, emacs_dims=True, allow_sv_types=allow_sv_types)
     if comment:
         col = max(_COMMENT_COL, indent + 40)
         line += " " * max(col - len(line), 1) + comment
@@ -954,6 +962,7 @@ def _regen(
     keyword: str,
     sigs: Sequence[Signal],
     comments: Mapping[str, str],
+    allow_sv_types: bool = True,
 ) -> list[str]:
     """Splice the generated region after the marker line(s).  The signal set
     is emitted ONCE (after the first marker); further markers get an empty
@@ -969,7 +978,7 @@ def _regen(
             out.append(pad + header)
             if not emitted:
                 for sig in sigs:
-                    out.append(_emit_decl(sig, max_len, keyword, indent, comments.get(sig.name, "")))
+                    out.append(_emit_decl(sig, max_len, keyword, indent, comments.get(sig.name, ""), allow_sv_types))
                 emitted = True
             out.append(pad + _END_OF_AUTOMATICS)
     return out
@@ -983,6 +992,7 @@ def auto_wire(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef],
     pin_scan_cache: "dict | None" = None,
+    allow_sv_types: bool = True,
 ) -> list[str]:
     """Regenerate the /*AUTOWIRE*/ wire declarations of a module.
 
@@ -992,6 +1002,8 @@ def auto_wire(
     definitions, as in :func:`verilog_tooling.inst.auto_inst`.
     PIN_SCAN_CACHE shares the per-span instance pin scan with the
     AUTOLOGIC/AUTOREG passes (see _cached_pin_scan); None scans inline.
+    ALLOW_SV_TYPES=False (pure Verilog input) drops reg/logic inherited
+    from a submodule port, falling back to the implicit net.
     """
     lines = kill_auto_wire(lines)
     full = list(lines)
@@ -1000,7 +1012,7 @@ def auto_wire(
     return map_module_spans(
         lines,
         _AUTOWIRE_MARK_FULL,
-        lambda span: _auto_wire_single(span, modules, full, pin_scan_cache),
+        lambda span: _auto_wire_single(span, modules, full, pin_scan_cache, allow_sv_types),
     )
 
 
@@ -1009,6 +1021,7 @@ def _auto_wire_single(
     modules: Mapping[str, ModuleDef],
     full: Sequence[str],
     pin_scan_cache: "dict | None" = None,
+    allow_sv_types: bool = True,
 ) -> list[str]:
     """AUTOWIRE for ONE module span (FULL is the whole buffer, for the
     compilation-unit `define set)."""
@@ -1117,7 +1130,7 @@ def _auto_wire_single(
         )
     if not _wire_comment_enabled(full):
         comments = {}
-    return _regen(lines, _AUTOWIRE_MARK_FULL, _WIRE_HEADER, "wire ", sigs, comments)
+    return _regen(lines, _AUTOWIRE_MARK_FULL, _WIRE_HEADER, "wire ", sigs, comments, allow_sv_types)
 
 
 # ---------------------------------------------------------------------------
@@ -1255,6 +1268,8 @@ def main(argv=None) -> None:
 
     args = create_by_args(argv)
     lines = Path(args.in_file).read_text().splitlines()
+    # Dialect anchor: --ref_file is the real source file (see inout.main).
+    allow_sv_types = Path(args.ref_file or args.in_file).suffix.lower() != ".v"
     if args.command == "kill-aw":
         out = kill_auto_wire(lines)
     elif args.command == "kill-ar":
@@ -1282,7 +1297,7 @@ def main(argv=None) -> None:
                     modules[name] = parse_module_ports(
                         src, with_params=True, typedef_regexp=td_re, interfaces=interfaces
                     )
-        out = auto_wire(lines, modules) if args.command == "aw" else auto_reg(lines, modules)
+        out = auto_wire(lines, modules, allow_sv_types=allow_sv_types) if args.command == "aw" else auto_reg(lines, modules)
     Path(args.out_file).write_text("\n".join(out) + "\n")
 
 

@@ -2633,6 +2633,12 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     set_param_value(wire.parse_param_value(lines))
     from .wire import set_ignore_concat, parse_ignore_concat
     set_ignore_concat(parse_ignore_concat(lines))
+    # Pure Verilog (.v) input: generated port/wire declarations must not
+    # carry the variable types reg/logic inherited from SV submodule
+    # ports — a continuously driven net cannot be a variable in 1364.
+    # Threaded as an explicit parameter (never a module global: it would
+    # leak into later in-process calls and into AUTOREG).
+    _allow_sv_types = Path(args.ref_file or args.in_file).suffix.lower() != ".v"
 
     # emacs verilog-delete-auto-buffer ("Clear existing autos else we'll be
     # screwed by existing ones"): drop last round's regions up front — left
@@ -2795,9 +2801,9 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
         modules_p = modules_w
     lines = xfer.auto_inoutparam(lines, modules_p)
     _log("aall: AUTOINOUTPARAM done")
-    lines = inout.auto_output(lines, modules_w)
-    lines = inout.auto_input(lines, modules_w)
-    lines = inout.auto_inout(lines, modules_w)
+    lines = inout.auto_output(lines, modules_w, _allow_sv_types)
+    lines = inout.auto_input(lines, modules_w, _allow_sv_types)
+    lines = inout.auto_inout(lines, modules_w, _allow_sv_types)
     _log("aall: AUTOOUTPUT/AUTOINPUT/AUTOINOUT done")
     # 10. AUTOTIEOFF; 11. AUTOUNDEF; 12. AUTOASSIGNMODPORT
     lines = misc.auto_tieoff(lines, modules_w)
@@ -2824,7 +2830,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
         pin_scan_cache = None
     lines = misc.auto_logic(lines, modules_w, pin_scan_cache)
     _log("aall: AUTOLOGIC done")
-    lines = wire.auto_wire(lines, modules_w, pin_scan_cache)
+    lines = wire.auto_wire(lines, modules_w, pin_scan_cache, _allow_sv_types)
     lines = wire.auto_reg(lines, modules_w, pin_scan_cache)
     lines = autodef.auto_def_t(lines, modules_w)
     _log("aall: AUTOWIRE/AUTOREG/autodef done")

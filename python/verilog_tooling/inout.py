@@ -99,6 +99,15 @@ _INPUT_HEADER = "// Beginning of automatic inputs (from unused autoinst inputs)"
 _OUTPUT_HEADER = "// Beginning of automatic outputs (from unused autoinst outputs)"
 _INOUT_HEADER = "// Beginning of automatic inouts (from unused autoinst inouts)"
 
+# NOTE: whether generated port declarations may carry the variable
+# types reg/logic inherited from a submodule port is an explicit
+# ALLOW_SV_TYPES parameter threaded through auto_output/auto_input/
+# auto_inout (default True preserves the submodule's type).  It is
+# deliberately NOT a module global: a global set by one CLI run would
+# leak into later in-process calls (a .v aall run would demote a later
+# direct auto_wire call's logic declarations) and into AUTOREG, which
+# shares wire._regen but must keep its reg declarations.
+
 
 def _mod_comment_suffix(module: str) -> str:
     """'.v' suffix for module comments, except for gate primitives."""
@@ -376,8 +385,8 @@ def _apply_declare_nettype(sigs: Sequence[Signal], nettype: str | None) -> list[
     return out
 
 
-def _emit_io_line(sig: Signal, max_len: int, keyword: str, indent: int, v2k: bool, comment: str) -> str:
-    body = _emit_signal(sig, max_len, keyword, emacs_dims=True)[:-1] + ("," if v2k else ";")
+def _emit_io_line(sig: Signal, max_len: int, keyword: str, indent: int, v2k: bool, comment: str, allow_sv_types: bool = True) -> str:
+    body = _emit_signal(sig, max_len, keyword, emacs_dims=True, allow_sv_types=allow_sv_types)[:-1] + ("," if v2k else ";")
     line = " " * indent + body
     if comment:
         col = max(_COMMENT_COL, indent + 40)
@@ -451,6 +460,7 @@ def _expand_marker(
     sigs: Sequence[Signal],
     comments: Mapping[str, str],
     ignore_re: "str | None",
+    allow_sv_types: bool = True,
 ) -> str:
     """Expand one /*AUTOINPUT*// /*AUTOOUTPUT*/ marker (its own regexp
     filter, v2k comma repairs) in TEXT."""
@@ -495,7 +505,7 @@ def _expand_marker(
         rows = [pad + header]
         for sig in msigs:
             rows.append(
-                _emit_io_line(sig, max_len, keyword, indent, v2k, comments.get(sig.name, ""))
+                _emit_io_line(sig, max_len, keyword, indent, v2k, comments.get(sig.name, ""), allow_sv_types)
             )
         rows.append(pad + _END_OF_AUTOMATICS)
         region = "\n".join(rows) + "\n"
@@ -514,6 +524,7 @@ def _regen(
     comments: Mapping[str, str],
     ignore_var: str,
     full: "Sequence[str] | None" = None,
+    allow_sv_types: bool = True,
 ) -> list[str]:
     """Expand every marker of MARK_KEYWORD (each with its own regexp
     filter); the region goes after the marker line, Verilog-2001 comma style
@@ -533,7 +544,7 @@ def _regen(
     )
     ignore_re = m.group(1) if m else None
     for marker in reversed(markers):
-        text = _expand_marker(text, marker, header, keyword, sigs, comments, ignore_re)
+        text = _expand_marker(text, marker, header, keyword, sigs, comments, ignore_re, allow_sv_types)
     return text.split("\n")
 
 
@@ -541,13 +552,15 @@ def _regen(
 # AUTOINPUT / AUTOOUTPUT (verilog-auto-input / verilog-auto-output)
 
 
-def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[str]:
+def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True) -> list[str]:
     """Regenerate the /*AUTOINPUT*/ input declarations of a module.
 
     Declares an input port for every net feeding an input port of an
     /*autoinst*/ instance that is not declared or driven inside the module.
     MODULES maps instance module names to their parsed definitions, as in
     :func:`verilog_tooling.wire.auto_wire`.
+    ALLOW_SV_TYPES=False (pure Verilog input) drops reg/logic inherited
+    from a submodule port, falling back to the implicit net.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
     from .autodef import set_param_value
@@ -565,18 +578,18 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[s
             comments = {}
         sigs = _apply_declare_nettype(sigs, _local_declare_nettype(full))
         return _regen(
-            span, "AUTOINPUT", _INPUT_HEADER, "input", sigs, comments, _IGNORE_RE["input"], full
+            span, "AUTOINPUT", _INPUT_HEADER, "input", sigs, comments, _IGNORE_RE["input"], full, allow_sv_types
         )
 
     return map_module_spans(lines, _AUTOINPUT_MARK, _single)
 
 
-def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[str]:
+def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True) -> list[str]:
     """Regenerate the /*AUTOOUTPUT*/ output declarations of a module.
 
     Declares an output port for every net driven by an output port of an
     /*autoinst*/ instance that is not a port of this module and does not
-    feed an instance input/inout.
+    feed an instance input/inout.  ALLOW_SV_TYPES as in auto_input.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
     from .autodef import set_param_value
@@ -594,18 +607,18 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[
             comments = {}
         sigs = _apply_declare_nettype(sigs, _local_declare_nettype(full))
         return _regen(
-            span, "AUTOOUTPUT", _OUTPUT_HEADER, "output", sigs, comments, _IGNORE_RE["output"], full
+            span, "AUTOOUTPUT", _OUTPUT_HEADER, "output", sigs, comments, _IGNORE_RE["output"], full, allow_sv_types
         )
 
     return map_module_spans(lines, _AUTOOUTPUT_MARK, _single)
 
 
-def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[str]:
+def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True) -> list[str]:
     """Regenerate the /*AUTOINOUT*/ inout declarations of a module.
 
     Declares an inout port for every net connected to an inout port of an
     /*autoinst*/ instance that is not a port of this module and is not seen
-    on an instance input/output port.
+    on an instance input/output port.  ALLOW_SV_TYPES as in auto_input.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
     from .autodef import set_param_value
@@ -622,18 +635,18 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[s
         if not _wire_comment_enabled(full):
             comments = {}
         return _regen(
-            span, "AUTOINOUT", _INOUT_HEADER, "inout", sigs, comments, _IGNORE_RE["inout"], full
+            span, "AUTOINOUT", _INOUT_HEADER, "inout", sigs, comments, _IGNORE_RE["inout"], full, allow_sv_types
         )
 
     return map_module_spans(lines, _AUTOINOUT_MARK, _single)
 
 
-def auto_io(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[str]:
+def auto_io(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True) -> list[str]:
     """AUTOOUTPUT then AUTOINPUT then AUTOINOUT — the verilog-auto order
-    (the AIO command)."""
-    lines = auto_output(lines, modules)
-    lines = auto_input(lines, modules)
-    return auto_inout(lines, modules)
+    (the AIO command).  ALLOW_SV_TYPES as in auto_input."""
+    lines = auto_output(lines, modules, allow_sv_types)
+    lines = auto_input(lines, modules, allow_sv_types)
+    return auto_inout(lines, modules, allow_sv_types)
 
 
 # ---------------------------------------------------------------------------
@@ -700,6 +713,10 @@ def main(argv=None) -> None:
 
     args = create_by_args(argv)
     lines = Path(args.in_file).read_text().splitlines()
+    # Dialect anchor: --ref_file is the real source file (the Vim
+    # front-end operates on a temp buffer); sequential-pipeline
+    # intermediates (.o) must not flip the rule mid-chain.
+    allow_sv_types = Path(args.ref_file or args.in_file).suffix.lower() != ".v"
     if args.command == "kill-ain":
         out = kill_auto_input(lines)
     elif args.command == "kill-aout":
@@ -731,11 +748,11 @@ def main(argv=None) -> None:
                     )
         out = lines
         if args.command in ("aio", "aout"):
-            out = auto_output(out, modules)
+            out = auto_output(out, modules, allow_sv_types)
         if args.command in ("aio", "ain"):
-            out = auto_input(out, modules)
+            out = auto_input(out, modules, allow_sv_types)
         if args.command in ("aio", "ainout"):
-            out = auto_inout(out, modules)
+            out = auto_inout(out, modules, allow_sv_types)
     Path(args.out_file).write_text("\n".join(out) + "\n")
 
 

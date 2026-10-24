@@ -2780,15 +2780,21 @@ def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = 
     # submodule port REPLACES a bare ``wire`` (``foo_t x;``, ``logic signed
     # [15:0] x;``) but follows a direction keyword (``input foo_t a``,
     # ``input logic signed [15:0] x``)
-    # allow_sv_types=False: in pure Verilog (.v) files, do not emit ``logic``
-    # (issue #1142); keep ``wire`` instead.  In practice many flows compile
-    # .v as SV, so the default True preserves the submodule's type.
+    # allow_sv_types=False: in pure Verilog (.v) files, do not emit the
+    # variable types ``reg``/``logic`` inherited from a submodule port
+    # (issue #1142 for the AUTOWIRE head, extended to AIO port
+    # declarations): a net continuously driven by an instance port cannot
+    # be a variable in Verilog-2001, so the type word is dropped and the
+    # declaration falls back to the implicit net (wire).  In practice
+    # many flows compile .v as SV, so the default True preserves the
+    # submodule's type.
+    _var_types = ("reg", "logic")
     head = keyword
     if sig.data_type and keyword.strip() == "wire":
         head = sig.data_type
     elif sig.net_type and keyword.strip() == "wire":
-        # Don't emit SV-only 'logic' into a Verilog file
-        if not (sig.net_type == "logic" and not allow_sv_types):
+        # Don't emit a variable type into a Verilog file
+        if not (sig.net_type in _var_types and not allow_sv_types):
             head = sig.net_type
     # Type keyword padded: CalMargin(12, len) -> 12 - len + 1 spaces,
     # so the field is 13 wide (automatic.vim arithmetic)
@@ -2798,7 +2804,8 @@ def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = 
             line += sig.data_type
     else:
         if sig.net_type and keyword.strip() != "wire":
-            line += sig.net_type + " "
+            if not (sig.net_type in _var_types and not allow_sv_types):
+                line += sig.net_type + " "
         if sig.signed:
             line += "signed "
         if emacs_dims and sig.multidim:

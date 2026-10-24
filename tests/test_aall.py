@@ -749,3 +749,88 @@ endmodule
     p2 = tmp_path / "p2.sv"
     inst.main(["ainj", "-i", str(p1), "-o", str(p2)])
     assert p2.read_text() == out1  # idempotent
+
+
+SUB_SV_VARTYPES = """\
+module sub (
+    input  logic [3:0] i,
+    output reg  [7:0] a,
+    output logic [3:0] b
+);
+endmodule
+"""
+
+SUB2_SV = """\
+module sub2 (
+    input [7:0] i
+);
+endmodule
+"""
+
+TOP_VARTYPES = """\
+module top (/*autoarg*/);
+   output reg [7:0] q;
+   /*autooutput*/
+   /*autoinput*/
+   /*autoinst*/
+   sub u_sub (.a (na), .b (nb), .i (nin));
+endmodule
+"""
+
+TOP_WIRE_VARTYPES = """\
+module topw (/*autoarg*/);
+   /*autoinst*/
+   sub u_sub (.a (mid));
+   sub2 u_sub2 (.i (mid));
+   /*autowire*/
+endmodule
+"""
+
+
+def test_aall_pure_verilog_demotes_var_types(tmp_path):
+    """A .v top file must not inherit reg/logic from SV submodule ports
+    into generated AIO declarations: a continuously driven net cannot be
+    a variable in Verilog-2001 (iverilog -g2001 rejects it).  The .sv
+    control run keeps the submodule's types, and the hand-written body
+    declaration is untouched."""
+    libdir = tmp_path / "lib"
+    libdir.mkdir()
+    (libdir / "sub.sv").write_text(SUB_SV_VARTYPES)
+    top = tmp_path / "top.v"
+    top.write_text(TOP_VARTYPES)
+    out = _run_aall(top, libdir, tmp_path)
+    assert re.search(r"(?m)^output\[7:0\]\s+na;", out)
+    assert re.search(r"(?m)^output\[3:0\]\s+nb;", out)
+    assert re.search(r"(?m)^input\[3:0\]\s+nin;", out)
+    assert "logic" not in out
+    assert out.count("output reg") == 1  # only the hand-written q
+    assert re.search(r"(?m)^output reg \[7:0\]\s+q;", out)
+    # idempotent through a real .v name
+    top2 = tmp_path / "top2.v"
+    top2.write_text(out)
+    assert _run_aall(top2, libdir, tmp_path) == out
+    # .sv control: the submodule's types are preserved
+    top_sv = tmp_path / "top.sv"
+    top_sv.write_text(TOP_VARTYPES)
+    out_sv = _run_aall(top_sv, libdir, tmp_path)
+    assert re.search(r"(?m)^output\s+reg\s+\[7:0\]\s+na;", out_sv)
+    assert re.search(r"(?m)^output\s+logic\s+\[3:0\]\s+nb;", out_sv)
+    assert re.search(r"(?m)^input\s+logic\s+\[3:0\]\s+nin;", out_sv)
+
+
+def test_aall_pure_verilog_demotes_autowire_var_types(tmp_path):
+    """Same rule for the AUTOWIRE head: an internal net driven by an
+    instance output port must not be declared reg/logic in a .v file."""
+    libdir = tmp_path / "lib"
+    libdir.mkdir()
+    (libdir / "sub.sv").write_text(SUB_SV_VARTYPES)
+    (libdir / "sub2.sv").write_text(SUB2_SV)
+    top = tmp_path / "topw.v"
+    top.write_text(TOP_WIRE_VARTYPES)
+    out = _run_aall(top, libdir, tmp_path)
+    assert re.search(r"(?m)^wire\[7:0\]\s+mid;", out)
+    assert "reg" not in out and "logic" not in out
+    top_sv = tmp_path / "topw.sv"
+    top_sv.write_text(TOP_WIRE_VARTYPES)
+    out_sv = _run_aall(top_sv, libdir, tmp_path)
+    assert re.search(r"(?m)^reg\[7:0\]\s+mid;", out_sv)

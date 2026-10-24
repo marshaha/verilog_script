@@ -858,3 +858,41 @@ def test_expr_suffix_dims():
     # not a plain net connection
     assert _expr_suffix_dims("{a, b}[2:-1]", "a", 1) == ()
     assert _expr_suffix_dims("other[2:-1]", "net", 1) == ()
+
+
+SUB_REG = """\
+module sub (
+    output reg [7:0] a
+);
+endmodule
+"""
+
+TOP_REG = """\
+module top;
+/*AUTOWIRE*/
+sub u_sub (/*autoinst*/
+    .a (mid)
+);
+endmodule
+"""
+
+
+def test_auto_wire_pure_verilog_demotes_var_types():
+    """Unit pin for the _emit_decl plumbing: with SV types disallowed
+    (a .v input file), an internal net driven by an output reg port is
+    declared wire; with them allowed (default, .sv) the reg is kept."""
+    mods = {"sub": parse_module_ports(SUB_REG.splitlines())}
+    out = auto_wire(TOP_REG.splitlines(), mods, allow_sv_types=False)
+    region = out[out.index(HEADER_W) : out.index(CLOSER) + 1]
+    assert region == [
+        HEADER_W,
+        decl("wire ", "7", "mid", "// From u_sub of sub.v"),
+        CLOSER,
+    ]
+    out2 = auto_wire(TOP_REG.splitlines(), mods)
+    region2 = out2[out2.index(HEADER_W) : out2.index(CLOSER) + 1]
+    assert region2 == [
+        HEADER_W,
+        decl("reg", "7", "mid", "// From u_sub of sub.v"),
+        CLOSER,
+    ]
