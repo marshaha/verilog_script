@@ -126,6 +126,15 @@ Details:
 - to exempt by name pattern instead, use `verilog-auto-input-ignore-regexp`
   / `verilog-auto-output-ignore-regexp` / `verilog-auto-inout-ignore-regexp`.
 
+A **hand-written body declaration works the same way**: any
+`wire`/`reg`/`logic` you declare yourself (outside the auto regions) marks
+the net as internal by intent, and AUTOINPUT / AUTOOUTPUT / AUTOINOUT will
+not promote it to a port. Add `//DT` if you also want AD to leave that
+declaration's width alone. (For AUTOOUTPUT this is a deliberate deviation
+from emacs, which keeps promoting declared wires.) If you want a signal to
+be *both* wired internally *and* a port, hand-write the port declaration —
+AIO never touches names already in the header.
+
 ### 2. `//DT` — never touch my hand-written declaration
 
 A trailing `//DT` comment marks a hand-written line as user-owned. It is

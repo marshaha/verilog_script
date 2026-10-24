@@ -259,11 +259,14 @@ def _output_sigs(
 ) -> "tuple[list[Signal], dict[str, str]]":
     """AUTOOUTPUT candidates: nets driven by instance OUTPUT ports, minus
     this module's ports and nets feeding an instance input/inout (those are
-    internal — /*AUTOWIRE*/ territory).  Declared wires/params are NOT
-    excluded, exactly as verilog-mode."""
+    internal — /*AUTOWIRE*/ territory).  Nets explicitly declared as
+    wire/reg/logic in the body are internal by user intent and are NOT
+    promoted to a port — the same rule AUTOINPUT/AUTOINOUT apply (a house
+    deviation from verilog-mode, which keeps promoting declared wires)."""
     out_nets = _inst_driven_nets(lines, modules, ("output",), simple_only=True)
-    ports, _, _ = _module_tables(lines)
+    ports, usrdef, _ = _module_tables(lines)
     excluded = set(ports.signals) | _declared_port_names(lines)
+    excluded |= set(usrdef.signals)
     excluded |= _connected_names(lines, modules, ("input",)) | _connected_names(
         lines, modules, ("inout",)
     )

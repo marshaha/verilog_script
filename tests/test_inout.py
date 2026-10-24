@@ -177,13 +177,15 @@ endmodule
 
 
 def test_output_exclusions():
-    """A net is NOT an output when it is already a port of this module or
-    feeds an instance input/inout (internal — AUTOWIRE territory).  A
-    hand-declared wire is NOT excluded (verilog-mode parity)."""
+    """A net is NOT an output when it is already a port of this module,
+    feeds an instance input/inout (internal — AUTOWIRE territory), or is
+    hand-declared in the body (user intent: internal — house deviation
+    from verilog-mode, which still promotes declared wires)."""
     top = """\
 module top (output ex_out);
 /*AUTOOUTPUT*/
 wire declared_w;
+wire dt_w; //DT
 sub u1 (/*autoinst*/
     .clk  (clk),
     .din  (mid),
@@ -198,13 +200,20 @@ sub u2 (/*autoinst*/
     .flag (flag2),
     .io   (io_w)
 );
+sub u3 (/*autoinst*/
+    .clk  (clk),
+    .din  (din3),
+    .dout (dt_w),
+    .flag (flag3),
+    .io   (io_w2)
+);
 endmodule
 """
     out = auto_output(top.splitlines(), mods())
     outputs = [ln for ln in out if ln.startswith("output") and "module" not in ln]
     assert outputs == [
-        decl("output", "", "declared_w", "// From u1 of sub.v"),
         decl("output", "", "flag2", "// From u2 of sub.v"),
+        decl("output", "", "flag3", "// From u3 of sub.v"),
     ]
 
 

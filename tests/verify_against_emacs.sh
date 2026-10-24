@@ -106,13 +106,17 @@ done < "$WORK/cases.tsv"
 
 # --- AUTOINPUT/AUTOOUTPUT scenario (compared whitespace-squeezed: the
 # declaration name column is our autodef house style, not emacs's) ---
+# NOTE: decl_o is left UNDECLARED here on purpose.  House deviation:
+# a body-declared wire is user intent for "internal" and our AUTOOUTPUT
+# does not promote it to a port, while emacs does (pinned in
+# tests/test_inout.py::test_output_exclusions) — declaring it here would
+# make this case diff by design.
 cat > "$WORK/aio.v" <<'EOF'
 module top (
    input ext_clk,
    /*AUTOINPUT*/
    /*AUTOOUTPUT*/
 );
-   wire decl_o;
    /* InstModule AUTO_TEMPLATE (
        .o (decl_o),
    ); */

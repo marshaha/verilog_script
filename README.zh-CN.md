@@ -118,6 +118,13 @@ sub u_sub (
 - 想按名字模式豁免，用 `verilog-auto-input-ignore-regexp`
   / `verilog-auto-output-ignore-regexp` / `verilog-auto-inout-ignore-regexp`。
 
+**手写的体内声明有同样效果**：任何你自己声明的 `wire`/`reg`/`logic`
+（在 auto 区域之外）都视为用户意图的内连信号，AUTOINPUT / AUTOOUTPUT /
+AUTOINOUT 不会把它提升为端口。如果还希望 AD 不去动这条声明的位宽，
+加上 `//DT`。（对 AUTOOUTPUT 这是与 emacs 有意不同的行为——emacs 会把
+已声明的 wire 继续提升为端口。）如果一个信号*既*要内连*又*要是端口，
+就手写端口声明——AIO 从不碰已经在模块头里的名字。
+
 ### 2. `//DT` —— 不要动我手写的声明
 
 行尾的 `//DT` 注释把一行手写内容标记为用户所有。它在两处起作用：
