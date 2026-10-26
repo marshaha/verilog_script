@@ -913,3 +913,26 @@ def test_auto_wire_pure_verilog_demotes_var_types():
         decl("reg", "7", "mid", "// From u_sub of sub.v"),
         CLOSER,
     ]
+
+
+def test_section_order_pins_outputs_before_inputs():
+    """verilog-read-sub-decls sweeps sections Outputs, Inouts, Inputs
+    (autoinst_for_myers.v): a range under // Inouts beats a part-select
+    under // Outputs, and vice versa for // Inputs."""
+    from verilog_tooling.wire import _section_order_pins
+
+    text = (
+        "mod u (\n"
+        "  // Inputs\n"
+        "  .a (x),\n"
+        "  // Outputs\n"
+        "  .b (y),\n"
+        "  // Inouts\n"
+        "  .c (z));\n"
+    )
+    pins = [("a", "x"), ("b", "y"), ("c", "z")]
+    assert _section_order_pins(text, text.index("("), pins) == [
+        ("b", "y"),
+        ("c", "z"),
+        ("a", "x"),
+    ]

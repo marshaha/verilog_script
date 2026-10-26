@@ -355,9 +355,23 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
                 f"first-driven inst={rec.inst} module={rec.module} "
                 f"width={rec.width} pdims={list(rec.packed_dims)}",
             )
-    elif not _same_driver(prev, rec):
+    elif _same_driver(prev, rec) and not rec.packed_dims:
+        # Same instance repeating a net with no width evidence (a plain
+        # connection after a bus one): nothing to combine, keep prev.
+        pass
+    else:
+        # One merge path for every repeat, same instance or not
+        # (verilog-signals-combine-bus merges same-name signals
+        # unconditionally): numeric buses by max/min, a differing bus
+        # string wins with a warning.  MULTI (the ", ..." comment) is
+        # set for a different instance, or for a same-instance repeat
+        # that actually combined differing widths — element selects
+        # (autoinst_regexp_match.v) and part-select-vs-range
+        # (autoinst_for_myers.v) both mark; identical repeats do not.
         from dataclasses import replace
         from .autodef import _eval_bound
+
+        _same = _same_driver(prev, rec)
 
         # Multiple drivers: keep the maximum width (max MSB, min LSB).
         # Evaluate MSB expressions (e.g. "224*1-1" -> 223) and take max.
@@ -417,48 +431,17 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
             # prev is a bus string: it stays, the numeric merge is invisible
         elif prev_is_string:
             buswarn = True  # scalar driver after a bus string
+        _merged = new_pdims != prev.packed_dims or new_width != prev.width
         nets[rec.name] = replace(
-            prev, multi=True, width=new_width, packed_dims=new_pdims,
+            prev,
+            multi=(prev.multi or not _same or _merged),
+            width=new_width, packed_dims=new_pdims,
             merge_warn=buswarn,
         )
-        from ._trace import trace_sig
+        if not _same:
+            from ._trace import trace_sig
 
-        trace_sig(prev.name, f"multi-driver inst={rec.inst} module={rec.module}")
-    else:
-        # Same instance, same net, different single packed range: element
-        # selects of one bus (SD_ADRS[0][9], [0][8], ... in
-        # autoinst_regexp_match.v) merge by max/min like combine-bus.
-        # A merge still marks the signal multi: Emacs appends ", ..."
-        # to the comment whenever the signal is seen more than once,
-        # same instance included (only identical-width repeats stay
-        # unmarked — the branch below fires on differing ranges only).
-        if (
-            prev.packed_dims
-            and rec.packed_dims
-            and len(prev.packed_dims) == 1
-            and len(rec.packed_dims) == 1
-            and prev.packed_dims != rec.packed_dims
-        ):
-            from dataclasses import replace as _replace
-
-            def _num_range(r: str):
-                parts = r.split(":")
-                if len(parts) != 2:
-                    return None
-                try:
-                    return (int(parts[0].strip()), int(parts[1].strip()))
-                except ValueError:
-                    return None
-
-            _p = _num_range(prev.packed_dims[0])
-            _r = _num_range(rec.packed_dims[0])
-            if _p is not None and _r is not None:
-                _hi = max(_p[0], _r[0])
-                _lo = min(_p[1], _r[1])
-                nets[rec.name] = _replace(
-                    prev, packed_dims=(f"{_hi}:{_lo}",), width=str(_hi),
-                    multi=True,
-                )
+            trace_sig(prev.name, f"multi-driver inst={rec.inst} module={rec.module}")
 
 
 def _split_top_exprs(masked: str) -> list[str]:
@@ -646,6 +629,79 @@ def _cached_pin_scan(
     return scan
 
 
+_SECTION_RE = re.compile(r"//\s*(Interfaced|Interfaces|Outputs|Inouts|Inputs)\b")
+_SECTION_RANK = {"Interfaced": 0, "Interfaces": 1, "Outputs": 2, "Inouts": 3, "Inputs": 4}
+
+
+def _section_order_pins(text: str, open_idx: int, pin_exprs: list) -> list:
+    """Reorder an instance's pins into verilog-mode's section-scan order:
+    verilog-read-sub-decls sweeps the block once per section comment in
+    the order Interfaced, Interfaces, Outputs, Inouts, Inputs, and
+    combine-bus (stable-sorted by name) lets the LAST same-name evidence
+    win — so a part-select under // Outputs loses to a range under //
+    Inouts, while a range under // Inouts loses to a part-select under //
+    Inputs (autoinst_for_myers.v: outs3 takes the range, ins3 keeps the
+    part-select, both with Couldn't Merge).  Pins before any section
+    comment keep their place first; a block with no section comments
+    keeps source order.  A position-scan mismatch returns the input
+    unchanged."""
+    from . import emacs
+
+    try:
+        close_idx = emacs._matching_paren(text, open_idx)
+    except ValueError:
+        return pin_exprs
+    span = text[open_idx + 1 : close_idx]
+    sections = [(m.start(), m.group(1)) for m in _SECTION_RE.finditer(span)]
+    if not sections:
+        return pin_exprs
+    masked = emacs.mask_comments(span)
+    pin_re = re.compile(r"\.\s*(\w+)")
+    positions: list[int] = []
+    i = 0
+    n = len(masked)
+    while i < n:
+        m = pin_re.search(masked, i)
+        if not m:
+            break
+        positions.append(m.start())
+        k = m.end()
+        while k < n and masked[k] in " \t\n":
+            k += 1
+        if k < n and masked[k] == "(":
+            depth = 1
+            j = k + 1
+            while j < n and depth:
+                ch = masked[j]
+                if ch == '"':
+                    j += 1
+                    while j < n and masked[j] != '"':
+                        j += 2 if masked[j] == "\\" else 1
+                    j += 1
+                    continue
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                j += 1
+            i = j
+        else:
+            i = k
+    if len(positions) != len(pin_exprs):
+        return pin_exprs
+    ranked = []
+    for (pin, expr), pos in zip(pin_exprs, positions):
+        sec = None
+        for spos, sname in sections:
+            if spos <= pos:
+                sec = sname
+            else:
+                break
+        ranked.append((_SECTION_RANK.get(sec, -1), pin, expr))
+    ranked.sort(key=lambda t: t[0])  # stable: source order within a section
+    return [(pin, expr) for _, pin, expr in ranked]
+
+
 def _inst_pin_scan(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef],
@@ -697,6 +753,7 @@ def _inst_pin_scan(
             return
         seen.add(open_idx)
         pin_exprs = list(emacs.inst_pin_connections(text, open_idx))
+        pin_exprs = _section_order_pins(text, open_idx, pin_exprs)
         # verilog-auto-inst-param-value gates ALL substitution in the
         # sub-decl widths (Emacs default nil): when on, only the
         # instance's own #(...) overrides replace — submodule defaults
