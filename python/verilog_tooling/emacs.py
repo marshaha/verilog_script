@@ -677,7 +677,10 @@ def read_local_eval_defuns(text: str) -> dict:
     from .template import _elisp_eval, _elisp_parse, _elisp_tokenize
 
     env: dict = {}
-    m = re.search(r"Local Variables:(.*?)^\s*End:", text, re.S | re.M)
+    # The End: line may carry a line-comment prefix (// End: in
+    # autoinst_regexp_match.v) or stand bare ( End: in
+    # autoinst_ma_io_prefix.v) — accept both.
+    m = re.search(r"Local Variables:(.*?)^[ \t]*(?://)?[ \t]*End:", text, re.S | re.M)
     if not m:
         return env
     section = m.group(1)

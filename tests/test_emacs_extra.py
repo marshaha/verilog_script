@@ -515,3 +515,18 @@ def test_simplify_range_expression_emacs_examples():
     assert s("[(1):3]") == "[1:3]"
     assert s("[func(BAR)]") == "[func(BAR)]"
     assert s("[2*2:1]") == "[4:1]"
+
+
+def test_read_local_eval_defuns_accepts_comment_end_line():
+    """The Local Variables End: line may carry a // prefix
+    (autoinst_regexp_match.v) or stand bare (autoinst_ma_io_prefix.v)."""
+    from verilog_tooling.emacs import read_local_eval_defuns
+
+    text = (
+        "module m;\n"
+        "endmodule\n"
+        "// Local Variables:\n"
+        "// eval:(defun uc (x) (upcase x))\n"
+        "// End:\n"
+    )
+    assert "uc" in read_local_eval_defuns(text)

@@ -424,6 +424,41 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
         from ._trace import trace_sig
 
         trace_sig(prev.name, f"multi-driver inst={rec.inst} module={rec.module}")
+    else:
+        # Same instance, same net, different single packed range: element
+        # selects of one bus (SD_ADRS[0][9], [0][8], ... in
+        # autoinst_regexp_match.v) merge by max/min like combine-bus.
+        # A merge still marks the signal multi: Emacs appends ", ..."
+        # to the comment whenever the signal is seen more than once,
+        # same instance included (only identical-width repeats stay
+        # unmarked — the branch below fires on differing ranges only).
+        if (
+            prev.packed_dims
+            and rec.packed_dims
+            and len(prev.packed_dims) == 1
+            and len(rec.packed_dims) == 1
+            and prev.packed_dims != rec.packed_dims
+        ):
+            from dataclasses import replace as _replace
+
+            def _num_range(r: str):
+                parts = r.split(":")
+                if len(parts) != 2:
+                    return None
+                try:
+                    return (int(parts[0].strip()), int(parts[1].strip()))
+                except ValueError:
+                    return None
+
+            _p = _num_range(prev.packed_dims[0])
+            _r = _num_range(rec.packed_dims[0])
+            if _p is not None and _r is not None:
+                _hi = max(_p[0], _r[0])
+                _lo = min(_p[1], _r[1])
+                nets[rec.name] = _replace(
+                    prev, packed_dims=(f"{_hi}:{_lo}",), width=str(_hi),
+                    multi=True,
+                )
 
 
 def _split_top_exprs(masked: str) -> list[str]:
@@ -562,6 +597,18 @@ def _expr_suffix_dims(
             and _clean_dim(groups[-1]).isdigit()
         ):
             g = _clean_dim(groups[-1])
+            return (f"{g}:{g}",)
+        if (
+            len(groups) == 2
+            and npacked == 0
+            and nunpacked == 0
+            and _clean_dim(groups[0]).isdigit()
+            and _clean_dim(groups[1]).isdigit()
+        ):
+            # Scalar port, element-select connection name[U][bit]
+            # (autoinst_regexp_match.v): the bit is the packed range;
+            # the leading select becomes the multidim (see below).
+            g = _clean_dim(groups[1])
             return (f"{g}:{g}",)
         return ()
     if len(groups) > npacked:
@@ -902,6 +949,17 @@ def _process_named_instance(
                     # unpacked dimension.  The first driver's wins, as
                     # in verilog-signals-combine-bus (verified:
                     # autoinput_2d_gaspar.v -> input [0] [127:0]).
+                    mdim = ranges[0].strip()
+                elif (
+                    not npacked
+                    and len(ranges) == 2
+                    and _clean_dim(ranges[0]).isdigit()
+                    and _clean_dim(ranges[1]).isdigit()
+                ):
+                    # Scalar port, element-select connection name[U][bit]
+                    # (autoinst_regexp_match.v): same reading — the
+                    # leading select is the unpacked dimension, the bit
+                    # merges into the packed range via _note_net.
                     mdim = ranges[0].strip()
         if uidx:
             rec = nets[net]
