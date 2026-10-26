@@ -656,9 +656,16 @@ def _wire_like_single(
                 packed_dims=net.packed_dims,
                 dims=dims,
                 signed=net.signed,
-                # verilog-insert-definition: explicit port type wins,
-                # else verilog-auto-wire-type
-                net_type=net.data_type or net.net_type or wire_type,
+                # verilog-read-sub-decls-type: a submodule port's wire/reg
+                # type is NOT propagated upwards (in V2K code propagating
+                # "reg" in "output reg" isn't legal) — only other types
+                # (logic, user types) win over verilog-auto-wire-type.
+                # Without this, a reg-typed sub port made AUTOLOGIC emit
+                # `reg` where Emacs emits `logic` (autoinst_interface:
+                # sub declares `output reg [7:0] count`, ok has logic).
+                net_type=net.data_type
+                or (net.net_type if net.net_type not in ("wire", "reg") else "")
+                or wire_type,
                 data_type="",
             )
         )

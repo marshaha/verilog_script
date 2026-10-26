@@ -834,3 +834,28 @@ def test_aall_pure_verilog_demotes_autowire_var_types(tmp_path):
     top_sv.write_text(TOP_WIRE_VARTYPES)
     out_sv = _run_aall(top_sv, libdir, tmp_path)
     assert re.search(r"(?m)^reg\[7:0\]\s+mid;", out_sv)
+
+
+def test_auto_logic_drops_sub_port_reg_type():
+    """AUTOLOGIC is AUTOWIRE with wire-type forced to logic, and a
+    submodule port's wire/reg type is not propagated upwards
+    (verilog-read-sub-decls-type). A sub port `output reg [7:0] count`
+    therefore becomes `logic [7:0] count`, not `reg` (autoinst_interface)."""
+    sub = """\
+module sub (
+    output reg [7:0] count
+);
+endmodule
+"""
+    top = """\
+module top;
+/*AUTOLOGIC*/
+sub u_sub (/*autoinst*/
+    .count (count)
+);
+endmodule
+"""
+    out = misc.auto_logic(top.splitlines(), {"sub": inst.parse_module_ports(sub.splitlines(), with_params=True)})
+    decls = [ln for ln in out if "count" in ln and ln.strip().startswith(("logic", "reg", "wire"))]
+    assert len(decls) == 1
+    assert decls[0].strip().startswith("logic")
