@@ -235,19 +235,33 @@ def _region_port_names(body: Sequence[str]) -> tuple[dict, dict]:
     the same _collect_ports parser as the body scan."""
     aio: dict[str, list[str]] = {"input": [], "output": [], "inout": []}
     other: dict[str, list[str]] = {"input": [], "output": [], "inout": []}
-    cur: list[str] | None = None
+    # State machine: IDLE -> PENDING on a region marker -> COLLECTING
+    # only once the marker's own "Beginning of automatic" line appears.
+    # An empty region emits its marker alone (no Beginning/End block),
+    # so a marker NOT followed by a Beginning line must not swallow
+    # hand-written declarations up to some other command's End line
+    # (autoreset_define_colon: empty AUTOINPUT/AUTOOUTPUT markers above
+    # hand-written inputs, AUTORESET's End below them).
+    state = "IDLE"
+    cur: list[str] = []
     cur_reversed = False
     for line in body:
         m = _AUTO_MARKER.search(line)
         if m and m.group(1).upper() in _REGION_COMMANDS:
-            # A new region marker closes any previous region that never
-            # saw its End line (an empty region emits no Beginning/End
-            # block at all, e.g. AUTOOUTPUT with no unused outputs);
-            # the unclosed region contributes no names.
+            state = "PENDING"
             cur = []
             cur_reversed = m.group(1).upper() in _AIO_REVERSED_COMMANDS
             continue
-        if cur is None:
+        if state == "PENDING":
+            if not line.strip():
+                continue
+            if "Beginning of automatic" in line:
+                state = "COLLECTING"
+                continue
+            # Not a region block after all: the marker was empty.
+            state = "IDLE"
+            continue
+        if state != "COLLECTING":
             continue
         if "End of automatics" in line:
             inputs, outputs, inouts = _collect_ports(cur)
@@ -259,7 +273,7 @@ def _region_port_names(body: Sequence[str]) -> tuple[dict, dict]:
             ):
                 for entry in entries:
                     target[direction].extend(_bare_port_names(entry))
-            cur = None
+            state = "IDLE"
             continue
         if "Beginning of automatic" in line or _AUTO_MARKER.search(line):
             continue

@@ -962,3 +962,31 @@ def test_auto_arg_aio_order_idempotent():
     assert once == twice
     text = "\n".join(once)
     assert "d, c" in text and "b, a" in text
+
+
+def test_auto_arg_empty_region_markers_do_not_swallow_hand_decls():
+    """Empty /*AUTOINPUT*//*AUTOOUTPUT*/ markers (no Beginning/End
+    block) above hand-written inputs, with a foreign End line below
+    (AUTORESET's): the hand-written order must survive, not reverse
+    (autoreset_define_colon regression: the scan used to collect the
+    hand inputs as region ports up to AUTORESET's End line)."""
+    text = _header_text(
+        [
+            "module test (/*AUTOARG*/);",
+            "   /*AUTOINPUT*/",
+            "   /*AUTOOUTPUT*/",
+            "   input clk;",
+            "   input rst;",
+            "   input addr;",
+            "   always @(posedge clk) begin",
+            "     if (rst) begin",
+            "       /*AUTORESET*/",
+            "       // Beginning of autoreset for uninitialized flops",
+            "       addrD1 <= 0;",
+            "       // End of automatics",
+            "     end",
+            "   end",
+            "endmodule",
+        ]
+    )
+    assert "clk, rst, addr" in text
