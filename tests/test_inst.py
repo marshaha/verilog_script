@@ -50,6 +50,21 @@ def small_mod() -> ModuleDef:
 # parse_module_ports (s:GetSeqIO)
 
 
+def test_parse_module_ports_skips_protected_region():
+    # `protected ... `endprotected is opaque to Emacs (autoinst_protected.v):
+    # the `input notreally;` inside must not become a port.
+    moddef = parse_module_ports(
+        [
+            "module bar(input logic a);",
+            "`protected",
+            "  input notreally;",
+            "`endprotected",
+            "endmodule",
+        ]
+    )
+    assert [p.name for p in moddef.ports] == ["a"]
+
+
 def test_parse_module_ports_basic():
     moddef = small_mod()
     assert moddef.name == "small"

@@ -958,3 +958,26 @@ def test_aall_module_header_with_param_group_not_an_instance(tmp_path, capsys):
 
     squashed = _re.sub(r"\s+", " ", out).replace(" )", ")")
     assert ".q (q)" in squashed and ".clk (clk)" in squashed
+
+
+def test_aall_autologic_fills_wire_type_on_untyped_inputs(tmp_path, capsys):
+    """verilog-auto-logic-setup: a module with /*AUTOLOGIC*/ gets
+    verilog-auto-wire-type "logic", so an otherwise untyped AUTOINPUT
+    port is declared `input logic ...` (autooutput_simplify.v)."""
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module sub (input [W-1:0] x);\n"
+        "endmodule\n"
+        "module top\n"
+        "  (/*AUTOINPUT*/\n"
+        "   );\n"
+        "   /*AUTOLOGIC*/\n"
+        "   sub u_sub (/*AUTOINST*/);\n"
+        "endmodule\n"
+    )
+    capsys.readouterr()
+    out = _run_aall(top, tmp_path, tmp_path)
+    import re as _re
+
+    squashed = _re.sub(r"\s+", " ", out).replace(" )", ")")
+    assert "input logic [W-1:0] x" in squashed

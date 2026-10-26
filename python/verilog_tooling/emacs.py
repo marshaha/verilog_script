@@ -530,6 +530,99 @@ def _fold_numeric_expr(expr: str) -> str:
     return expr
 
 
+def simplify_range_expression(expr: str) -> str:
+    """Port of verilog-simplify-range-expression: fold constant
+    arithmetic inside a bracketed bus string (``[DW-1+2:0]`` ->
+    ``[DW+1:0]``), the verilog-auto-simplify-expressions behaviour
+    (default t) applied by verilog-signals-combine-bus to every signal
+    bus — AUTOWIRE/AIO widths, but NOT AUTOINST pin widths (those keep
+    the declared form).  Only numeric-numeric operations fold; symbols
+    stay verbatim.  The +/- pass absorbs the preceding sign into the
+    left operand (FOO-1+2 is FOO+1, FOO-1+1 keeps the -0 residual);
+    division folds only when exact; $clog2 of a constant folds."""
+    import math
+
+    if not re.search(r"[-+*/<>()]", expr):
+        return expr
+
+    def _run(pat, repl, s):
+        # Elisp string-match restarts from 0 after each replacement
+        while True:
+            m = pat.search(s)
+            if not m:
+                return s
+            r = repl(m)
+            if r is None:  # blocked (e.g. inexact division): stop pass
+                return s
+            s = s[: m.start()] + r + s[m.end() :]
+
+    def _clog2(v):
+        return 0 if v <= 1 else (v - 1).bit_length()
+
+    pre_paren = r"[\[({:*/<>+-]"
+    post_paren = r"[])}:*/<>.+-]"
+    pre_mul = r"[\[({:*/<>+-]"
+    post_mul = r"[])}:*/<>.+-]"
+    pre_pm = r"[\[({:<>+-]"
+    post_pm = r"[])}:<>+-]"
+    pre_shift = r"[\[({:]"
+    post_shift = r"[])}:<>]"
+    pat_paren = re.compile(pre_paren + r"\((\w+)\)" + post_paren)
+    pat_clog2 = re.compile(pre_paren + r"\$clog2\s*\((\d+)\)" + post_paren)
+    pat_mul = re.compile(pre_mul + r"([0-9]+)\s*([*/])\s*([0-9]+)" + post_mul)
+    pat_pm = re.compile(pre_pm + r"([0-9]+)\s*([+-])\s*([0-9]+)" + post_pm)
+    pat_shift = re.compile(pre_shift + r"([0-9]+)\s*(<<<?|>>>?)\s*([0-9]+)" + post_shift)
+
+    def _paren(m):
+        pre, ident, post = m.group(0)[0], m.group(1), m.group(0)[-1]
+        return pre + ident + post
+
+    def _clog2_repl(m):
+        pre, num, post = m.group(0)[0], m.group(1), m.group(0)[-1]
+        return pre + str(_clog2(int(num))) + post
+
+    def _mul(m):
+        pre, lhs, op, rhs, post = m.group(0)[0], m.group(1), m.group(2), m.group(3), m.group(0)[-1]
+        lhs, rhs = int(lhs), int(rhs)
+        if op == "/":
+            if rhs == 0 or lhs % rhs != 0:
+                return None
+            return pre + str(lhs // rhs) + post
+        return pre + str(lhs * rhs) + post
+
+    def _pm(m):
+        pre, lhs, op, rhs, post = m.group(0)[0], m.group(1), m.group(2), m.group(3), m.group(0)[-1]
+        lhs, rhs = int(lhs), int(rhs)
+        if pre == "-":
+            lhs = -lhs
+        val = lhs - rhs if op == "-" else lhs + rhs
+        if val < 0:
+            prefix = "" if pre in ("+", "-") else pre
+        elif val > 0:
+            prefix = "+" if pre == "-" else pre
+        else:
+            prefix = pre  # zero keeps the old +0/-0 residual
+        return prefix + str(val) + post
+
+    def _shift(m):
+        pre, lhs, op, rhs, post = m.group(0)[0], m.group(1), m.group(2), m.group(3), m.group(0)[-1]
+        lhs, rhs = int(lhs), int(rhs)
+        if op.startswith("<"):
+            return pre + str(lhs << rhs) + post
+        return pre + str(lhs >> rhs) + post
+
+    out = expr
+    last = None
+    while last != out:
+        last = out
+        out = _run(pat_paren, _paren, out)
+        out = _run(pat_clog2, _clog2_repl, out)
+        out = _run(pat_mul, _mul, out)
+        out = _run(pat_pm, _pm, out)
+        out = _run(pat_shift, _shift, out)
+    return out
+
+
 def _subst_at_width(conn: str, at_value: str, width: str | None,
                     param_values: Mapping[str, str] | None) -> str:
     """Width used to expand a trailing []: apply @ and parameter values."""
@@ -1489,6 +1582,17 @@ def _local_simplify_expressions(lines: Sequence[str]) -> bool:
     return _local_bool(lines, "verilog-auto-simplify-expressions", True)
 
 
+def _local_wire_type(lines: Sequence[str]) -> str:
+    """verilog-auto-wire-type file-local (e.g. // verilog-auto-wire-type:
+    "logic"): the type word AUTOINPUT/AUTOOUTPUT/AUTOINOUT add to an
+    otherwise untyped declaration.  Empty when unset."""
+    m = re.search(
+        r"verilog-auto-wire-type\s*:\s*\"?([A-Za-z_][\w$]*)\"?",
+        "\n".join(lines),
+    )
+    return m.group(1) if m else ""
+
+
 def _local_inst_templated_comment(lines: Sequence[str]) -> bool:
     """verilog-auto-inst-templated-comment file-local (default t): when nil,
     AUTOINST omits the '// Templated' comment on template-expanded pins
@@ -1578,6 +1682,9 @@ def auto_inst(
     template_required = _inst_template_required(lines)
     inst_vector = _inst_vector(lines)
     simplify = _local_simplify_expressions(lines)
+    from .autodef import set_simplify as _set_simplify
+
+    _set_simplify(simplify)  # combine-bus/_clean_dim share the gate
     # `define table for detick-expanding ticked module names (`SUBMOD_A);
     # define lines are never rewritten by the loop, so one scan suffices
     defines = _buffer_defines(text)

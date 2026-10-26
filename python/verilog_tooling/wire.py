@@ -305,11 +305,44 @@ def _same_driver(a: "InstNet", b: "InstNet") -> bool:
     return (a.inst, a.module) == (b.inst, b.module)
 
 
+# verilog-auto-simplify-expressions lives in autodef (single home for
+# the gate: _clean_dim reads it too); this alias keeps the wire-side
+# entry points (inout auto_*, _auto_wire_single) on one name.
+def set_simplify(value: bool) -> None:
+    from .autodef import set_simplify as _set
+
+    _set(value)
+
+
+def _simplify_rec(rec: InstNet) -> InstNet:
+    """REC with its bus strings simplified (verilog-simplify-range-
+    expression): each packed range folds, and width follows the first
+    range's msb (a width-only record folds its msb alone)."""
+    from dataclasses import replace
+
+    from . import emacs
+
+    if rec.packed_dims:
+        new_pdims = tuple(
+            emacs.simplify_range_expression(f"[{d}]")[1:-1] for d in rec.packed_dims
+        )
+        new_width = new_pdims[0].split(":")[0].strip()
+        return replace(rec, width=new_width, packed_dims=new_pdims)
+    if rec.width and rec.width != "c0":
+        new_width = emacs.simplify_range_expression(f"[{rec.width}]")[1:-1]
+        return replace(rec, width=new_width)
+    return rec
+
+
 def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
     """Add REC to NETS; a second driver from a DIFFERENT instance marks the
     net multi (its comment gets ", ...", like verilog-mode's sig comment
     for a repeated signal) and merges the width per
     verilog-signals-combine-bus."""
+    from .autodef import simplify_on
+
+    if simplify_on():
+        rec = _simplify_rec(rec)
     prev = nets.get(rec.name)
     if prev is None:
         nets[rec.name] = rec
@@ -1117,6 +1150,9 @@ def _auto_wire_single(
     set_param_value(
         param_value if param_value is not None else parse_param_value(full)
     )
+    from . import emacs as _emacs
+
+    set_simplify(_emacs._local_simplify_expressions(full))
     driven = _inst_driven_nets(
         lines, modules, concat_ok=True,
         _pin_scan=_cached_pin_scan(pin_scan_cache, lines, modules),

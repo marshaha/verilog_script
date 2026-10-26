@@ -168,6 +168,22 @@ def _param_value_on() -> bool:
     return _PARAM_VALUE
 
 
+# verilog-auto-simplify-expressions gate (default t): combine-bus and
+# dim cleanup fold constant arithmetic in bus strings.  File-local, so
+# pipeline entry points set it from the full buffer (spans do not
+# carry Local Variables); _clean_dim and wire._note_net read it.
+_SIMPLIFY = True
+
+
+def set_simplify(enabled: bool) -> None:
+    global _SIMPLIFY
+    _SIMPLIFY = bool(enabled)
+
+
+def simplify_on() -> bool:
+    return _SIMPLIFY
+
+
 # verilog-autodef-user-boundary file-local (default t): a hand-written
 # declaration outside the /*autodef*/ region is user-owned — conflicting
 # inferred width/dims get a //AD_CONFLICT: note, not a rewrite
@@ -2775,7 +2791,7 @@ def _rewrite_usrdef_packed_dims(line: str, pdims: tuple, udims: tuple = (),
 
 
 def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = False,
-                allow_sv_types: bool = True) -> str:
+                allow_sv_types: bool = True, wire_type: str = "") -> str:
     # head: the leading keyword — a typedef or an explicit net type from the
     # submodule port REPLACES a bare ``wire`` (``foo_t x;``, ``logic signed
     # [15:0] x;``) but follows a direction keyword (``input foo_t a``,
@@ -2806,6 +2822,17 @@ def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = 
         if sig.net_type and keyword.strip() != "wire":
             if not (sig.net_type in _var_types and not allow_sv_types):
                 line += sig.net_type + " "
+        elif (
+            wire_type
+            and wire_type != "wire"
+            and keyword.strip() != "wire"
+        ):
+            # verilog-auto-wire-type (set by AUTOLOGIC, or file-local):
+            # an otherwise untyped AIO declaration takes the wire type
+            # (autooutput_simplify.v: input logic [2*2:1] x).  This is
+            # the file's own default, not an inherited SV type, so the
+            # .v downgrade above does not apply to it.
+            line += wire_type + " "
         if sig.signed:
             line += "signed "
         if emacs_dims and sig.multidim:
@@ -2865,10 +2892,12 @@ def _clean_dim(dim: str) -> str:
     """Full dim cleanup: strip redundant parens, then fold pure-numeric
     expressions (``12-1`` -> ``11``, ``2*16-1`` -> ``31``) the way
     verilog-mode writes notes/declarations; anything with an identifier
-    stays symbolic."""
+    stays symbolic.  The numeric fold honours the simplify gate
+    (verilog-auto-simplify-expressions:nil keeps ``2*2`` verbatim)."""
     from .emacs import _fold_numeric_expr
 
-    return _fold_numeric_expr(_normalize_dim(dim))
+    cleaned = _normalize_dim(dim)
+    return _fold_numeric_expr(cleaned) if simplify_on() else cleaned
 
 
 def _conn_packed_dims(text: str) -> tuple[str, ...]:

@@ -385,8 +385,8 @@ def _apply_declare_nettype(sigs: Sequence[Signal], nettype: str | None) -> list[
     return out
 
 
-def _emit_io_line(sig: Signal, max_len: int, keyword: str, indent: int, v2k: bool, comment: str, allow_sv_types: bool = True) -> str:
-    body = _emit_signal(sig, max_len, keyword, emacs_dims=True, allow_sv_types=allow_sv_types)[:-1] + ("," if v2k else ";")
+def _emit_io_line(sig: Signal, max_len: int, keyword: str, indent: int, v2k: bool, comment: str, allow_sv_types: bool = True, wire_type: str = "") -> str:
+    body = _emit_signal(sig, max_len, keyword, emacs_dims=True, allow_sv_types=allow_sv_types, wire_type=wire_type)[:-1] + ("," if v2k else ";")
     line = " " * indent + body
     if comment:
         col = max(_COMMENT_COL, indent + 40)
@@ -462,6 +462,7 @@ def _expand_marker(
     ignore_re: "str | None",
     allow_sv_types: bool = True,
     msigs: "Sequence[Signal] | None" = None,
+    wire_type: str = "",
 ) -> str:
     """Expand one /*AUTOINPUT*// /*AUTOOUTPUT*/ marker (its own regexp
     filter, v2k comma repairs) in TEXT.  MSIGS, when given, is the
@@ -509,7 +510,7 @@ def _expand_marker(
         rows = [pad + header]
         for sig in msigs:
             rows.append(
-                _emit_io_line(sig, max_len, keyword, indent, v2k, comments.get(sig.name, ""), allow_sv_types)
+                _emit_io_line(sig, max_len, keyword, indent, v2k, comments.get(sig.name, ""), allow_sv_types, wire_type)
             )
         rows.append(pad + _END_OF_AUTOMATICS)
         region = "\n".join(rows) + "\n"
@@ -564,9 +565,16 @@ def _regen(
         fresh = [s for s in msigs if s.name not in claimed]
         claimed.update(s.name for s in fresh)
         per_marker.append(fresh)
+    # verilog-auto-wire-type: file-local value wins; otherwise any
+    # /*AUTOLOGIC*/ in the buffer makes it "logic" (verilog-auto-
+    # logic-setup).  Untyped AIO declarations take this type.
+    _full = full if full is not None else lines
+    wire_type = emacs._local_wire_type(_full)
+    if not wire_type and emacs.find_auto_markers(_full, "AUTOLOGIC"):
+        wire_type = "logic"
     for marker, msigs in reversed(list(zip(markers, per_marker))):
         text = _expand_marker(
-            text, marker, header, keyword, sigs, comments, ignore_re, allow_sv_types, msigs=msigs
+            text, marker, header, keyword, sigs, comments, ignore_re, allow_sv_types, msigs=msigs, wire_type=wire_type
         )
     return text.split("\n")
 
@@ -593,6 +601,10 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     set_param_value(
         param_value if param_value is not None else parse_param_value(lines)
     )
+    from . import emacs as _emacs
+    from .wire import set_simplify
+
+    set_simplify(_emacs._local_simplify_expressions(lines))
     lines = kill_auto_input(lines)
     full = list(lines)
     from .inst import map_module_spans
@@ -624,6 +636,10 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv
     set_param_value(
         param_value if param_value is not None else parse_param_value(lines)
     )
+    from . import emacs as _emacs
+    from .wire import set_simplify
+
+    set_simplify(_emacs._local_simplify_expressions(lines))
     lines = kill_auto_output(lines)
     full = list(lines)
     from .inst import map_module_spans
@@ -655,6 +671,10 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     set_param_value(
         param_value if param_value is not None else parse_param_value(lines)
     )
+    from . import emacs as _emacs
+    from .wire import set_simplify
+
+    set_simplify(_emacs._local_simplify_expressions(lines))
     lines = kill_auto_inout(lines)
     full = list(lines)
     from .inst import map_module_spans

@@ -995,10 +995,21 @@ def parse_module_ports(
     guard_stack: list[list[tuple[str, bool]]] = []  # `ifdef frames, port list only
     mod_name = name
     in_block_comment = False
+    in_protected = False  # `protected ... `endprotected is opaque to
+    # Emacs (encrypted IP): declarations inside are not ports
+    # (autoinst_protected.v: `input notreally;` must not connect).
     n_lines = len(lines)
     for idx in range(n_lines):
         raw = lines[idx]
         line = raw.rstrip("\n")
+        if re.match(r"^\s*`protected\b", line):
+            in_protected = True
+            continue
+        if re.match(r"^\s*`endprotected\b", line):
+            in_protected = False
+            continue
+        if in_protected:
+            continue
         if in_block_comment:
             if "*/" in line:
                 in_block_comment = False
@@ -2749,7 +2760,10 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     # the AUTOWIRE phase must agree with the pins, which read the
     # same flag — previously this only saw the file-local comment,
     # so --param-value never reached AUTOWIRE.
-    from .autodef import set_param_value
+    from .autodef import set_param_value, set_simplify
+    from . import emacs as _emacs
+
+    set_simplify(_emacs._local_simplify_expressions(lines))
     _pv = getattr(args, "param_value", None)
     set_param_value(
         bool(_pv) if _pv is not None else wire.parse_param_value(lines)

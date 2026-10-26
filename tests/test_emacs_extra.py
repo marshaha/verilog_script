@@ -496,3 +496,22 @@ def test_param_packed_dims_inherited_across_comma_list():
     assert params["BLUP"].packed == ("5:0",)
     assert params["ZOT"].packed == ("5:0",)
     assert params["LDWRDS"].packed == ()
+
+
+def test_simplify_range_expression_emacs_examples():
+    """Port of verilog-simplify-range-expression, checked against the
+    examples documented in verilog-mode.el itself."""
+    from verilog_tooling.emacs import simplify_range_expression as s
+
+    assert s("[DW-1+2:0]") == "[DW+1:0]"
+    assert s("[DW+1-2:0]") == "[DW-1:0]"
+    assert s("[DW-1+1:0]") == "[DW-0:0]"
+    assert s("[FOO*4-1*2]") == "[FOO*4-2]"
+    assert s("[FOO*4+1-1]") == "[FOO*4+0]"
+    assert s("[FOO-1+1-1+1]") == "[FOO-0]"
+    assert s("[(((16)+1)+1+(1+1))]") == "[20]"
+    assert s("[(2*3+6*7)]") == "[48]"
+    assert s("[1:3]") == "[1:3]"
+    assert s("[(1):3]") == "[1:3]"
+    assert s("[func(BAR)]") == "[func(BAR)]"
+    assert s("[2*2:1]") == "[4:1]"
