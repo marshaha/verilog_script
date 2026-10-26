@@ -440,3 +440,36 @@ def test_aif_aligns_last_param_line_with_siblings():
     assert crc.index("(ITP_CRC_NUM") == axi.index("(AXI_ADDR_WIDTH")
     assert crc.endswith("))")
     assert out[out.index(crc) + 1] == "u_sub(/*autoinst*/"
+
+
+def test_adf_keeps_signed_and_unsigned():
+    """_auto_define_format used to swallow `signed` (reg signed [1:0]
+    x; -> reg[1:0] x;, autoinst_signed_fubar AUTOREG) and mangle
+    `unsigned` into the name (reg unsigned [3:0] x; -> bogus
+    unsigned[3:0]x). Both are part of the declaration and must survive,
+    with the name column kept uniform across signed/unsigned lines."""
+    out = auto_define_format(
+        [
+            "reg signed [1:0] an_output;",
+            "reg signed [1:0] another_output;",
+            "reg unsigned [3:0] u_data;",
+            "wire [7:0] w;",
+            "reg signed scalar_s;",
+        ]
+    )
+    assert out[0].endswith("an_output;") and "signed [1:0]" in out[0]
+    assert out[1].endswith("another_output;") and "signed [1:0]" in out[1]
+    assert out[2].endswith("u_data;") and "unsigned [3:0]" in out[2]
+    assert out[3].endswith("w;")
+    assert out[4].endswith("scalar_s;") and "signed" in out[4]
+    # signed and unsigned lines share the name column
+    assert out[0].index("an_output;") == out[2].index("u_data;")
+    assert auto_define_format(out) == out  # fixed point
+
+
+def test_adf_unsigned_as_name_untouched():
+    """A net literally named `unsigned` (or starting with it) is not a
+    sign word: `reg unsigned;` and `wire unsigned_foo;` pass through."""
+    out = auto_define_format(["reg unsigned;", "wire unsigned_foo;"])
+    assert out[0] == "reg unsigned;"
+    assert out[1].endswith("unsigned_foo;")

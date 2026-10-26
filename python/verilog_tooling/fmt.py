@@ -404,10 +404,18 @@ def _auto_define_format(self: VerilogBuffer) -> VerilogBuffer:
         # INSIDE a width expression (``[(CL_S_COUNT > 0? CL_S_COUNT-1:
         # 0):0]`` from verilog-axi) and emitted it as the name.
         rest = stripped[len(port_type):]
+        # signed/unsigned is part of the declaration, not decoration:
+        # dropping it here silently turned `reg signed [1:0] x;` into
+        # `reg[1:0] x;` (autoinst_signed_fubar AUTOREG) and mangled
+        # `reg unsigned ...` into a bogus name (the loop used to skip
+        # only `signed`, so `unsigned` fell through to name extraction).
+        sign = ""
         while True:
             rest = rest.lstrip()
-            if re.match(r"signed\b", rest):
-                rest = rest[len("signed"):]
+            sign_m = re.match(r"(signed|unsigned)\b", rest)
+            if sign_m:
+                sign = sign_m.group(1)
+                rest = rest[len(sign):]
                 continue
             if rest.startswith("["):
                 depth = 0
@@ -438,10 +446,13 @@ def _auto_define_format(self: VerilogBuffer) -> VerilogBuffer:
         name = re.sub(r"^]", "", name)
         name = re.sub(r";", "", name)
         space_max = 20 + max_len + _DEFINE_BONUS.get(port_type, 1)
+        # The sign word sits between the type and the width
+        # (`reg signed [1:0] x;`); the margin counts it so signed and
+        # unsigned lines in one block keep the same name column.
+        head = port_type + ((" " + sign + " ") if sign else "") + width
         out.append(
-            port_type
-            + width
-            + _cal_margin(space_max, len(width))
+            head
+            + _cal_margin(space_max, len(head) - len(port_type))
             + name
             + port_comment
         )
