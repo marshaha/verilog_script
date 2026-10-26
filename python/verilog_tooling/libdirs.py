@@ -357,6 +357,12 @@ def expand_includes(lines: Iterable[str], _seen: frozenset = frozenset()) -> lis
 
     out: list[str] = []
     for line in lines:
+        # fast path: the regex costs ~1us/line and aall re-expands every
+        # pass; the substring pre-check is C-speed (perf: include-free
+        # files, the common case, skip the regex entirely)
+        if "`include" not in line:
+            out.append(line)
+            continue
         m = _INCLUDE_RE.search(line)
         if not m or "//" in line[: m.start()]:
             out.append(line)
