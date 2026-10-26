@@ -479,6 +479,25 @@ def _elisp_eval(form, scope: dict):
         for a in args[1:]:
             r = _elisp_eval(a, inner)
         return r
+    if name == "verilog-symbol-detick-text":
+        # verilog-mode: substitute each known `define in TEXT with its
+        # value (vh-* table, here scope["__defines__"]); stop at the
+        # first undefined one, leaving the rest verbatim. The 100-step
+        # cap only guards a self-referential define Emacs itself would
+        # loop on.
+        text = _elisp_str(_elisp_eval(args[0], scope))
+        defines = scope.get("__defines__") if isinstance(scope, dict) else None
+        if not isinstance(defines, dict):
+            defines = {}
+        for _ in range(100):
+            m = re.search(r"`([A-Za-z0-9_]+)", text)
+            if not m:
+                break
+            val = defines.get(m.group(1))
+            if val is None:
+                break
+            text = text[: m.start()] + str(val) + text[m.end() :]
+        return text
     if name == "cond":
         for clause in args:
             if not isinstance(clause, list) or not clause:
@@ -551,16 +570,22 @@ def expand_connection(
             scope = dict(env or {})
             # vl-width is the NUMERIC width (e.g. '4' for [0:3]), not the range
             vl_width_num = _range_to_width(port_width)
+            # vl-bits is the packed range text ("[3:1]", "" for scalar) —
+            # what (concat vl-name (verilog-symbol-detick-text vl-bits))
+            # in autoinst_dedefine.v builds connections from.
+            vl_bits = f"[{port_width}]" if port_width else ""
             scope.setdefault("vl-name", vl_name)
             scope.setdefault("vl-cell-name", vl_cell_name)
             scope.setdefault("vl-width", vl_width_num)
             scope.setdefault("vl-dir", vl_dir)
+            scope.setdefault("vl-bits", vl_bits)
             # Python-friendly aliases (hyphens aren't valid identifiers):
             # AUTO_PYTHON functions use vl_name, vl_width, etc.
             scope.setdefault("vl_name", vl_name)
             scope.setdefault("vl_cell_name", vl_cell_name)
             scope.setdefault("vl_width", vl_width_num)
             scope.setdefault("vl_dir", vl_dir)
+            scope.setdefault("vl_bits", vl_bits)
             try:
                 if code.lstrip().startswith("("):
                     value = _elisp_eval(_elisp_parse(_elisp_tokenize(code)), scope)

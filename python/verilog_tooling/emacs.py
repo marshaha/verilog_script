@@ -516,6 +516,25 @@ def _subst_at_width(conn: str, at_value: str, width: str | None,
 # AUTO_LISP (/*AUTO_LISP(expr)*/ before the AUTO marker, evaluated in order)
 
 
+def _buffer_defines(text: str) -> dict[str, str]:
+    """Raw `` `define NAME value `` text map for
+    ``verilog-symbol-detick-text`` (Emacs's vh-* table, buffer scope;
+    a valueless define maps to "1", as in verilog-set-define).
+    Comments are masked first so a commented-out `define is not picked
+    up.  Include files are not read (limitation — the common case is
+    in-file defines)."""
+    from .comments import mask_comments
+
+    defines: dict[str, str] = {}
+    for m in re.finditer(
+        r"^\s*`define\s+(\w+)(?:\s+(.*?))?\s*$",
+        mask_comments(text),
+        re.M,
+    ):
+        defines[m.group(1)] = m.group(2).strip() if m.group(2) else "1"
+    return defines
+
+
 def read_local_eval_defuns(text: str) -> dict:
     """User elisp definitions from the file's Local Variables ``eval:``
     block(s) — Emacs evaluates them when the file is visited, so they
@@ -1523,6 +1542,8 @@ def _auto_inst_one(
     # AUTO_LISP wins over them.
     for _k, _v in read_local_eval_defuns(text).items():
         lisp_env.setdefault(_k, _v)
+    # `define table for verilog-symbol-detick-text in @"..." expressions.
+    lisp_env.setdefault("__defines__", _buffer_defines(text))
     # AUTO_PYTHON user functions merge into the template expression scope
     # (Python-native alternative to elisp defun)
     lisp_env.update(_read_auto_python_inline(text, marker.offset, py_base_env))
@@ -1721,6 +1742,7 @@ def _auto_param_one(
     lisp_env = read_auto_lisp(text, marker.offset)
     for _k, _v in read_local_eval_defuns(text).items():
         lisp_env.setdefault(_k, _v)
+    lisp_env.setdefault("__defines__", _buffer_defines(text))
     lisp_env.update(read_auto_python(text, marker.offset))
     # commented-out pins before the marker are NOT connected: mask
     # comments (positions preserved) before collecting names

@@ -309,3 +309,34 @@ def test_elisp_defun_and_cond():
     ]:
         got = _elisp_eval(_elisp_parse(_elisp_tokenize(expr)), scope)
         assert got == want, (expr, got)
+
+
+def test_elisp_detick_text_and_vl_bits():
+    """verilog-symbol-detick-text substitutes known `defines (and stops
+    at the first unknown one); vl-bits is the packed range text that
+    autoinst_dedefine.v's template concats onto vl-name."""
+    from verilog_tooling.template import _elisp_eval, _elisp_parse, _elisp_tokenize
+
+    scope = {"__defines__": {"foo": "6", "bar": "0", "mod": "`foo"}}
+    for expr, want in [
+        ('(verilog-symbol-detick-text "[`foo-1:`bar]")', "[6-1:0]"),
+        ('(verilog-symbol-detick-text "[`undef-1:`foo]")', "[`undef-1:`foo]"),
+        ('(verilog-symbol-detick-text "x `mod y")', "x 6 y"),
+    ]:
+        got = _elisp_eval(_elisp_parse(_elisp_tokenize(expr)), scope)
+        assert got == want, (expr, got)
+    # end to end through expand_connection (vl-bits binding included)
+    got = expand_connection(
+        '@"(concat vl-name (verilog-symbol-detick-text vl-bits))"',
+        "", "`foo-1:`bar",
+        {"__defines__": {"foo": "6", "bar": "0"}},
+        vl_name="varwide",
+    )
+    assert got == "varwide[6-1:0]"
+    got = expand_connection(
+        '@"(concat vl-name (verilog-symbol-detick-text vl-bits))"',
+        "", "",
+        {"__defines__": {}},
+        vl_name="onewide",
+    )
+    assert got == "onewide"

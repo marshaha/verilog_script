@@ -457,3 +457,12 @@ def test_read_local_eval_defuns():
         ('(vl-prefix-i-o "other")', ""),
     ]:
         assert _elisp_eval(_elisp_parse(_elisp_tokenize(expr)), env) == want
+
+
+def test_buffer_defines_ignores_commented_out():
+    """`define map for detick-text: valueless defines map to "1", and a
+    `define inside a comment is not picked up."""
+    from verilog_tooling.emacs import _buffer_defines
+
+    text = "`define foo 6\n// `define fake 9\n`define flag\n"
+    assert _buffer_defines(text) == {"foo": "6", "flag": "1"}
