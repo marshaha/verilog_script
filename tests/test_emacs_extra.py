@@ -74,6 +74,37 @@ def test_param_value_substitutes_width():
     assert "(o[W-1:0])" in "\n".join(out)
 
 
+def test_param_value_folds_pin_width_after_substitution():
+    """Live-Emacs verified (autowire_shifts_bug1346): with #(...)
+    overrides AND param-value on, the substituted pin width is
+    simplified — [w2>>w1:0] with w1=2,w2=4 folds to [1:0], and even a
+    parameter-free [224*1-1:128*1] folds to [223:128].  Without
+    overrides the pin keeps the declared form verbatim
+    (autowire_merge_bug303)."""
+    src = """\
+module sub #(parameter W1 = 2, parameter W2 = 4) (y14, y18);
+    output [W2>>W1:0] y14;
+    output [224*1-1:128*1] y18;
+endmodule
+"""
+    sub = parse_module_ports(src.splitlines(), with_params=True)
+    buf = [
+        "module top;",
+        "sub #(.W1(2),.W2(4)) u0 (/*AUTOINST*/);",
+        "endmodule",
+    ]
+    out = auto_inst(buf, {"sub": sub}, param_value=True)
+    body = "\n".join(out)
+    assert "(y14[1:0])" in body
+    assert "(y18[223:128])" in body
+    # no overrides: verbatim, no folding
+    buf = ["module top;", "sub u0 (/*AUTOINST*/);", "endmodule"]
+    out = auto_inst(buf, {"sub": sub}, param_value=True)
+    body = "\n".join(out)
+    assert "(y14[W2>>W1:0])" in body
+    assert "(y18[224*1-1:128*1])" in body
+
+
 def test_param_value_applies_to_template_connection():
     text = """\
 /* m AUTO_TEMPLATE (

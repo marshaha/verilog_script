@@ -773,7 +773,12 @@ def _pack_ports(ports: Sequence[str], *, trailing_comma: bool) -> list[str]:
     return out
 
 
-def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = None) -> list[str]:
+def auto_arg(
+    lines: Sequence[str],
+    modules: "Mapping[str, ModuleDef] | None" = None,
+    *,
+    aio_cache_valid: bool = True,
+) -> list[str]:
     """Regenerate the ``/*autoarg*/`` port list in every module header.
 
     The previous expansion is collapsed first (so re-running is idempotent);
@@ -837,6 +842,19 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
     i = 0
     mod_idx = -1
     n = len(lines)
+    # Emacs AUTOARG order is the modi-cache order, not the region order:
+    # the cache key carries the module's start position, so ANY text
+    # inserted before a module between its AIO generation and its
+    # AUTOARG expansion invalidates its cache and the header is re-read
+    # from the buffer (region order, forward).  The first AUTOARG module
+    # expanded still sees its cache (reversed AIO order); every later
+    # module is forward once an earlier expansion changed the text
+    # (autowire_shifts_bug1346: design's header expands first, so
+    # test's header is forward y10..y45, while single-module argmin
+    # stays reversed).  aio_cache_valid=False models a post-AIO pass
+    # that already changed the text before auto_arg ran: then every
+    # module is forward.  Skipped modules never invalidate.
+    reversed_ok = aio_cache_valid
     while i < n:
         if not re.match(r"\s*module\b", lines[i]):
             out.append(lines[i])
@@ -886,17 +904,19 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
         # order reduces churn when declarations move around
         if _local_arg_sort(lines):
             inputs, outputs, inouts = sorted(inputs), sorted(outputs), sorted(inouts)
-        else:
-            # Emacs AUTOARG order (verilog-mode.el: region lines are
-            # inserted sorted but the unsorted list is cache-added, so
-            # the AIO family shows reversed in the header, ahead of
-            # hand-written ports; the INOUTCOMP family stays forward).
-            # Idempotent: region order is stable across runs, so the
-            # reordered header regenerates byte-identically.
+        elif reversed_ok:
+            # Cache hit: region lines are inserted sorted but the
+            # unsorted list is cache-added, so the AIO family shows
+            # reversed in the header, ahead of hand-written ports; the
+            # INOUTCOMP family stays forward.  Idempotent: region order
+            # is stable across runs, so the reordered header
+            # regenerates byte-identically.
             aio_names, other_names = _region_port_names(body)
             inputs = _reorder_arg_bucket(inputs, aio_names["input"], other_names["input"])
             outputs = _reorder_arg_bucket(outputs, aio_names["output"], other_names["output"])
             inouts = _reorder_arg_bucket(inouts, aio_names["inout"], other_names["inout"])
+        # else: cache miss — the header is re-read from the buffer, so
+        # the collected (buffer) order stands as-is.
         declared = set(inputs) | set(outputs) | set(inouts)
         # A signal explicitly declared as wire/reg/logic in the body is
         # internal by user intent — do not infer it as an inout port even
@@ -943,6 +963,7 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
             infer = [name for name in infer if name not in declared]
             if _local_arg_sort(lines):
                 inputs, outputs, inouts = sorted(inputs), sorted(outputs), sorted(inouts)
+        pre_expand = list(body)
         expanded = _expand_arg_markers(
             body, inputs, outputs, inouts + infer,
             arg_format=_local_arg_format(lines),
@@ -970,6 +991,10 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
                     break
             expanded[ins:ins] = decls
         out.extend(expanded)
+        if expanded != pre_expand:
+            # This expansion changed the text before every later
+            # module, invalidating their caches (see above).
+            reversed_ok = False
         i = j
     dropped = sorted(old_names - _auto_arg_region_names(out))
     if dropped:

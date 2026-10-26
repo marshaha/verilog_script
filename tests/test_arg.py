@@ -971,6 +971,58 @@ def test_auto_arg_aio_order_idempotent():
     assert "d, c" in text and "b, a" in text
 
 
+def test_auto_arg_second_module_forward_after_first_expansion():
+    """Emacs modi-cache rule (autowire_shifts_bug1346): the first
+    AUTOARG module expanded keeps its cache (AIO region reversed);
+    expanding it changes the text before every later module, so a
+    later module's header is re-read from the buffer (region order,
+    forward) — design's header expands first, test's stays y10..y45."""
+    lines = [
+        "module first (/*AUTOARG*/);",
+        "   /*AUTOOUTPUT*/",
+        "   // Beginning of automatic outputs (from unused autoinst outputs)",
+        "   output c;",
+        "   output d;",
+        "   // End of automatics",
+        "endmodule",
+        "module second (/*AUTOARG*/);",
+        "   /*AUTOOUTPUT*/",
+        "   // Beginning of automatic outputs (from unused autoinst outputs)",
+        "   output a;",
+        "   output b;",
+        "   // End of automatics",
+        "endmodule",
+    ]
+    text = "\n".join(auto_arg(lines))
+    first, second = text.split("module second")[0], text.split("module second")[1]
+    assert "d, c" in first
+    assert "a, b" in second
+
+
+def test_auto_arg_second_module_forward_stable_across_runs():
+    """The first-reversed/rest-forward split is a fixed point: the
+    second run (after kill) regenerates the identical headers."""
+    lines = [
+        "module first (/*AUTOARG*/);",
+        "   /*AUTOOUTPUT*/",
+        "   // Beginning of automatic outputs (from unused autoinst outputs)",
+        "   output c;",
+        "   output d;",
+        "   // End of automatics",
+        "endmodule",
+        "module second (/*AUTOARG*/);",
+        "   /*AUTOOUTPUT*/",
+        "   // Beginning of automatic outputs (from unused autoinst outputs)",
+        "   output a;",
+        "   output b;",
+        "   // End of automatics",
+        "endmodule",
+    ]
+    once = auto_arg(lines)
+    twice = auto_arg(kill_auto_arg(once))
+    assert once == twice
+
+
 def test_auto_arg_empty_region_markers_do_not_swallow_hand_decls():
     """Empty /*AUTOINPUT*//*AUTOOUTPUT*/ markers (no Beginning/End
     block) above hand-written inputs, with a foreign End line below

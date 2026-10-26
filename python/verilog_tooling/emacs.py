@@ -542,9 +542,10 @@ def simplify_range_expression(expr: str) -> str:
     arithmetic inside a bracketed bus string (``[DW-1+2:0]`` ->
     ``[DW+1:0]``), the verilog-auto-simplify-expressions behaviour
     (default t) applied by verilog-signals-combine-bus to every signal
-    bus — AUTOWIRE/AIO widths, but NOT AUTOINST pin widths (those keep
-    the declared form).  Only numeric-numeric operations fold; symbols
-    stay verbatim.  The +/- pass absorbs the preceding sign into the
+    bus — AUTOWIRE/AIO widths, and AUTOINST pin widths once parameter
+    substitution is active (param_values non-empty; without overrides
+    the pin keeps the declared form).  Only numeric-numeric operations
+    fold; symbols stay verbatim.  The +/- pass absorbs the preceding sign into the
     left operand (FOO-1+2 is FOO+1, FOO-1+1 keeps the -0 residual);
     division folds only when exact; $clog2 of a constant folds."""
     import math
@@ -1513,10 +1514,16 @@ def _connect(
     width = port.width
     if width and param_values:
         width = _apply_param_values(width, param_values)
-    # Pin widths stay verbatim: verilog-mode simplifies only the signal
-    # width in the declaration/combine path, never an AUTOINST pin
-    # (autowire_merge_bug303.v keeps [224*1-1:128*1] on the pin).  The
-    # SIMPLIFY parameter is kept for call compatibility.
+        # Live-Emacs verified: once an instance carries #(...) overrides
+        # AND verilog-auto-inst-param-value is on (i.e. param_values is
+        # non-empty), the substituted pin width IS simplified — [4>>2:0]
+        # folds to [1:0] (autowire_shifts_bug1346), and even a
+        # parameter-free [224*1-1:128*1] folds to [223:128].  With no
+        # overrides (or the flag off) the pin keeps the declared form
+        # verbatim (autowire_merge_bug303 keeps [224*1-1:128*1]).
+        if simplify:
+            folded = simplify_range_expression(f"[{width}]")
+            width = folded[1:-1] if folded.startswith("[") else folded
     # a multidim port's shape rides as a verilog-mode /*[D1][D2]*/ note —
     # in default connections AND as the []/[][] expansion in templates.
     # Dims get the instance's #(...) substitutions, redundant-paren
