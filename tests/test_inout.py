@@ -923,3 +923,36 @@ endmodule
     text2 = "\n".join(out2)
     assert re.search(r"(?m)^output\s+reg\s+\[7:0\]\s+na;", text2)
     assert re.search(r"(?m)^output\s+logic\s+\[3:0\]\s+nb;", text2)
+
+
+def test_auto_output_first_region_claims_signal():
+    """First claim wins across AUTOOUTPUT regions, in document order
+    (Emacs): a signal matching an earlier regexp region is declared
+    only there — the later bare region must not re-declare it
+    (autoinst_attr.v: the bare /*AUTOOUTPUT*/ after "^a_"/"^z_" regions
+    re-declared every port, duplicating header port declarations)."""
+    sub = """\
+module sub (
+    output wire a_out,
+    output wire [7:0] z_out
+);
+endmodule
+"""
+    top = """\
+module top;
+/*AUTOOUTPUT("^a_")*/
+/*AUTOOUTPUT*/
+sub u_sub (/*autoinst*/
+    .a_out (a_ready),
+    .z_out (z_data)
+);
+endmodule
+"""
+    out = auto_output(top.splitlines(), {"sub": parse_module_ports(sub.splitlines())})
+    text = "\n".join(out)
+    bare = text.split("/*AUTOOUTPUT*/", 1)[1].split(CLOSER, 1)[0]
+    assert bare.count("a_ready") == 0  # claimed by the ^a_ region already
+    assert "z_data" in bare  # leftovers still land in the bare region
+    decls = [ln for ln in out if ln.startswith("output") and "module" not in ln]
+    assert sum("a_ready" in ln for ln in decls) == 1
+    assert sum("z_data" in ln for ln in decls) == 1

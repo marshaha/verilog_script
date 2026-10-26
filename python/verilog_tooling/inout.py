@@ -461,16 +461,20 @@ def _expand_marker(
     comments: Mapping[str, str],
     ignore_re: "str | None",
     allow_sv_types: bool = True,
+    msigs: "Sequence[Signal] | None" = None,
 ) -> str:
     """Expand one /*AUTOINPUT*// /*AUTOOUTPUT*/ marker (its own regexp
-    filter, v2k comma repairs) in TEXT."""
+    filter, v2k comma repairs) in TEXT.  MSIGS, when given, is the
+    marker's pre-filtered signal list (see _regen's first-claim pass);
+    otherwise the marker's own regexp filter is applied here."""
     from . import emacs
 
     masked = mask_comments(text)
     v2k = _in_paren(masked, marker.offset)
-    msigs = emacs._filter_regexp(list(sigs), marker.regexp)
-    if ignore_re:
-        msigs = emacs._filter_regexp(msigs, "?!" + ignore_re)
+    if msigs is None:
+        msigs = emacs._filter_regexp(list(sigs), marker.regexp)
+        if ignore_re:
+            msigs = emacs._filter_regexp(msigs, "?!" + ignore_re)
     shift = 0
     if v2k:
         text, masked, shift = _repair_open_comma(text, masked, marker.offset)
@@ -530,7 +534,15 @@ def _regen(
     filter); the region goes after the marker line, Verilog-2001 comma style
     inside the module header parens, ``;`` style in the body.  The ignore
     regexp is a FILE-local — read it from FULL (the whole buffer) when given,
-    since Local Variables sit outside any module span."""
+    since Local Variables sit outside any module span.
+
+    First claim wins, in document order: a signal matching several
+    regions is declared only in the first (Emacs behavior — the bare
+    /*AUTOOUTPUT*/ after "^a_"/"^z_" regions in autoinst_attr.v stays
+    empty because those regions already claimed every output).  Without
+    this the later region re-declared every port and the header carried
+    duplicate port declarations.
+    """
     from . import emacs
 
     markers = emacs.find_auto_markers(lines, mark_keyword)
@@ -543,8 +555,19 @@ def _regen(
         re.M,
     )
     ignore_re = m.group(1) if m else None
-    for marker in reversed(markers):
-        text = _expand_marker(text, marker, header, keyword, sigs, comments, ignore_re, allow_sv_types)
+    claimed: set[str] = set()
+    per_marker: list[Sequence[Signal]] = []
+    for marker in markers:
+        msigs = emacs._filter_regexp(list(sigs), marker.regexp)
+        if ignore_re:
+            msigs = emacs._filter_regexp(msigs, "?!" + ignore_re)
+        fresh = [s for s in msigs if s.name not in claimed]
+        claimed.update(s.name for s in fresh)
+        per_marker.append(fresh)
+    for marker, msigs in reversed(list(zip(markers, per_marker))):
+        text = _expand_marker(
+            text, marker, header, keyword, sigs, comments, ignore_re, allow_sv_types, msigs=msigs
+        )
     return text.split("\n")
 
 
