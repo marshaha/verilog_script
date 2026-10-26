@@ -789,9 +789,11 @@ modb u_b (/*autoinst*/
 endmodule
 """
     out = auto_output(top.splitlines(), _ab_mods())
-    # val feeds u_b.din inside a concatenation: it is an internal net,
-    # not a dangling output of this module (was: `output val;`)
-    assert not any(ln.startswith("output") for ln in out)
+    # With verilog-auto-ignore-concat (our default, and the file-local
+    # setting in autoinput_concat_ignore.v), a net inside a concatenation
+    # does NOT count as connected: live Emacs 29.3 promotes val to
+    # AUTOOUTPUT here (signal_f/signal_c in the corpus file likewise).
+    assert any(ln.startswith("output") and "val" in ln for ln in out)
 
 
 def test_concat_driven_net_not_promoted_to_input():
@@ -809,9 +811,10 @@ snk u_b (/*autoinst*/
 endmodule
 """
     out = auto_input(top.splitlines(), _ab_mods())
-    # val is driven (through the concat on u_a.pair): it must not be
-    # re-declared as a module input (was: `input val;`)
-    assert not any(ln.startswith("input") and "val" in ln for ln in out)
+    # With verilog-auto-ignore-concat, the concat on u_a.pair does not
+    # drive val for candidacy purposes: live Emacs 29.3 (templated pins
+    # preserving the concat) promotes val to AUTOINPUT via u_b.sig.
+    assert any(ln.startswith("input") and "val" in ln for ln in out)
     assert any(ln.startswith("input") and "clk" in ln for ln in out)
 
 

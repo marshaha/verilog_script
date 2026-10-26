@@ -206,15 +206,15 @@ def _connected_names(
     directions: "tuple[str, ...] | None",
 ) -> set[str]:
     """Names appearing in pin expressions of /*autoinst*/ instances in
-    DIRECTIONS, identifiers inside {...}/(...) expressions included.
-
-    Exclusion bookkeeping ("is this net already wired somewhere inside
-    the module") is a fact about the text, independent of the
-    verilog-auto-ignore-concat candidacy exemption: a net inside
-    ``.din ({2'b0, val})`` IS connected to that input, so val must never
-    be promoted to a module input/output/inout over it.
+    DIRECTIONS, under the verilog-auto-ignore-concat candidacy exemption:
+    a net inside ``.din ({2'b0, val})`` does NOT count as connected —
+    live Emacs 29.3 with ignore-concat: t promotes such a val to
+    AUTOOUTPUT (autoinput_concat_ignore.v: signal_f/signal_c are
+    outputs) and promotes a net fed only through a concat output to
+    AUTOINPUT.  With ignore-concat nil the {...} members extract
+    regardless, so this is neutral there.
     """
-    return set(_inst_driven_nets(lines, modules, directions, concat_ok=True))
+    return set(_inst_driven_nets(lines, modules, directions, concat_ok=False))
 
 
 def _input_sigs(

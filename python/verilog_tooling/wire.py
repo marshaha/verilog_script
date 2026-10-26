@@ -897,8 +897,27 @@ def _process_named_instance(
                     _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver))
             continue
         if stripped.startswith("("):
-            # Parenthesized expression: not a concat, always extract.
-            # e.g. ((signal_e3)) -> signal_e3
+            # Parenthesized expression: unwrap fully first — a concat
+            # inside parens (({2'b11, signal_e2}) in
+            # autoinput_concat_ignore.v) follows the same rule as a bare
+            # {...}: skipped under verilog-auto-ignore-concat for
+            # candidacy, extracted for fact callers (concat_ok).
+            # A non-concat parenthesized expression always extracts.
+            inner = stripped
+            while True:
+                _u = _unwrap_parens(inner)
+                if _u is None:
+                    break
+                inner = _u
+            if inner.startswith("{"):
+                if not ignore_concat or concat_ok:
+                    for net, ewidth in _expr_nets(inner):
+                        if param_values:
+                            ewidth = emacs._apply_param_values(ewidth, param_values)
+                        if const_map:
+                            ewidth = emacs._apply_param_values(ewidth, const_map)
+                        _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver))
+                continue
             for net, ewidth in _expr_nets(stripped):
                 if param_values:
                     ewidth = emacs._apply_param_values(ewidth, param_values)
