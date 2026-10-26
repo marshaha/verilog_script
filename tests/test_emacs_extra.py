@@ -705,3 +705,54 @@ def test_emit_signal_escaped_name_space_before_terminator():
         "clk;"
     )
 
+
+
+def test_inst_pin_scan_skips_presection_pins_for_marked_instances():
+    """verilog-read-sub-decls reads pins only after a section comment:
+    a pin before the first section comment (bug245's .bign1_dotnamed)
+    is invisible to AIO/AUTOWIRE. Marker-less instances keep the full
+    pin list (our extension)."""
+    from verilog_tooling.inst import parse_module_ports
+    from verilog_tooling import wire
+
+    sub = parse_module_ports(
+        ["module Sub (output first_out, output second_out);", "endmodule"]
+    )
+    lines = [
+        "module top ();",
+        "   Sub u_sub (",
+        "	    .first_out,",
+        "	    // Outputs",
+        "	    .second_out,",
+        "	    /*AUTOINST*/);",
+        "endmodule",
+    ]
+    scan = wire._inst_pin_scan(lines, {"Sub": sub})
+    pins = scan["instances"][0][4][0]
+    assert [p[0] for p in pins] == ["second_out"]
+
+    # Marker-less: same pins, no section filter.
+    lines2 = [
+        "module top ();",
+        "   Sub u_sub (",
+        "	    .first_out,",
+        "	    .second_out);",
+        "endmodule",
+    ]
+    scan2 = wire._inst_pin_scan(lines2, {"Sub": sub})
+    pins2 = scan2["instances"][0][4][0]
+    assert [p[0] for p in pins2] == ["first_out", "second_out"]
+
+    # Marked but section-less (standalone AW/AIO on unexpanded text):
+    # no section comments, so no filter — the full pin list stays.
+    lines3 = [
+        "module top ();",
+        "   Sub u_sub (",
+        "	    .first_out,",
+        "	    .second_out,",
+        "	    /*AUTOINST*/);",
+        "endmodule",
+    ]
+    scan3 = wire._inst_pin_scan(lines3, {"Sub": sub})
+    pins3 = scan3["instances"][0][4][0]
+    assert [p[0] for p in pins3] == ["first_out", "second_out"]

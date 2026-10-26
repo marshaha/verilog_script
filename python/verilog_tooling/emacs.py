@@ -1130,7 +1130,10 @@ def _resolve_instance_at(
 
 
 def inst_pin_connections(
-    text: str, open_idx: int, mark_shorthand: bool = False
+    text: str,
+    open_idx: int,
+    mark_shorthand: bool = False,
+    with_positions: bool = False,
 ) -> "list[tuple]":
     """(pin, expression) for every named connection in the pin list opened
     at OPEN_IDX — the whole list, on either side of any AUTO marker:
@@ -1150,10 +1153,14 @@ def inst_pin_connections(
     close_idx = _matching_paren(text, open_idx)
     span = text[open_idx + 1 : close_idx]
     masked = mask_comments(span)
-    out: list[tuple[str, str]] = []
+    out: list[tuple] = []
     pin_re = re.compile(r"\.\s*(\\[^ \t(,]+|\w+)")
     # Escaped pin names run to whitespace (.\o[10] , .\i&e; ) — the
     # plain \w+ alternative never matches past the backslash.
+    # With_positions appends the pin's absolute text offset as the
+    # last element, for the section-visibility filter in the driven
+    # net scan (pins before the first section comment are invisible
+    # to verilog-read-sub-decls).
     i = 0
     n = len(masked)
     while i < n:
@@ -1161,12 +1168,14 @@ def inst_pin_connections(
         if not m:
             break
         pin = m.group(1)
+        pos = open_idx + 1 + m.start()
         k = m.end()
         while k < n and masked[k] in " \t\n":
             k += 1
         if k >= n or masked[k] != "(":
             # .pin shorthand (followed by , or close)
-            out.append((pin, pin, True, False) if mark_shorthand else (pin, pin))
+            item = (pin, pin, True, False) if mark_shorthand else (pin, pin)
+            out.append(item + (pos,) if with_positions else item)
             i = k
             continue
         depth = 1
@@ -1194,11 +1203,12 @@ def inst_pin_connections(
             templated = (
                 re.match(r"[ \t]*,?[ \t]*//[^\n]*Templated", span[j:]) is not None
             )
-        out.append(
+        item = (
             (pin, span[k + 1 : j - 1], False, templated)
             if mark_shorthand
             else (pin, span[k + 1 : j - 1])
         )
+        out.append(item + (pos,) if with_positions else item)
         i = j
     return out
 

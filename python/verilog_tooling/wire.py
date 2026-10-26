@@ -754,7 +754,13 @@ def _inst_pin_scan(
             return "`" + inst
         return inst
 
-    def _add_named(module: str, inst: str, moddef: ModuleDef, open_idx: int) -> None:
+    def _add_named(
+        module: str,
+        inst: str,
+        moddef: ModuleDef,
+        open_idx: int,
+        marked: bool = False,
+    ) -> None:
         # a marked instance is also matched by _instance_headers below;
         # dedup on the instance's opening-paren position (both passes find
         # the same instance at the same open_idx) — _note_net is idempotent
@@ -764,8 +770,39 @@ def _inst_pin_scan(
         if open_idx in seen:
             return
         seen.add(open_idx)
-        pin_exprs = list(emacs.inst_pin_connections(text, open_idx, mark_shorthand=True))
+        pin_exprs = list(
+            emacs.inst_pin_connections(
+                text, open_idx, mark_shorthand=True, with_positions=True
+            )
+        )
         pin_exprs = _section_order_pins(text, open_idx, pin_exprs)
+        if marked:
+            # verilog-read-sub-decls sweeps the instance once per
+            # section comment and reads only the pins FOLLOWING one:
+            # a pin before the first section comment (autoinst_
+            # name_bug245.v's .bign1_dotnamed) is invisible to AIO
+            # and AUTOWIRE alike. The filter applies only when the
+            # instance HAS section comments: a section-less marked
+            # instance (standalone AW/AIO on unexpanded text, locked
+            # by the unit tests) keeps the full pin list, as do
+            # marker-less instances (our extension beyond
+            # verilog-mode, which never reads them this way).
+            try:
+                close_idx = emacs._matching_paren(text, open_idx)
+            except ValueError:
+                close_idx = len(text)
+            span = text[open_idx + 1 : close_idx]
+            sec_starts = [
+                open_idx + 1 + m.start()
+                for m in _SECTION_RE.finditer(span)
+            ]
+            if sec_starts:
+                pin_exprs = [
+                    p
+                    for p in pin_exprs
+                    if any(s <= p[-1] for s in sec_starts)
+                ]
+        pin_exprs = [tuple(p[:4]) for p in pin_exprs]
         # verilog-auto-inst-param-value gates ALL substitution in the
         # sub-decl widths (Emacs default nil): when on, only the
         # instance's own #(...) overrides replace — submodule defaults
@@ -832,7 +869,7 @@ def _inst_pin_scan(
                     ("primitive", module, inst, emacs._GATE_PRIMITIVES[module], exprs)
                 )
             continue
-        _add_named(module, _written_inst(open_idx, inst), moddef, open_idx)
+        _add_named(module, _written_inst(open_idx, inst), moddef, open_idx, marked=True)
     # marker-less instances whose module name resolves in MODULES (the same
     # rule autodef documents)
     line_off = [0]
