@@ -756,3 +756,89 @@ def test_inst_pin_scan_skips_presection_pins_for_marked_instances():
     scan3 = wire._inst_pin_scan(lines3, {"Sub": sub})
     pins3 = scan3["instances"][0][4][0]
     assert [p[0] for p in pins3] == ["first_out", "second_out"]
+
+
+def test_kill_region_marker_owns_one_region_only():
+    """A marker owns at most ONE region: after its region is deleted
+    the marker is still the last non-blank line, so a second stray
+    header (autoinput_none.v's duplicated outputs Beginning before
+    /*AUTOINPUT*/) must not be mistaken for the same marker's region
+    and swallow the following marker."""
+    from verilog_tooling.inout import kill_auto_output
+
+    lines = [
+        "module top (",
+        "   /*AUTOOUTPUT*/",
+        "   // Beginning of automatic outputs (from unused autoinst outputs)",
+        "   output wire o,",
+        "   // End of automatics",
+        "   // Beginning of automatic outputs (from unused autoinst outputs)",
+        "   /*AUTOINPUT*/",
+        "   // Beginning of automatic inputs (from unused autoinst inputs)",
+        "   input wire i,",
+        "   // End of automatics",
+        "   );",
+    ]
+    out = kill_auto_output(lines)
+    assert any("AUTOINPUT" in l for l in out)
+    assert any("input wire i" in l for l in out)
+
+
+def test_module_tables_concat_assign_lhs():
+    """assign {a1, b1, c1} = ... marks every member assign-driven, so
+    AUTOREG does not promote them (autoreg_smith_multiassign.v)."""
+    from verilog_tooling.wire import _module_tables, auto_reg
+
+    lines = [
+        "module test (",
+        "   a1, b1, c1",
+        "   );",
+        "   output [5:0] a1;",
+        "   output [5:0] b1;",
+        "   output [5:0] c1;",
+        "   /*AUTOREG*/",
+        "   assign {a1,b1,c1} = {a2,b2,c2};",
+        "endmodule",
+    ]
+    _ports, _usrdef, assigns = _module_tables(lines)
+    assert {"a1", "b1", "c1"} <= assigns
+    out = auto_reg(lines, {})
+    assert "reg" not in "\n".join(out)
+
+
+def test_template_nohookup_survives_eai_and_blocks_aio():
+    """A template entry's trailing // AUTONOHOOKUP rides through EAI
+    as // Templated AUTONOHOOKUP and keeps the pin out of AUTOINPUT
+    (autoinst_autonohookup.v)."""
+    from verilog_tooling.inst import parse_module_ports
+    from verilog_tooling import emacs, inout
+    from verilog_tooling.template import find_auto_templates
+
+    tpl = find_auto_templates(
+        "/* a2 AUTO_TEMPLATE (\n .i1(i1), // AUTONOHOOKUP\n .o1(o1),\n ) */\n"
+    )
+    assert tpl and tpl[0].entries[0].nohookup is True
+    assert tpl[0].entries[1].nohookup is False
+    lines = [
+        "module top (",
+        "   /*AUTOINPUT*/",
+        "   /*AUTOOUTPUT*/",
+        "   );",
+        "   /* a2 AUTO_TEMPLATE (",
+        "    .i1(i1), // AUTONOHOOKUP",
+        "    .o1(o1),",
+        "    ) */",
+        "   a2 a2 (/*AUTOINST*/);",
+        "endmodule",
+        "module a2 (input i1, output o1);",
+        "endmodule",
+    ]
+    import re
+
+    sub = parse_module_ports(["module a2 (input i1, output o1);", "endmodule"])
+    expanded = emacs.auto_inst(
+        lines, {"a2": sub}, templates=find_auto_templates("\n".join(lines))
+    )
+    assert any("Templated AUTONOHOOKUP" in l for l in expanded)
+    out = inout.auto_input(expanded, {"a2": sub}, True)
+    assert not any(re.match(r"\s*input\s+i1\b", l) for l in out)

@@ -171,18 +171,25 @@ def _kill_region(
     ``// End of automatics``, keeping everything else (the marker line stays
     because it precedes the header).  A region whose preceding non-blank
     line is NOT the MARKER_RE marker belongs to a different AUTO command
-    (e.g. /*AUTOLOGIC*/ — not implemented) and is left untouched."""
+    (e.g. /*AUTOLOGIC*/ — not implemented) and is left untouched.  A
+    marker owns at most ONE region: after its region is deleted the
+    marker is still the last non-blank line in OUT, so a second,
+    stray header line (autoinput_none.v has a duplicated outputs
+    Beginning before /*AUTOINPUT*/) would otherwise be mistaken for
+    the same marker's region and swallow the following marker."""
     out: list[str] = []
+    spent: set[int] = set()  # OUT positions of markers whose region is gone
     i = 0
     while i < len(lines):
         if header_re.match(lines[i]):
             k = len(out) - 1
             while k >= 0 and not out[k].strip():
                 k -= 1
-            if k < 0 or not marker_re.search(out[k]):
+            if k < 0 or not marker_re.search(out[k]) or k in spent:
                 out.append(lines[i])  # someone else's region: keep it whole
                 i += 1
                 continue
+            spent.add(k)
             i += 1
             while i < len(lines) and _END_OF_AUTOMATICS not in lines[i]:
                 i += 1
@@ -714,6 +721,59 @@ def _section_order_pins(text: str, open_idx: int, pin_exprs: list) -> list:
     return [tuple(item[1:]) for item in ranked]
 
 
+def _pin_trailing_comment(text: str, pos: int, shorthand: bool) -> str:
+    """The ``//`` comment trailing a pin: on the pin's own line for a
+    ``.pin`` shorthand, on the closing-paren line otherwise (the pin
+    expression may span lines).  ``""`` when there is none."""
+    n = len(text)
+
+    def _line_comment(i: int) -> str:
+        eol = text.find("\n", i)
+        tail = text[i : eol if eol != -1 else n]
+        idx = tail.find("//")
+        return tail[idx:] if idx != -1 else ""
+
+    if shorthand:
+        return _line_comment(pos)
+    i = pos + 1  # past the '.'
+    while i < n and text[i] in " \t":
+        i += 1
+    if i < n and text[i] == "\\":
+        while i < n and text[i] not in " \t(,":
+            i += 1
+    else:
+        while i < n and (text[i].isalnum() or text[i] in "_$"):
+            i += 1
+    while i < n and text[i] in " \t\n":
+        i += 1
+    if i >= n or text[i] != "(":
+        return ""
+    depth = 1
+    i += 1
+    while i < n and depth:
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            eol = text.find("\n", i)
+            i = n if eol == -1 else eol
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            end = text.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        i += 1
+    return _line_comment(i)
+
+
 def _inst_pin_scan(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef],
@@ -802,6 +862,15 @@ def _inst_pin_scan(
                     for p in pin_exprs
                     if any(s <= p[-1] for s in sec_starts)
                 ]
+        # AUTONOHOOKUP: a pin whose trailing comment carries it is
+        # hooked up by hand and is NOT promoted by AIO/AUTOWIRE
+        # (autoinst_autonohookup.v: .i1 (i1) // Templated AUTONOHOOKUP
+        # stays connected but never becomes an AUTOINPUT).
+        pin_exprs = [
+            p
+            for p in pin_exprs
+            if "AUTONOHOOKUP" not in _pin_trailing_comment(text, p[-1], p[2])
+        ]
         pin_exprs = [tuple(p[:4]) for p in pin_exprs]
         # verilog-auto-inst-param-value gates ALL substitution in the
         # sub-decl widths (Emacs default nil): when on, only the
@@ -1320,6 +1389,25 @@ def _module_tables(lines: Sequence[str]) -> tuple[SignalTable, SignalTable, set[
             m = re.match(r"\s*assign\s+(\w+)", line)
             if m:
                 assigns.add(m.group(1))
+            elif re.match(r"\s*assign\s*\{", line):
+                # Concatenated LHS: assign {a1, b1, c1} = ... — every
+                # member is assign-driven (autoreg_smith_multiassign.v),
+                # including bit-selected members ({a[3:0], b}).
+                # LHS is the text up to the first top-level '='.
+                depth = 0
+                lhs_chars: list[str] = []
+                for ch in line[line.index("assign") + len("assign") :]:
+                    if ch in "([{":
+                        depth += 1
+                    elif ch in ")]}":
+                        depth -= 1
+                    if ch == "=" and depth == 0:
+                        break
+                    lhs_chars.append(ch)
+                lhs = "".join(lhs_chars).strip()
+                if lhs.startswith("{"):
+                    for net, _w in _expr_nets(lhs):
+                        assigns.add(net)
         elif _ENDMODULE.match(line):
             break
         i += 1

@@ -1515,14 +1515,16 @@ def _connect(
     simplify: bool = True,
     parent_signals: Mapping[str, str] | None = None,
     parent_iface_modports: Mapping[str, str | None] | None = None,
-) -> tuple[str, bool]:
-    """(connection, templated) for PORT: identity ``port[bits]`` unless a
-    template entry matches. Multidimensional ports get a verilog-mode
-    ``port/*[packed].[unpacked]*/`` comment instead of an expanded range.
-    With ``param_values`` (the instance's ``#(...)`` overrides), parameters
-    inside the port's width are substituted. ENV feeds @"..." templates.
-    PARENT_SIGNALS maps net name -> width in the instantiating module (for
-    verilog-auto-inst-vector:nil matching)."""
+) -> tuple[str, bool, bool]:
+    """(connection, templated, nohookup) for PORT: identity ``port[bits]``
+    unless a template entry matches. Multidimensional ports get a
+    verilog-mode ``port/*[packed].[unpacked]*/`` comment instead of an
+    expanded range. With ``param_values`` (the instance's ``#(...)``
+    overrides), parameters inside the port's width are substituted. ENV
+    feeds @"..." templates. PARENT_SIGNALS maps net name -> width in
+    the instantiating module (for verilog-auto-inst-vector:nil
+    matching). NOHOOKUP is the matched template entry's trailing //
+    AUTONOHOOKUP flag (False for non-template connections)."""
     width = port.width
     if width and param_values:
         width = _apply_param_values(width, param_values)
@@ -1561,15 +1563,17 @@ def _connect(
         if dims:
             packed_last = f"[{_clean_dim(dims[-1])}]"
     if template is not None:
+        hit: list = []
         conn = template_connection(
             template, port.name, at_value, width, env,
             vl_cell_name=inst_name, vl_dir=port.direction or "",
             packed_note=packed_note, packed_last=packed_last,
+            on_hit=hit.append,
         )
         if conn is not None:
             if param_values:
                 conn = _apply_param_values(conn, param_values)
-            return conn, True
+            return conn, True, bool(hit and hit[0].nohookup)
     # interface ports connect to a same-named interface in the parent,
     # qualified with the modport when the port declares one (bus.master);
     # unpacked array dims ride as a /*.[dims]*/ note (bus.master
@@ -1588,11 +1592,11 @@ def _connect(
             conn = f"{port.name}.{port.modport}" if port.modport else port.name
         if port.unpacked:
             conn += "/*." + "".join(f"[{u}]" for u in port.unpacked) + "*/"
-        return conn, False
+        return conn, False, False
     # verilog-mode: multidimensional ports are not expanded into the
     # connection; their full shape is attached as a /*...*/ comment.
     if port.is_multidim:
-        return f"{port.name}{packed_note}", False
+        return f"{port.name}{packed_note}", False, False
     # verilog-auto-inst-vector: t (default) always subscripts, nil skips when
     # the net is declared in the parent with matching width, unsigned only
     # for unsigned ports
@@ -1604,7 +1608,7 @@ def _connect(
         # Skip subscript only if parent declares the net with matching width
         parent_width = (parent_signals or {}).get(port.name)
         use_vector = not (parent_width and parent_width == width)
-    return port.name + (f"[{width}]" if width and use_vector else ""), False
+    return port.name + (f"[{width}]" if width and use_vector else ""), False, False
 
 
 # ---------------------------------------------------------------------------
@@ -1951,7 +1955,7 @@ def _auto_inst_one(
             ports = sorted(ports, key=lambda p: p.name)
         entries = []
         for port in ports:
-            conn, templated = _connect(
+            conn, templated, nohookup = _connect(
                 tpl, at_value, port, param_values, lisp_env, inst_name=inst,
                 inst_vector=inst_vector, simplify=simplify,
                 parent_signals=parent_signals,
@@ -1966,7 +1970,11 @@ def _auto_inst_one(
             # not to be saved (verilog-delete-auto-star-implicit); whether
             # it survives is the caller's star_save decision, not ours.
             if templated and templated_comment:
-                comment = "// Templated"
+                comment = (
+                    "// Templated AUTONOHOOKUP"
+                    if nohookup
+                    else "// Templated"
+                )
             elif is_star:
                 comment = "// Implicit .*"
             else:

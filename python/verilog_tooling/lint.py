@@ -49,8 +49,14 @@ def lint_templates(
     orig = _tmpl.template_connection
 
     def wrapped(template, port_name, at_value, port_width, env=None, **kw):
+        # A caller (emacs._connect) may pass its own on_hit: chain it
+        # instead of colliding on the keyword.
+        caller_hit = kw.pop("on_hit", None)
+
         def _hit(entry: TemplateEntry) -> None:
             hits.add((id(template), id(entry)))
+            if caller_hit is not None:
+                caller_hit(entry)
 
         return orig(
             template, port_name, at_value, port_width, env, on_hit=_hit, **kw

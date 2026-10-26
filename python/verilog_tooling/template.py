@@ -46,6 +46,7 @@ class TemplateEntry:
     pattern: str
     connection: str
     is_regex: bool
+    nohookup: bool = False  # trailing // AUTONOHOOKUP on the entry line
 
 
 @dataclass(frozen=True)
@@ -229,6 +230,7 @@ def _parse_template_body(body: str, line_no: int) -> AutoTemplate:
     # // or /*) intact while blanking real comments to spaces
     from .comments import mask_comments
 
+    raw_inner = inner
     inner = mask_comments(inner)
 
     entries: list[TemplateEntry] = []
@@ -238,11 +240,18 @@ def _parse_template_body(body: str, line_no: int) -> AutoTemplate:
         if scanned is None:
             break
         pattern, conn, j = scanned
+        # Masking preserves offsets, so the entry's trailing comment
+        # reads at the same position in the raw body: a // AUTONOHOOKUP
+        # there rides through to the expanded pin's // Templated
+        # comment (autoinst_autonohookup.v).
+        eol = raw_inner.find("\n", j)
+        tail = raw_inner[j : eol if eol != -1 else len(raw_inner)]
         entries.append(
             TemplateEntry(
                 pattern=pattern,
                 connection=conn,
                 is_regex=_LITERAL_PORT.fullmatch(pattern) is None,
+                nohookup="AUTONOHOOKUP" in tail,
             )
         )
         i = j
