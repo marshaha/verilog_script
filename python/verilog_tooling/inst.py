@@ -881,7 +881,13 @@ def _expand_ansi_header(lines: list[str], interfaces: Iterable[str] | None = Non
         interfaces and any(_iface_decl(part) for part in _split_top_commas(inner))
     ):
         return lines
-    if "\n" in inner.strip():
+    # Single-line means the WHOLE header span sits on one line: a header
+    # whose ports share one line but whose parens sit on their own lines
+    # (autoinst_casefold_hou.v: `(` / `input clk,rst` / `);`) is already
+    # multi-line — expanding it rewrites the user's formatting (and
+    # _comma_separated_header then re-commas it into one-port-per-line).
+    # The old inner.strip() test stripped those surrounding newlines away.
+    if "\n" in text[open_paren : close_paren + 1]:
         return lines  # already a multi-line header
     ports = _split_ansi_ports(inner, interfaces)
     if not ports:
@@ -1760,6 +1766,11 @@ class VerilogBuffer:
             emitted: list[tuple[object, str]] = []
             for entry in moddef.entries:
                 if isinstance(entry, Keep):
+                    if _PP_BRANCH.match(entry.line):
+                        # AUTOINST drops submodule-header guards (live
+                        # Emacs 29.3 expands guarded ports unconditionally);
+                        # comment/blank Keeps still pass through.
+                        continue
                     emitted.append((entry, ""))  # Keep lines pass through
                     continue
                 conn = self._templated_or_identity(
@@ -1783,19 +1794,8 @@ class VerilogBuffer:
                         entry, conn, prefix_max_len, suffix_max_len, k == last_idx
                     )
                 )
-            if len(port_rows) > 1 and port_rows[-1][1].guard:
-                # the last port is conditionally compiled: the previous
-                # pin's trailing comma would dangle when the guard is
-                # off, so the separator moves inside the guard as a
-                # leading comma (safe when the previous pin is present
-                # whenever this one is)
-                lrow, lport = port_rows[-1]
-                prow, pport = port_rows[-2]
-                out[prow] = _set_trailing_comma(out[prow], False)
-                if not pport.guard or set(pport.guard) <= set(lport.guard):
-                    out[lrow] = "    , " + out[lrow][4:]
-                else:  # incomparable guards: keep the previous comma
-                    out[prow] = _set_trailing_comma(out[prow], True)
+            # (Guards are dropped above, so no leading-comma dance for a
+            # guarded last port: the normal `)` terminator applies.)
             out.append(");")
         return VerilogBuffer(out)
 

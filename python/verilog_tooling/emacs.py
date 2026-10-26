@@ -1905,7 +1905,12 @@ def _auto_inst_one(
                 comment = "// Implicit .*"
             else:
                 comment = None
-            entries.append((port.name, conn, comment, port.guard))
+            # verilog-mode AUTOINST drops submodule-header guards: live
+            # Emacs 29.3 expands guarded ports unconditionally, whether
+            # the guard sits mid-list (fredrickson) or trailing (g3).
+            # (AIU keeps wrapping newly added guarded pins; that path
+            # does not go through here.)
+            entries.append((port.name, conn, comment, ()))
         if entries:
             sections.append((header, entries))
     if not sections:

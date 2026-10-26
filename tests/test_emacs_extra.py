@@ -316,14 +316,11 @@ endmodule
 """
     out = _expand(top, _gmods())
     text = "\n".join(out)
-    gi = text.index("`ifdef HAS_EXTRA")
-    ei = text.index("`endif")
-    xi = text.index(".extra")
-    assert gi < xi < ei  # the pin is really wrapped
-    # commas hold in both branches: clk always carries one, extra carries
-    # one inside its guard, din closes the list
+    # Live Emacs 29.3 AUTOINST drops submodule-header guards entirely:
+    # the guarded pin expands as an ordinary pin, no directives.
+    assert "`ifdef" not in text and "`endif" not in text
+    assert ".extra" in text
     assert ".clk" in text and "(clk)," in text
-    assert "(extra)," in text
     assert "(din[7:0]));" in text
 
 
@@ -346,14 +343,13 @@ endmodule
 """
     out = _expand(top, _gmods(sub))
     lines = [ln.strip() for ln in out]
-    # sections regroup by direction (Outputs first): the guard must
-    # open and close around .tail inside its own section, never leak
-    # past the // Inputs header
+    # Live Emacs 29.3 AUTOINST drops submodule-header guards: sections
+    # regroup by direction (Outputs first) with .tail as an ordinary
+    # pin, no directives anywhere.
+    assert not any(ln.startswith("`ifdef") or ln == "`endif" for ln in lines)
     (tail_line,) = [ln for ln in lines if ".tail" in ln]
     ti = lines.index(tail_line)
-    assert lines[ti - 1] == "`ifdef TAIL_G"
-    assert lines[ti + 1] == "`endif"
-    assert lines[ti + 2] == "// Inputs"
+    assert lines[ti + 1] == "// Inputs"
 
 
 def test_eai_guarded_last_pin_puts_closer_after_endif():
@@ -375,12 +371,12 @@ endmodule
 """
     out = _expand(top, _gmods(sub))
     lines = [ln.strip() for ln in out]
-    # the guarded input is the last pin overall: the closer `);` goes
-    # on its own line after `endif, and the pin itself has no comma
-    assert lines[-2] == ");"
-    assert lines[-3] == "`endif"
+    # Live Emacs 29.3 AUTOINST drops submodule-header guards: the
+    # formerly guarded input is the last pin overall and carries the
+    # closer on its own line, no directives.
+    assert not any(ln == "`endif" for ln in lines)
     (tail_line,) = [ln for ln in lines if ".tail" in ln]
-    assert not tail_line.endswith(",")
+    assert tail_line.endswith("));")
 
 
 def test_eai_elsif_chain_becomes_ifndef_plus_ifdef():
@@ -406,13 +402,10 @@ endmodule
 """
     out = _expand(top, _gmods(sub))
     text = "\n".join(out)
-    ob_at = text.index(".ob")
-    before = text[:ob_at]
-    assert "`ifndef MODE_A" in before and "`ifdef MODE_B" in before
-    oc_at = text.index(".oc")
-    before_oc = text[:oc_at]
-    assert before_oc.count("`ifndef MODE_A") >= 1
-    assert "`ifndef MODE_B" in before_oc
+    # Live Emacs 29.3 AUTOINST drops submodule-header guards entirely:
+    # the `elsif/`else chain ports all expand as ordinary pins.
+    assert "`ifdef" not in text and "`endif" not in text
+    assert ".oa" in text and ".ob" in text and ".oc" in text
 
 
 def test_read_auto_lisp_elisp_setq():

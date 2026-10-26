@@ -240,10 +240,12 @@ def test_auto_inst_preserves_keep_lines():
     )
     out = auto_inst(lines, {"proc": moddef})
     assert out[0] == "proc u_p (/*autoinst*/"
-    assert out[1] == "`ifdef HAS_CFG"
-    assert out[2].startswith("    .cfg")
-    assert out[3] == "`endif"
-    assert out[4] == "    " + "    // data path"  # comment keeps indented
+    # Live Emacs 29.3 AUTOINST drops submodule-header guards entirely
+    # (fredrickson): no `ifdef/`endif lines around the guarded pin,
+    # while the comment Keep line still passes through indented.
+    assert not any("`ifdef" in ln or "`endif" in ln for ln in out)
+    assert out[1].startswith("    .cfg")
+    assert out[2] == "    " + "    // data path"  # comment keeps indented
     assert out[-1] == ");"
 
 
@@ -1491,12 +1493,11 @@ def test_auto_inst_regen_guarded_last_port():
     )
     out = auto_inst(["g3 u_g (/*autoinst*/);"], {"g3": sub})
     stripped = [ln.strip() for ln in out]
-    (din_line,) = [ln for ln in stripped if ln.startswith(".din")]
-    (tail_line,) = [ln for ln in stripped if "tail" in ln and ln.startswith(",")]
-    # previous pin lost its trailing comma; the separator moved inside
-    # the guard as a leading comma on the guarded pin
-    assert not din_line.split("//")[0].rstrip().endswith(",")
-    assert stripped[-2] == "`endif"
+    # Live Emacs 29.3 AUTOINST drops submodule-header guards entirely
+    # (fredrickson mid-list and g3 trailing alike): the guarded port
+    # expands as an ordinary pin, no `ifdef/`endif lines.
+    assert not any("`ifdef" in ln or "`endif" in ln for ln in stripped)
+    assert any(ln.startswith(".tail") for ln in stripped)
     assert stripped[-1] == ");"
 
 
@@ -1582,5 +1583,7 @@ def test_eai_incomparable_guards_emit_direct_predecessor_bridge():
 
     out = emacs_auto_inst(["gsub3 u_g (/*autoinst*/);"], {"gsub3": sub})
     joined = "\n".join(out)
-    # bridge for px -> pz skipping py: HAS_X + HAS_Z + not HAS_Y
-    assert "`ifndef HAS_Y" in joined
+    # Live Emacs 29.3 AUTOINST drops submodule-header guards entirely:
+    # all three guarded ports expand as ordinary pins, no directives.
+    assert "`ifdef" not in joined and "`endif" not in joined
+    assert ".px" in joined and ".py" in joined and ".pz" in joined
