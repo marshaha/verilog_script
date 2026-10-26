@@ -72,6 +72,7 @@ from .inst import ModuleDef, Port, VerilogBuffer, parse_module_ports
 from .template import _auto_re_to_python
 from .wire import (
     _END_OF_AUTOMATICS,
+    _cached_pin_scan,
     _inst_driven_nets,
     _module_tables,
     _wire_comment_enabled,
@@ -1381,11 +1382,13 @@ def auto_outputevery(lines: Sequence[str]) -> list[str]:
 # AUTOREGINPUT (verilog-auto-reg-input)
 
 
-def auto_reginput(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> list[str]:
+def auto_reginput(lines: Sequence[str], modules: Mapping[str, ModuleDef], pin_scan_cache: "dict | None" = None) -> list[str]:
     """Regenerate /*AUTOREGINPUT*/ — ``reg`` for nets feeding input/inout
     ports of /*autoinst*/ instances that are neither declared nor assigned
     in this module.  Each carries ``// To {inst} of {module}.v``.  MODULES
-    maps instance module names to parsed definitions."""
+    maps instance module names to parsed definitions.  PIN_SCAN_CACHE shares
+    the per-span instance pin scan with the other aall passes (see
+    wire._cached_pin_scan); None scans inline."""
     from .wire import parse_ignore_concat, parse_param_value, parse_param_value_type, set_ignore_concat
     from .autodef import set_param_value, set_param_value_type
 
@@ -1405,7 +1408,10 @@ def auto_reginput(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> lis
     comment_on = _wire_comment_enabled(full)
 
     def _single(span: Sequence[str]) -> list[str]:
-        driven = _inst_driven_nets(span, modules, ("input", "inout"), simple_only=True)
+        driven = _inst_driven_nets(
+            span, modules, ("input", "inout"), simple_only=True,
+            _pin_scan=_cached_pin_scan(pin_scan_cache, span, modules),
+        )
         if not driven:
             return list(span)
         ports, usrdef, assigns = _module_tables(span)

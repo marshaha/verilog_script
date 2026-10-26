@@ -813,10 +813,14 @@ def _inst_pin_scan(
     module resolves in MODULES, and extract its raw pin data.
 
     The result holds position-independent values only — per-instance
-    ``(pin, expr)`` pairs, per-instance parameter values, the const-symbol
-    map and the concat setting — so it stays valid while later passes only
-    ADD declaration lines (the AUTOLOGIC/AUTOWIRE/AUTOREG trio in aall) and
-    can be cached per module span and shared across those passes.
+    ``(pin, expr)`` pairs, per-instance parameter values and the
+    const-symbol map — so it stays valid while later passes only
+    ADD declaration lines (the AUTOLOGIC/AUTOWIRE/AUTOREG trio in aall)
+    and can be cached per module span and shared across those passes.
+    The ignore-concat setting is deliberately NOT baked in: phase 2 reads
+    the live ``_IGNORE_CONCAT`` (AUTOUNUSED flips it around its call, and
+    a cached scan must follow the caller's setting, exactly as an inline
+    scan would).
     """
     from . import emacs
     from .autodef import _param_value_on, _const_symbols, _instance_headers
@@ -995,7 +999,6 @@ def _inst_pin_scan(
         _add_named(module, inst, modules[module], line_off[hl] + rel)
     return {
         "const_map": const_map,
-        "ignore_concat": _IGNORE_CONCAT,
         "instances": instances,
     }
 
@@ -1372,7 +1375,10 @@ def _inst_driven_nets(
     # skipped; only the cheap direction/simple/concat filtering reruns.
     scan = _pin_scan if _pin_scan is not None else _inst_pin_scan(lines, modules)
     const_map = scan["const_map"]
-    ignore_concat = scan["ignore_concat"]
+    # the live setting, not a fill-time snapshot: AUTOUNUSED forces
+    # extraction (set_ignore_concat(False)) around its call, and a cached
+    # scan must behave exactly like the inline scan it replaces
+    ignore_concat = _IGNORE_CONCAT
     nets: dict[str, InstNet] = {}
     for _di, (kind, module, inst, moddef_or_dirs, payload) in enumerate(scan["instances"]):
         if kind == "primitive":

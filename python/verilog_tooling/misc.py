@@ -780,7 +780,9 @@ def _tieoff_value(
 
 
 def auto_tieoff(
-    lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = None
+    lines: Sequence[str],
+    modules: Mapping[str, ModuleDef] | None = None,
+    pin_scan_cache: "dict | None" = None,
 ) -> list[str]:
     """Regenerate the /*AUTOTIEOFF*/ tieoff declarations of each module.
 
@@ -790,18 +792,24 @@ def auto_tieoff(
     tieoff to deasserted.  ``verilog-auto-tieoff-declaration`` selects the
     declaration form (``"wire"`` — the default — ``"assign"``, or another
     datatype); ``verilog-auto-tieoff-ignore-regexp`` skips signals.
+    PIN_SCAN_CACHE shares the per-span instance pin scan with the other
+    aall passes (see wire._cached_pin_scan); None scans inline.
     """
     lines = kill_auto_tieoff(lines)
     full = list(lines)
     from .inst import map_module_spans
 
     return map_module_spans(
-        lines, _TIEOFF_MARK, lambda span: _tieoff_single(span, modules or {}, full)
+        lines, _TIEOFF_MARK,
+        lambda span: _tieoff_single(span, modules or {}, full, pin_scan_cache),
     )
 
 
 def _tieoff_single(
-    span: Sequence[str], modules: Mapping[str, ModuleDef], full: Sequence[str]
+    span: Sequence[str],
+    modules: Mapping[str, ModuleDef],
+    full: Sequence[str],
+    pin_scan_cache: "dict | None" = None,
 ) -> list[str]:
     ignore_re = _local_str(full, "verilog-auto-tieoff-ignore-regexp")
     active_low_re = _local_str(full, "verilog-active-low-regexp")
@@ -813,7 +821,10 @@ def _tieoff_single(
     # verilog-subdecls-get-outputs/inouts/interfaced: nets driven by
     # /*autoinst*/ instance outputs, inouts and interface ports
     driven = set(
-        _wire._inst_driven_nets(span, modules, directions=("output", "inout", "interface"))
+        _wire._inst_driven_nets(
+            span, modules, directions=("output", "inout", "interface"),
+            _pin_scan=_wire._cached_pin_scan(pin_scan_cache, span, modules),
+        )
     )
     excluded = set(usrdef.signals) | assigns | driven | get_all_paras(span)
     infos = {name: _port_signal(p) for name, p in port_table.items()}
@@ -879,7 +890,9 @@ def _tieoff_decl_lines(
 
 
 def auto_unused(
-    lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = None
+    lines: Sequence[str],
+    modules: Mapping[str, ModuleDef] | None = None,
+    pin_scan_cache: "dict | None" = None,
 ) -> list[str]:
     """Regenerate the /*AUTOUNUSED*/ unused-input regions of each module.
 
@@ -889,18 +902,26 @@ def auto_unused(
     filtered by ``verilog-auto-unused-ignore-regexp``.  The marker is inline
     (e.g. ``&{1'b0, /*AUTOUNUSED*/ 1'b0}``); generated lines sit at the
     column of the marker's ``/*``, each name followed by a comma.
+    PIN_SCAN_CACHE shares the per-span instance pin scan with the other
+    aall passes (see wire._cached_pin_scan); None scans inline.  Safe here
+    even though this pass forces ignore-concat off: phase 2 reads the live
+    setting, not a fill-time snapshot.
     """
     lines = kill_auto_unused(lines)
     full = list(lines)
     from .inst import map_module_spans
 
     return map_module_spans(
-        lines, _UNUSED_MARK, lambda span: _unused_single(span, modules or {}, full)
+        lines, _UNUSED_MARK,
+        lambda span: _unused_single(span, modules or {}, full, pin_scan_cache),
     )
 
 
 def _unused_single(
-    span: Sequence[str], modules: Mapping[str, ModuleDef], full: Sequence[str]
+    span: Sequence[str],
+    modules: Mapping[str, ModuleDef],
+    full: Sequence[str],
+    pin_scan_cache: "dict | None" = None,
 ) -> list[str]:
     # "used" = nets on instance input/inout pins.  verilog-read-sub-decls-expr
     # always descends into {...}/(...) — force the extraction on regardless
@@ -908,7 +929,12 @@ def _unused_single(
     prev = _wire._IGNORE_CONCAT
     _wire.set_ignore_concat(False)
     try:
-        used = set(_wire._inst_driven_nets(span, modules, directions=("input", "inout")))
+        used = set(
+            _wire._inst_driven_nets(
+                span, modules, directions=("input", "inout"),
+                _pin_scan=_wire._cached_pin_scan(pin_scan_cache, span, modules),
+            )
+        )
     finally:
         _wire.set_ignore_concat(prev)
     ports, _, _ = _wire._module_tables(span)

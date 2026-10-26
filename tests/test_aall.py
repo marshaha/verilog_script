@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 from verilog_tooling import arg as arg_mod
-from verilog_tooling import autodef, inout, inst, misc, wire
+from verilog_tooling import autodef, inout, inst, misc, wire, xfer
 from verilog_tooling.inst import _resolve_module_files
 
 SUB = """\
@@ -981,3 +981,65 @@ def test_aall_autologic_fills_wire_type_on_untyped_inputs(tmp_path, capsys):
 
     squashed = _re.sub(r"\s+", " ", out).replace(" )", ")")
     assert "input logic [W-1:0] x" in squashed
+
+
+WIDE_TOP = """\
+module top (
+    /*autoarg*/
+    /*AUTOINPUT*/
+    /*AUTOOUTPUT*/
+);
+/*AUTOWIRE*/
+/*AUTOREG*/
+/*AUTOLOGIC*/
+/*AUTOTIEOFF*/
+/*AUTOREGINPUT*/
+
+wire pad = 1'b0 & /*AUTOUNUSED*/ 1'b0;
+
+sub u_sub0 (.clk(clk), .din(din), .dout(q), .sub_done(done));
+sub u_sub1 (.clk(clk), .din(din), .dout(q2), .sub_done(done2));
+endmodule
+"""
+
+
+def _wide_pin_pipeline(lines, modules, cache):
+    """The aall pass order for every pin-scan consumer, in pipeline order
+    (AIO -> AUTOTIEOFF -> AUTOLOGIC/AUTOWIRE/AUTOREG -> AUTOREGINPUT ->
+    AUTOUNUSED); CACHE=None scans inline per pass."""
+    lines = inout.auto_output(lines, modules, True, None, cache)
+    lines = inout.auto_input(lines, modules, True, None, cache)
+    lines = inout.auto_inout(lines, modules, True, None, cache)
+    lines = misc.auto_tieoff(lines, modules, cache)
+    lines = misc.auto_logic(lines, modules, cache)
+    lines = wire.auto_wire(lines, modules, cache)
+    lines = wire.auto_reg(lines, modules, cache)
+    lines = xfer.auto_reginput(lines, modules, cache)
+    return misc.auto_unused(lines, modules, cache)
+
+
+def test_pin_scan_cache_shared_across_all_aall_pin_passes(monkeypatch):
+    """One shared pin-scan cache for every aall pass that reads instance
+    pins: the cached run must be byte-identical to the inline-scan run,
+    and the whole pipeline must scan the single span exactly once.
+    AUTOUNUSED participates too — it forces ignore-concat off around its
+    call, and phase 2 reads the live setting (not a fill-time snapshot),
+    so its {...} extraction still works off the shared scan."""
+    modules = {"sub": inst.parse_module_ports(SUB.splitlines(), with_params=True)}
+    lines = WIDE_TOP.splitlines()
+
+    ref = _wide_pin_pipeline(lines, modules, None)
+
+    calls = []
+    real_scan = wire._inst_pin_scan
+
+    def counting(ls, mods):
+        calls.append(1)
+        return real_scan(ls, mods)
+
+    monkeypatch.setattr(wire, "_inst_pin_scan", counting)
+    cache: dict = {}
+    got = _wide_pin_pipeline(lines, modules, cache)
+    assert got == ref
+    assert len(cache) == 1  # one span
+    assert len(calls) == 1  # ...scanned once for all nine passes

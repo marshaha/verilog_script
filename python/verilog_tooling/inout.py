@@ -89,6 +89,7 @@ from .comments import mask_comments
 from .inst import ModuleDef, VerilogBuffer, parse_module_ports
 from .wire import (
     _COMMENT_COL,
+    _cached_pin_scan,
     _inst_driven_nets,
     _kill_region,
     _module_tables,
@@ -204,6 +205,7 @@ def _declared_port_names(lines: Sequence[str]) -> set[str]:
 def _connected_names(
     lines: Sequence[str], modules: Mapping[str, ModuleDef],
     directions: "tuple[str, ...] | None",
+    pin_scan_cache: "dict | None" = None,
 ) -> set[str]:
     """Names appearing in pin expressions of /*autoinst*/ instances in
     DIRECTIONS, under the verilog-auto-ignore-concat candidacy exemption:
@@ -214,19 +216,28 @@ def _connected_names(
     AUTOINPUT.  With ignore-concat nil the {...} members extract
     regardless, so this is neutral there.
     """
-    return set(_inst_driven_nets(lines, modules, directions, concat_ok=False))
+    return set(
+        _inst_driven_nets(
+            lines, modules, directions, concat_ok=False,
+            _pin_scan=_cached_pin_scan(pin_scan_cache, lines, modules),
+        )
+    )
 
 
 def _input_sigs(
     lines: Sequence[str], modules: Mapping[str, ModuleDef],
     full: "Sequence[str] | None" = None,
+    pin_scan_cache: "dict | None" = None,
 ) -> "tuple[list[Signal], dict[str, str]]":
     """AUTOINPUT candidates: nets feeding instance INPUT ports, minus
     everything declared or driven inside the module.  An undeclared
     assign-driven net IS a candidate (verilog-mode parity — promote it to a
     port and drop the assign yourself)."""
-    in_nets = _inst_driven_nets(lines, modules, ("input",), simple_only=True)
-    driven = _connected_names(lines, modules, None)
+    in_nets = _inst_driven_nets(
+        lines, modules, ("input",), simple_only=True,
+        _pin_scan=_cached_pin_scan(pin_scan_cache, lines, modules),
+    )
+    driven = _connected_names(lines, modules, None, pin_scan_cache)
     ports, usrdef, _ = _module_tables(lines)
     declared = set(ports.signals) | _declared_port_names(lines)
     declared |= set(usrdef.signals) | driven
@@ -265,6 +276,7 @@ def _input_sigs(
 def _output_sigs(
     lines: Sequence[str], modules: Mapping[str, ModuleDef],
     full: "Sequence[str] | None" = None,
+    pin_scan_cache: "dict | None" = None,
 ) -> "tuple[list[Signal], dict[str, str]]":
     """AUTOOUTPUT candidates: nets driven by instance OUTPUT ports, minus
     this module's ports and nets feeding an instance input/inout (those are
@@ -272,13 +284,15 @@ def _output_sigs(
     wire/reg/logic in the body are internal by user intent and are NOT
     promoted to a port — the same rule AUTOINPUT/AUTOINOUT apply (a house
     deviation from verilog-mode, which keeps promoting declared wires)."""
-    out_nets = _inst_driven_nets(lines, modules, ("output",), simple_only=True)
+    out_nets = _inst_driven_nets(
+        lines, modules, ("output",), simple_only=True,
+        _pin_scan=_cached_pin_scan(pin_scan_cache, lines, modules),
+    )
     ports, usrdef, _ = _module_tables(lines)
     excluded = set(ports.signals) | _declared_port_names(lines)
     excluded |= set(usrdef.signals)
-    excluded |= _connected_names(lines, modules, ("input",)) | _connected_names(
-        lines, modules, ("inout",)
-    )
+    excluded |= _connected_names(lines, modules, ("input",), pin_scan_cache)
+    excluded |= _connected_names(lines, modules, ("inout",), pin_scan_cache)
     from .libdirs import parse_typedef_regexp
     from .inst import set_typedef_regexp
 
@@ -313,18 +327,21 @@ def _output_sigs(
 def _inout_sigs(
     lines: Sequence[str], modules: Mapping[str, ModuleDef],
     full: "Sequence[str] | None" = None,
+    pin_scan_cache: "dict | None" = None,
 ) -> "tuple[list[Signal], dict[str, str]]":
     """AUTOINOUT candidates: nets on instance INOUT ports, minus this
     module's ports, nets seen on instance input/output ports, and nets
     used internally (connected to multiple instances — those are
     /*AUTOWIRE*/ territory, declared as wire, not inout).
     """
-    inout_nets = _inst_driven_nets(lines, modules, ("inout",), simple_only=True)
+    inout_nets = _inst_driven_nets(
+        lines, modules, ("inout",), simple_only=True,
+        _pin_scan=_cached_pin_scan(pin_scan_cache, lines, modules),
+    )
     ports, usrdef, _ = _module_tables(lines)
     excluded = set(ports.signals) | _declared_port_names(lines)
-    excluded |= _connected_names(lines, modules, ("input",)) | _connected_names(
-        lines, modules, ("output",)
-    )
+    excluded |= _connected_names(lines, modules, ("input",), pin_scan_cache)
+    excluded |= _connected_names(lines, modules, ("output",), pin_scan_cache)
     # Nets explicitly declared as wire/reg/logic in the body are internal by
     # user intent — never promote them to top-level inout ports.
     excluded |= set(usrdef.signals)
@@ -583,7 +600,7 @@ def _regen(
 # AUTOINPUT / AUTOOUTPUT (verilog-auto-input / verilog-auto-output)
 
 
-def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None) -> list[str]:
+def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, pin_scan_cache: "dict | None" = None) -> list[str]:
     """Regenerate the /*AUTOINPUT*/ input declarations of a module.
 
     Declares an input port for every net feeding an input port of an
@@ -592,6 +609,8 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     :func:`verilog_tooling.wire.auto_wire`.
     ALLOW_SV_TYPES=False (pure Verilog input) drops reg/logic inherited
     from a submodule port, falling back to the implicit net.
+    PIN_SCAN_CACHE shares the per-span instance pin scan with the other
+    aall passes (see wire._cached_pin_scan); None scans inline.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
     from .autodef import set_param_value, set_param_value_type
@@ -611,7 +630,7 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     from .inst import map_module_spans
 
     def _single(span: Sequence[str]) -> list[str]:
-        sigs, comments = _input_sigs(span, modules, full)
+        sigs, comments = _input_sigs(span, modules, full, pin_scan_cache)
         if not _wire_comment_enabled(full):
             comments = {}
         sigs = _apply_declare_nettype(sigs, _local_declare_nettype(full))
@@ -622,12 +641,14 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     return map_module_spans(lines, _AUTOINPUT_MARK, _single)
 
 
-def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None) -> list[str]:
+def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, pin_scan_cache: "dict | None" = None) -> list[str]:
     """Regenerate the /*AUTOOUTPUT*/ output declarations of a module.
 
     Declares an output port for every net driven by an output port of an
     /*autoinst*/ instance that is not a port of this module and does not
     feed an instance input/inout.  ALLOW_SV_TYPES as in auto_input.
+    PIN_SCAN_CACHE shares the per-span instance pin scan with the other
+    aall passes (see wire._cached_pin_scan); None scans inline.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
     from .autodef import set_param_value, set_param_value_type
@@ -647,7 +668,7 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv
     from .inst import map_module_spans
 
     def _single(span: Sequence[str]) -> list[str]:
-        sigs, comments = _output_sigs(span, modules, full)
+        sigs, comments = _output_sigs(span, modules, full, pin_scan_cache)
         if not _wire_comment_enabled(full):
             comments = {}
         sigs = _apply_declare_nettype(sigs, _local_declare_nettype(full))
@@ -658,12 +679,14 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv
     return map_module_spans(lines, _AUTOOUTPUT_MARK, _single)
 
 
-def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None) -> list[str]:
+def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, pin_scan_cache: "dict | None" = None) -> list[str]:
     """Regenerate the /*AUTOINOUT*/ inout declarations of a module.
 
     Declares an inout port for every net connected to an inout port of an
     /*autoinst*/ instance that is not a port of this module and is not seen
     on an instance input/output port.  ALLOW_SV_TYPES as in auto_input.
+    PIN_SCAN_CACHE shares the per-span instance pin scan with the other
+    aall passes (see wire._cached_pin_scan); None scans inline.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
     from .autodef import set_param_value, set_param_value_type
@@ -683,7 +706,7 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     from .inst import map_module_spans
 
     def _single(span: Sequence[str]) -> list[str]:
-        sigs, comments = _inout_sigs(span, modules, full)
+        sigs, comments = _inout_sigs(span, modules, full, pin_scan_cache)
         if not _wire_comment_enabled(full):
             comments = {}
         return _regen(
@@ -693,15 +716,16 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     return map_module_spans(lines, _AUTOINOUT_MARK, _single)
 
 
-def auto_io(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None) -> list[str]:
+def auto_io(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, pin_scan_cache: "dict | None" = None) -> list[str]:
     """AUTOOUTPUT then AUTOINPUT then AUTOINOUT — the verilog-auto order
     (the AIO command).  ALLOW_SV_TYPES as in auto_input.  PARAM_VALUE
     threads verilog-auto-inst-param-value through (None = the buffer's
     file-local setting); without it the CLI flag never reached these
-    entry points — each reset the global from file-local only."""
-    lines = auto_output(lines, modules, allow_sv_types, param_value)
-    lines = auto_input(lines, modules, allow_sv_types, param_value)
-    return auto_inout(lines, modules, allow_sv_types, param_value)
+    entry points — each reset the global from file-local only.
+    PIN_SCAN_CACHE shares one per-span pin scan across all three passes."""
+    lines = auto_output(lines, modules, allow_sv_types, param_value, pin_scan_cache)
+    lines = auto_input(lines, modules, allow_sv_types, param_value, pin_scan_cache)
+    return auto_inout(lines, modules, allow_sv_types, param_value, pin_scan_cache)
 
 
 # ---------------------------------------------------------------------------

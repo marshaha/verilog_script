@@ -2847,6 +2847,26 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     # (AUTOLOGIC/AUTOREG/autodef) that read the flag from the global
     _pv_arg = getattr(args, "param_value", None)
 
+    # One instance pin scan per module span, shared by every aall pass
+    # that reads instance pins (AIO/AUTOTIEOFF/AUTOLOGIC/AUTOWIRE/AUTOREG/
+    # AUTOREGINPUT/AUTOUNUSED): none of them edits instance bodies — they
+    # only add port/declaration/assign/`undef lines — and EAP/EAI, which
+    # DO rewrite instance pin lists, run before the first fill, so the
+    # lazy fill (at AIO) sees the final instance text.  The cache keys on
+    # the span's module name (wire._span_module_name): two same-named
+    # module spans in one file (`ifdef/`else variants — module_spans is
+    # purely lexical and yields both) would collide, the later span's scan
+    # being served to the earlier one; with any duplicate name every pass
+    # falls back to inline scanning.  Decided once here — module names
+    # never change mid-pipeline.
+    pin_scan_cache: "dict | None" = {}
+    span_names = [
+        wire._span_module_name(lines[s : e + 1]) for s, e in module_spans(lines)
+    ]
+    span_names = [n for n in span_names if n is not None]
+    if len(set(span_names)) != len(span_names):
+        pin_scan_cache = None
+
     # emacs verilog-delete-auto-buffer ("Clear existing autos else we'll be
     # screwed by existing ones"): drop last round's regions up front — left
     # in place, their declarations would poison this round's exclusions
@@ -3008,40 +3028,28 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
         modules_p = modules_w
     lines = xfer.auto_inoutparam(lines, modules_p)
     _log("aall: AUTOINOUTPARAM done")
-    lines = inout.auto_output(lines, modules_w, _allow_sv_types, _pv_arg)
-    lines = inout.auto_input(lines, modules_w, _allow_sv_types, _pv_arg)
-    lines = inout.auto_inout(lines, modules_w, _allow_sv_types, _pv_arg)
+    lines = inout.auto_output(lines, modules_w, _allow_sv_types, _pv_arg, pin_scan_cache)
+    lines = inout.auto_input(lines, modules_w, _allow_sv_types, _pv_arg, pin_scan_cache)
+    lines = inout.auto_inout(lines, modules_w, _allow_sv_types, _pv_arg, pin_scan_cache)
     _log("aall: AUTOOUTPUT/AUTOINPUT/AUTOINOUT done")
     # 10. AUTOTIEOFF; 11. AUTOUNDEF; 12. AUTOASSIGNMODPORT
-    lines = misc.auto_tieoff(lines, modules_w)
+    lines = misc.auto_tieoff(lines, modules_w, pin_scan_cache)
     _log("aall: AUTOTIEOFF done")
     lines = misc.auto_undef(lines)
     _log("aall: AUTOUNDEF done")
     lines = xfer.auto_assign_modport(lines, ifaces)
     _log("aall: AUTOASSIGNMODPORT done")
     # 13. AUTOLOGIC; 14. AUTOWIRE; 15. AUTOREG; 16. AUTOREGINPUT;
-    # 17. AUTOOUTPUTEVERY.  The trio shares one per-span instance pin scan:
-    # none of them modifies instances, only declaration lines, so the pin
-    # data extracted once stays valid for all three (3 full scans -> 1).
-    # The cache keys on the span's module name (wire._span_module_name):
-    # two same-named module spans in one file (`ifdef/`else variants —
-    # module_spans is purely lexical and yields both) would collide, the
-    # later span's scan being served to the earlier one; there the trio
-    # falls back to inline scanning (master behaviour).
-    pin_scan_cache: "dict | None" = {}
-    span_names = [
-        wire._span_module_name(lines[s : e + 1]) for s, e in module_spans(lines)
-    ]
-    span_names = [n for n in span_names if n is not None]
-    if len(set(span_names)) != len(span_names):
-        pin_scan_cache = None
+    # 17. AUTOOUTPUTEVERY.  The pin-scan cache (created at the top) is
+    # already warm from AIO for spans AIO touched; the trio and
+    # AUTOREGINPUT reuse it.
     lines = misc.auto_logic(lines, modules_w, pin_scan_cache)
     _log("aall: AUTOLOGIC done")
     lines = wire.auto_wire(lines, modules_w, pin_scan_cache, _allow_sv_types, _pv_arg)
     lines = wire.auto_reg(lines, modules_w, pin_scan_cache)
     lines = autodef.auto_def_t(lines, modules_w)
     _log("aall: AUTOWIRE/AUTOREG/autodef done")
-    lines = xfer.auto_reginput(lines, modules_w)
+    lines = xfer.auto_reginput(lines, modules_w, pin_scan_cache)
     _log("aall: AUTOREGINPUT done")
     lines = xfer.auto_outputevery(lines)
     _log("aall: AUTOOUTPUTEVERY done")
@@ -3050,7 +3058,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     _log("aall: AUTOSENSE done")
     lines = sense.auto_reset(lines)
     _log("aall: AUTORESET done")
-    lines = misc.auto_unused(lines, modules_w)
+    lines = misc.auto_unused(lines, modules_w, pin_scan_cache)
     _log("aall: AUTOUNUSED done")
     # 21. AR (autoarg) / 22. AUTOINSERTLAST / 23. AF (all format).  AR uses
     # the module table only for the inout inference on direction-less
