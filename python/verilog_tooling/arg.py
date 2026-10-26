@@ -1054,6 +1054,17 @@ def _expand_arg_markers(
                         _item = _item.strip()
                         if re.match(r"^[A-Za-z_][\w$]*$", _item):
                             _pre_names.add(_item)
+                else:
+                    # ANSI declarations before the marker (e.g. `input
+                    # wire [WIDTH*2/8-1:0] signal` on the line above
+                    # /*AUTOARG*/ in autowire_width_muldiv.v) already
+                    # declare the port in the header — Emacs leaves such
+                    # a header alone instead of re-listing the name.
+                    for _direction, _seg in _dir_segments(_port_text):
+                        if "\\" in _seg:
+                            continue  # escaped identifier: opaque
+                        _name = _PORT_PREFIX.sub("", _seg)
+                        _pre_names.update(_bare_port_names(_name))
         _finputs = [p for p in inputs if p not in _pre_names]
         _foutputs = [p for p in outputs if p not in _pre_names]
         _finouts = [p for p in inouts if p not in _pre_names]

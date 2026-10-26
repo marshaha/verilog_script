@@ -379,7 +379,10 @@ def test_cli_kill_end_to_end(tmp_path):
 
 
 def test_auto_arg_header_style_ports_no_double_comma():
-    """Ports declared in the header (input clk,) must not keep their comma."""
+    """Ports already declared in the header (input clk,) are NOT re-listed
+    by /*autoarg*/: live Emacs 29.3 batch-auto leaves such a header
+    untouched (autowire_width_muldiv.v: subtestin's ANSI header stays
+    byte-identical).  The marker stays bare; no duplicated region."""
     lines = [
         "module top (",
         "    input        clk,",
@@ -392,10 +395,10 @@ def test_auto_arg_header_style_ports_no_double_comma():
     ]
     out = auto_arg(lines)
     assert not any(",," in line for line in out)
-    body = "\n".join(out)
-    assert "clk, din\n" in body
-    assert "done, q, " in body
-    assert out[-2] == ");"
+    assert "//Inputs" not in "\n".join(out)
+    assert "//Outputs" not in "\n".join(out)
+    # empty region: the marker line itself closes the header
+    assert out[-2] == "    /*autoarg*/);"
     assert out[-1] == "endmodule"
 
 
@@ -510,16 +513,18 @@ def test_auto_arg_concat_port_header():
 
 
 def test_auto_arg_single_line_multi_port_header():
-    """module m (input a, input b, output c); — several direction groups on
-    ONE line must be collected individually."""
+    """module m (input a, input b); — several direction groups on ONE line
+    are collected individually, but since both are already declared in the
+    header, /*autoarg*/ re-lists nothing (Emacs leaves the header
+    untouched); the line must not gain a doubled comma or a stray paren."""
     lines = [
         "module m (input a, input [3:0] b /*autoarg*/);",
         "endmodule",
     ]
     out = auto_arg(lines)
     body = "\n".join(out)
-    assert "a, b" in body
-    assert ",," not in body and "b)" not in body
+    assert "module m (input a, input [3:0] b /*autoarg*/);" in body
+    assert ",," not in body and "//Inputs" not in body
 
 
 def test_auto_arg_multi_decl_one_line_body():
@@ -550,14 +555,16 @@ def test_auto_arg_multi_decl_crossline_chain():
 
 def test_auto_arg_inline_block_comment_in_decl():
     """An inline /* ... */ comment on a declaration line is stripped before
-    the name is taken."""
+    the name is taken — and since a and b are already declared in the
+    header, /*autoarg*/ re-lists nothing (no //Inputs region at all)."""
     lines = [
         "module m (input a, input [3:0] b /*autoarg*/);",
         "endmodule",
     ]
     out = auto_arg(lines)
     body = "\n".join(out)
-    assert "a, b" in body and "autoarg" not in body.split("//Inputs")[1]
+    assert "//Inputs" not in body
+    assert "module m (input a, input [3:0] b /*autoarg*/);" in body
 
 
 # ---------------------------------------------------------------------------
