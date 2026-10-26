@@ -150,7 +150,12 @@ def kill_auto_arg(lines: Sequence[str]) -> list[str]:
         j = i + 1
         plausible = True
         while j < n and not _REGION_END.search(lines[j]):
-            if _NOT_PORT_LIST.search(lines[j]) or _AIO_MARK.search(lines[j]):
+            # An escaped identifier runs to whitespace, so a ';' inside
+            # it (\\i&e;) is a name character, not a statement
+            # terminator — mask escaped runs before the ';' test, or
+            # the header is never recognised as a port list.
+            probe = re.sub(r"\\[^ \t]+", "ESC", lines[j])
+            if _NOT_PORT_LIST.search(probe) or _AIO_MARK.search(lines[j]):
                 plausible = False
                 break
             j += 1
@@ -363,7 +368,14 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
                 first = re.match(r"[A-Za-z_][\w$]*", name.strip())
                 if first and first.group(0) not in _UDT_STRIP_EXEMPT:
                     name = _UDT_PREFIX.sub("", name, count=1)
-            name = _PORT_TAIL.sub("", name)  # body style: `input [7:0] a, b; // c`
+            if is_escaped:
+                # _PORT_TAIL cuts at the FIRST ';' (its pattern allows
+                # zero whitespace), which would eat a ';' that is part
+                # of the escaped name itself (\\i&e;). Only a ';'
+                # following whitespace is the statement terminator.
+                name = re.sub(r"\s+;\s*$", "", name)
+            else:
+                name = _PORT_TAIL.sub("", name)  # body style: `input [7:0] a, b; // c`
             name = _PORT_TRAIL_COMMA.sub("", name)  # header style: `input clk,`
             name = _PORT_TRAIL_PAREN.sub("", name)  # single-line header: `input b)`
             if not is_escaped:

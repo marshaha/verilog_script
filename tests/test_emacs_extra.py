@@ -618,3 +618,90 @@ def test_auto_insert_lisp_insert_file(tmp_path):
     body = "\n".join(out)
     assert "input bar;" in body
     assert "output foo;" in body
+
+
+# ---------------------------------------------------------------------------
+# Escaped identifiers (escape_a / escape_top / autoinst_name_bug245)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_module_ports_escaped_names():
+    """An escaped identifier runs to whitespace: brackets and a ';'
+    inside it are name characters, not a range or a terminator."""
+    from verilog_tooling.inst import parse_module_ports
+
+    lines = [
+        "module escape_a (/*AUTOARG*/",
+        "   // Outputs",
+        "   \\o[10] , \\o[2] ,",
+        "   // Inputs",
+        "   \\i&e; ",
+        "   );",
+        "   output \\o[10] ;",
+        "   output \\o[2] ;",
+        "   input  \\i&e; ;",
+        "endmodule",
+    ]
+    ports = parse_module_ports(lines).ports
+    assert [(p.name, p.direction) for p in ports] == [
+        ("\\o[10]", "output"),
+        ("\\o[2]", "output"),
+        ("\\i&e;", "input"),
+    ]
+
+
+def test_collect_ports_escaped_trailing_semicolon():
+    """The ';' inside \\i&e; survives header collection; only a ';'
+    following whitespace is the statement terminator."""
+    from verilog_tooling.arg import _collect_ports
+
+    inputs, outputs, _ = _collect_ports(
+        ["   output \\o[10] ;", "   output \\o[2] ;", "   input  \\i&e; ;"]
+    )
+    assert inputs == ["\\i&e;"]
+    assert outputs == ["\\o[10]", "\\o[2]"]
+
+
+def test_kill_auto_arg_escaped_semicolon_does_not_block():
+    """A header whose port list contains \\i&e; still collapses:
+    the ';' inside the escaped name is not a statement terminator."""
+    from verilog_tooling.arg import kill_auto_arg
+
+    lines = [
+        "module escape_a (/*AUTOARG*/",
+        "   // Outputs",
+        "   \\o[10] , \\o[2] ,",
+        "   // Inputs",
+        "   \\i&e; ",
+        "   );",
+        "endmodule",
+    ]
+    assert kill_auto_arg(lines)[0] == "module escape_a (/*AUTOARG*/);"
+
+
+def test_elem_net_escaped_name_and_select():
+    """_ELEM_NET: brackets inside an escaped name are name characters;
+    a bracket group after whitespace is a bit-select."""
+    from verilog_tooling.wire import _ELEM_NET
+
+    m = _ELEM_NET.match("\\o[10]")
+    assert m and m.group(1) == "\\o[10]" and m.group(2) == ""
+    m = _ELEM_NET.match("\\c-escaped-vec [2:0]")
+    assert m and m.group(1) == "\\c-escaped-vec" and "[2:0]" in m.group(2)
+
+
+def test_emit_signal_escaped_name_space_before_terminator():
+    """Emacs keeps the terminating whitespace of an escaped name, so a
+    declaration emits `name ;` — a glued ';' would be re-read as part
+    of the name on the next pass."""
+    from verilog_tooling.autodef import Signal, _emit_signal
+
+    sig = Signal(name="\\i&e;", width="c0", type="io_input")
+    assert _emit_signal(sig, 39, "input", emacs_dims=True).rstrip().endswith(
+        "\\i&e; ;"
+    )
+    sig = Signal(name="clk", width="c0", type="io_input")
+    assert _emit_signal(sig, 39, "input", emacs_dims=True).rstrip().endswith(
+        "clk;"
+    )
+

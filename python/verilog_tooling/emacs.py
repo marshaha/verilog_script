@@ -1151,7 +1151,9 @@ def inst_pin_connections(
     span = text[open_idx + 1 : close_idx]
     masked = mask_comments(span)
     out: list[tuple[str, str]] = []
-    pin_re = re.compile(r"\.\s*(\w+)")
+    pin_re = re.compile(r"\.\s*(\\[^ \t(,]+|\w+)")
+    # Escaped pin names run to whitespace (.\o[10] , .\i&e; ) — the
+    # plain \w+ alternative never matches past the backslash.
     i = 0
     n = len(masked)
     while i < n:

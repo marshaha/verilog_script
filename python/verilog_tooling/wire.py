@@ -267,7 +267,11 @@ _EXPR_LEAD_OPS = re.compile(r"^\s*[~!&|^+\-]+")
 _EXPR_CAST = re.compile(r"^\s*[a-zA-Z_]\w*\s*'")
 _SIZED_LITERAL = re.compile(r"^\s*\d+'")
 _REPLICATION = re.compile(r"^\s*\d+\s*(\{.*\})\s*$")
-_ELEM_NET = re.compile(r"^([a-zA-Z_]\w*)\s*((?:\[[^\]]*\]\s*)*)$")
+_ELEM_NET = re.compile(r"^(\\[^ \t]+|[a-zA-Z_]\w*)\s*((?:\[[^\]]*\]\s*)*)$")
+# The escaped alternative is first: an escaped identifier runs to
+# whitespace, so brackets inside it (\\o[10]) are name characters, not
+# a bit-select — only a bracket group AFTER whitespace is a select
+# (\\c-escaped-vec [2:0] -> name + width 2).
 
 
 def _expr_nets(expr: str) -> "list[tuple[str, str]]":

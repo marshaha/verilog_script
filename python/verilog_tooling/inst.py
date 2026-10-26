@@ -733,11 +733,31 @@ def _parse_port_line_multi(line: str) -> list[Port]:
         # normalise the range: whitespace is insignificant inside [...]
         packed.append(re.sub(r"\s+", "", wm.group(1)))
         rest = rest[wm.end() :]
-    rest = rest.rstrip().rstrip(";").rstrip(")").rstrip()
+    rest = rest.rstrip()
+    if rest.endswith(";"):
+        # A trailing ';' is the terminator — unless it is glued to an
+        # escaped name (\\i&e; from a ;-split segment, where the
+        # separate terminator was consumed as the split boundary).
+        _tail = rest.rsplit(None, 1)[-1] if rest.strip() else ""
+        if not _tail.startswith("\\"):
+            rest = rest.rstrip(";")
+    rest = rest.rstrip(")").rstrip()
     parts: list[str] = []
     depth = 0
     cur = ""
-    for ch in rest:
+    _ri = 0
+    while _ri < len(rest):
+        ch = rest[_ri]
+        if ch == "\\":
+            # Escaped identifier runs to whitespace: commas (and
+            # brackets) inside it are name characters, not separators
+            # (\\o[10] , \\i&e; — the ; may itself be part of the name).
+            _rj = _ri + 1
+            while _rj < len(rest) and not rest[_rj].isspace():
+                _rj += 1
+            cur += rest[_ri:_rj]
+            _ri = _rj
+            continue
         if ch in "([":
             depth += 1
         elif ch in ")]":
@@ -747,6 +767,7 @@ def _parse_port_line_multi(line: str) -> list[Port]:
             cur = ""
         else:
             cur += ch
+        _ri += 1
     parts.append(cur)
     out: list[Port] = []
     for pi, part in enumerate(parts):
@@ -790,11 +811,23 @@ def _parse_port_line_multi(line: str) -> list[Port]:
             part = rest2.strip()
             if not part:
                 continue
-        nm = re.match(r"\w+", part)
-        if not nm:
-            continue
-        name = nm.group(0)
-        after = part[nm.end() :]
+        if part.startswith("\\"):
+            # Escaped identifier: backslash + everything up to
+            # whitespace (\\o[10] , \\i&e; — brackets and a ; inside
+            # are name characters, not a range or a terminator).
+            em = re.match(r"\\[^ \t]+", part)
+            if not em:
+                continue
+            name = em.group(0)
+            after = part[em.end() :]
+            is_escaped = True
+        else:
+            nm = re.match(r"\w+", part)
+            if not nm:
+                continue
+            name = nm.group(0)
+            after = part[nm.end() :]
+            is_escaped = False
         data_type = ""
         # A user data type may precede the port name (``output
         # crash_dump_t crash_dump_o``, ``input pkg::foo_t x``), possibly
@@ -805,12 +838,12 @@ def _parse_port_line_multi(line: str) -> list[Port]:
         # (when set) still applies below for cases it describes.  Inline
         # enum/struct/union heads keep the previous behaviour.
         um = _UDT_HEAD_RE.match(part)
-        if um and um.group(1) not in ("enum", "struct", "union"):
+        if not is_escaped and um and um.group(1) not in ("enum", "struct", "union"):
             data_type, name = um.group(1), um.group(3)
             after = part[um.end() :]
             for dm in re.finditer(r"\[([^\]]*)\]", um.group(2) or ""):
                 packed_here.append(re.sub(r"\s+", "", dm.group(1)))
-        elif _TYPEDEF_REGEXP is not None and _TYPEDEF_REGEXP.search(name):
+        elif not is_escaped and _TYPEDEF_REGEXP is not None and _TYPEDEF_REGEXP.search(name):
             # a user type (reqcmd_t): the port name is the next word, the
             # first word is its data type
             nm2 = re.match(r"\s*(\w+)", after)
@@ -1163,6 +1196,16 @@ def parse_module_ports(
                 if _two == "(*":
                     _in_attr = True
                     _k += 2
+                    continue
+                if joined[_k] == "\\":
+                    # Escaped identifier runs to whitespace: a ';'
+                    # inside it (\\i&e;) is a name character, not a
+                    # segment split.
+                    _rj = _k + 1
+                    while _rj < len(joined) and not joined[_rj].isspace():
+                        _rj += 1
+                    _cur += joined[_k:_rj]
+                    _k = _rj
                     continue
                 if joined[_k] == ";":
                     _segs.append(_cur)

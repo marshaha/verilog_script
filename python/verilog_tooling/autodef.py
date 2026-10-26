@@ -2867,6 +2867,13 @@ def _emit_signal(sig: Signal, max_len: int, keyword: str, *, emacs_dims: bool = 
     line += sig.name
     if sig.dims:
         line += " " + ("" if emacs_dims else " ").join(f"[{d}]" for d in sig.dims)
+    if sig.name.startswith("\\"):
+        # Escaped identifiers carry their terminating whitespace in
+        # Emacs (verilog-sig-name), so the terminator is separated:
+        # `input \\i&e; ;`, `output \\o[2] ;`. A glued `;` would be
+        # re-read as part of the name on the next pass (and a name
+        # already ending in `;` would double it in the header list).
+        return line + " ;"
     return line + ";"
 
 
