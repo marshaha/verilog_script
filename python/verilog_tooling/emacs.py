@@ -1000,6 +1000,14 @@ def _resolve_instance_at(
             module = _with_tick(text, module, mk)
     if not module:
         raise ValueError("AUTOINST: cannot resolve module name")
+    if module in ("module", "macromodule"):
+        # A module declaration's own port list (module name #(...)
+        # (...)) is never an instance pin list: the #(...) group-skip
+        # above reads the declaration name as the instance and the
+        # keyword as the module.  This also keeps a literal .* inside
+        # an AUTOARG regexp in such a header (autoinst_tennant.v) from
+        # resolving as a star-expansion instance.
+        raise ValueError("AUTOINST: module declaration, not an instance")
     return module, inst
 
 

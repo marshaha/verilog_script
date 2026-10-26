@@ -933,3 +933,28 @@ def test_aall_inst_before_param_group_and_param_dims(tmp_path, capsys):
     assert ".ZOT (ZOT[5:0])" in squashed
     assert ".FOO (FOO)" in squashed
     assert ".y (y)" in squashed and ".x (x)" in squashed
+
+
+def test_aall_module_header_with_param_group_not_an_instance(tmp_path, capsys):
+    """autoinst_tennant.v regression: a module header `module top
+    #(...) (...)` whose AUTOARG regexp contains a literal .* must not
+    resolve as a star-expansion instance (module='module', inst='top'
+    used to raise KeyError and abort aall)."""
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module sub (input clk, output q);\n"
+        "endmodule\n"
+        "module top\n"
+        "  #(parameter X=4)\n"
+        "   (/*AUTOARG*/\n"
+        "    /*AUTOINPUT(\"^x.*\")*/\n"
+        "    );\n"
+        "   sub u_sub (/*AUTOINST*/);\n"
+        "endmodule\n"
+    )
+    capsys.readouterr()
+    out = _run_aall(top, tmp_path, tmp_path)
+    import re as _re
+
+    squashed = _re.sub(r"\s+", " ", out).replace(" )", ")")
+    assert ".q (q)" in squashed and ".clk (clk)" in squashed
