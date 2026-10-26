@@ -1842,6 +1842,11 @@ def auto_inst(
     # `define table for detick-expanding ticked module names (`SUBMOD_A);
     # define lines are never rewritten by the loop, so one scan suffices
     defines = _buffer_defines(text)
+    # Per-enclosing-module parent facts (inst_vector:nil decl ranges,
+    # interface modport ports), memoized across the loop: the loop
+    # rewrites instance bodies only, so they are constant for the pass
+    # (was: buffer split + module_spans + header re-parse PER INSTANCE).
+    parent_facts = _ParentFactsCache(text, want_signals=inst_vector == "nil")
     # file-local Python files: load once, not per-instance
     py_base_env: dict = {}
     for py_file in _local_python_files(lines):
@@ -1894,6 +1899,7 @@ def auto_inst(
                 templated_comment=templated_comment,
                 py_base_env=py_base_env,
                 defines=defines,
+                parent_facts=parent_facts,
             )
         except ValueError as exc:
             # AUTO_LISP / @"..." template evaluation outside the Python
@@ -1907,11 +1913,106 @@ def auto_inst(
     return text.split("\n")
 
 
+def _parent_module_facts(
+    tlines: Sequence[str], line_no: int, want_signals: bool
+) -> "tuple[dict[str, str], dict[str, str | None]]":
+    """(parent_signals, parent_iface_modports) of the module span holding
+    LINE_NO in TLINES.
+
+    parent_signals: the enclosing module's MANUAL declaration ranges, for
+    inst_vector:nil width matching — every wire/reg/logic AND io
+    declaration, multi-name decls included; declarations inside an
+    AUTO-generated region (// Beginning of automatic ... // End of
+    automatics) do NOT count: verilog-mode skips the subscript "when it
+    matches the entire bus as declared in the module (AUTOWIRE signals
+    always are subscripted, you must manually declare the wire to have
+    the subscripts removed)", so the second run's own AUTOOUTPUT/AUTOWIRE
+    declarations must not suppress what the first run emitted.  Computed
+    only when WANT_SIGNALS (inst_vector == "nil").
+
+    parent_iface_modports: the enclosing module's interface ports WITH a
+    modport (header declarations like ``mbl_if.master msg_resp_if``):
+    connections to them must not respecify the modport (see _connect)."""
+    from .inst import module_spans, parse_module_ports
+    from .misc import _scan_decls
+
+    parent_signals: dict[str, str] = {}
+    parent_iface_modports: dict[str, str | None] = {}
+    if want_signals:
+        for lo, hi in module_spans(tlines):
+            if lo <= line_no <= hi:
+                seg: list[str] = []
+                in_auto = False
+                for ln in tlines[lo : hi + 1]:
+                    if re.match(r"\s*// Beginning of automatic\b", ln):
+                        in_auto = True
+                    if in_auto:
+                        seg.append("")
+                        if "// End of automatics" in ln:
+                            in_auto = False
+                    else:
+                        seg.append(ln)
+                for d in _scan_decls(seg):
+                    if d.bits:
+                        rng = re.sub(r"\s+", "", d.bits).strip("[]")
+                        parent_signals.setdefault(d.name, rng)
+                break
+    try:
+        for lo, hi in module_spans(tlines):
+            if lo <= line_no <= hi:
+                for p in parse_module_ports(tlines[lo : hi + 1]).ports:
+                    if p.is_interface:
+                        parent_iface_modports[p.name] = p.modport
+                break
+    except Exception:
+        parent_iface_modports = {}
+    return parent_signals, parent_iface_modports
+
+
+class _ParentFactsCache:
+    """Memoized :func:`_parent_module_facts` over one auto_inst pass.
+
+    The bottom-up loop rewrites instance bodies only, so a module's
+    declaration text — and therefore these facts — is constant for the
+    whole pass; marker offsets of unprocessed instances stay valid, so
+    their line numbers can be read off the pre-loop text.  Keyed by the
+    enclosing span's start line.  Without this, each instance re-split
+    the buffer and re-parsed its module header (O(instances x buffer)).
+    """
+
+    def __init__(self, text: str, want_signals: bool) -> None:
+        from .inst import module_spans
+
+        self._tlines = text.split("\n")
+        self._spans = module_spans(self._tlines)
+        self._want_signals = want_signals
+        self._line_off = [0]
+        for ln in self._tlines:
+            self._line_off.append(self._line_off[-1] + len(ln) + 1)
+        self._facts: "dict[int, tuple[dict[str, str], dict[str, str | None]]]" = {}
+
+    def facts(
+        self, marker_offset: int
+    ) -> "tuple[dict[str, str], dict[str, str | None]]":
+        import bisect
+
+        line_no = bisect.bisect_right(self._line_off, marker_offset) - 1
+        for s, e in self._spans:
+            if s <= line_no <= e:
+                if s not in self._facts:
+                    self._facts[s] = _parent_module_facts(
+                        self._tlines, line_no, self._want_signals
+                    )
+                return self._facts[s]
+        return {}, {}
+
+
 def _auto_inst_one(
     text, marker, open_idx, close_idx, moddef, module, inst,
     templates, sort, dot_name, column, param_value, is_star, star_save,
     template_required=False, inst_vector="t", simplify=True,
     m_full=None, templated_comment=True, py_base_env=None, defines=None,
+    parent_facts=None,
 ):
     # m_full: precomputed mask_comments(text) from the caller. The auto_inst
     # loop rewrites bottom-up, so text before open_idx is unchanged and the
@@ -1951,41 +2052,17 @@ def _auto_inst_one(
     param_values = (
         read_inst_param_values(text, open_idx, m_full) if param_value else {}
     )
-    # Parent module signal declarations (for inst-vector:nil width matching):
-    # every wire/reg/logic AND io declaration of the enclosing module —
-    # multi-name decls included (misc._scan_decls handles both).  Only
-    # MANUAL declarations count: verilog-mode skips the subscript "when
-    # it matches the entire bus as declared in the module (AUTOWIRE
-    # signals always are subscripted, you must manually declare the
-    # wire to have the subscripts removed)", so declarations inside an
-    # AUTO-generated region (// Beginning of automatic ... // End of
-    # automatics) must not suppress it — otherwise the second run,
-    # which sees the first run's AUTOOUTPUT/AUTOWIRE declarations,
-    # drops subscripts the first run emitted.
-    parent_signals: dict[str, str] = {}
-    if inst_vector == "nil":
-        from .inst import module_spans
-        from .misc import _scan_decls
-
-        tlines = text.split("\n")
-        for lo, hi in module_spans(tlines):
-            if lo <= text.count("\n", 0, marker.offset) <= hi:
-                seg: list[str] = []
-                in_auto = False
-                for ln in tlines[lo : hi + 1]:
-                    if re.match(r"\s*// Beginning of automatic\b", ln):
-                        in_auto = True
-                    if in_auto:
-                        seg.append("")
-                        if "// End of automatics" in ln:
-                            in_auto = False
-                    else:
-                        seg.append(ln)
-                for d in _scan_decls(seg):
-                    if d.bits:
-                        rng = re.sub(r"\s+", "", d.bits).strip("[]")
-                        parent_signals.setdefault(d.name, rng)
-                break
+    # Parent module declarations (inst_vector:nil width matching) and
+    # interface modport ports of the enclosing module — per-module facts,
+    # shared across the pass when the caller provides a _ParentFactsCache
+    # (EAI rewrites instance bodies only, so they cannot change mid-loop).
+    if parent_facts is not None:
+        parent_signals, parent_iface_modports = parent_facts.facts(marker.offset)
+    else:
+        parent_signals, parent_iface_modports = _parent_module_facts(
+            text.split("\n"), text.count("\n", 0, marker.offset),
+            inst_vector == "nil",
+        )
     # commented-out pins before the marker are NOT connected: mask
     # comments (positions preserved) before collecting names
     pins = set(
@@ -1997,23 +2074,6 @@ def _auto_inst_one(
             mask_comments(text[open_idx + 1 : marker.offset], block=True),
         )
     )
-    # Parent interface ports WITH a modport (header declarations like
-    # mbl_if.master msg_resp_if): connections to them must not respecify
-    # the modport (see _connect). Parsed from the enclosing module span.
-    parent_iface_modports: dict[str, str | None] = {}
-    try:
-        from .inst import module_spans as _module_spans
-        from .inst import parse_module_ports as _parse_module_ports
-
-        _tlines = text.split("\n")
-        for _lo, _hi in _module_spans(_tlines):
-            if _lo <= text.count("\n", 0, marker.offset) <= _hi:
-                for _p in _parse_module_ports(_tlines[_lo : _hi + 1]).ports:
-                    if _p.is_interface:
-                        parent_iface_modports[_p.name] = _p.modport
-                break
-    except Exception:
-        parent_iface_modports = {}
     sections = []
     for header, direction in (
         ("// Interfaces", "interface"),

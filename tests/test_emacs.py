@@ -833,3 +833,33 @@ def test_parse_module_params_header_excludes_localparam():
     ]
     assert parse_module_params(lines) == (
         Param("W", "8"), Param("D", "2"), Param("P", "3"))
+
+
+def test_auto_inst_parent_facts_memoized_per_module(monkeypatch):
+    """Perf: the enclosing module's declaration facts (inst_vector:nil
+    ranges, interface modport ports) are computed once per module per
+    auto_inst pass — EAI rewrites instance bodies only, so they cannot
+    change between instances.  The memoized result must equal the
+    per-instance computation."""
+    from verilog_tooling import emacs
+
+    buf = [
+        "module top;",
+        "InstModule u0 (/*AUTOINST*/);",
+        "InstModule u1 (/*AUTOINST*/);",
+        "InstModule u2 (/*AUTOINST*/);",
+        "endmodule",
+    ]
+    ref = auto_inst(buf, mods(IM))
+
+    calls = []
+    real = emacs._parent_module_facts
+
+    def counting(tlines, line_no, want_signals):
+        calls.append(line_no)
+        return real(tlines, line_no, want_signals)
+
+    monkeypatch.setattr(emacs, "_parent_module_facts", counting)
+    out = auto_inst(buf, mods(IM))
+    assert out == ref
+    assert len(calls) == 1  # one module: computed once, not per instance
