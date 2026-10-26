@@ -862,6 +862,20 @@ def _process_named_instance(
         if pin not in inst_io:
             continue
         stripped = emacs._strip_comments(expr).strip()
+        if stripped.startswith("'") and re.match(r"^'\s*\{", stripped):
+            # SV assignment-pattern literal '{a, b, ...}: its members ARE
+            # driven nets (autowire_apostrophe.sv: the templated
+            # '{d_1[31:0],d_2[31:0]} drives d_1 and d_2, not the port's
+            # unpacked shape). Same ignore-concat rule as a bare {...}.
+            if not ignore_concat or concat_ok:
+                inner = stripped[stripped.index("{") :]
+                for net, ewidth in _expr_nets(inner):
+                    if param_values:
+                        ewidth = emacs._apply_param_values(ewidth, param_values)
+                    if const_map:
+                        ewidth = emacs._apply_param_values(ewidth, const_map)
+                    _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver))
+            continue
         # only a `define/literal NET carries no declaration; a backtick
         # inside a bit-select (net[`MACRO-1:0]) is fine
         if (

@@ -1486,6 +1486,7 @@ def _connect(
     inst_vector: str = "t",
     simplify: bool = True,
     parent_signals: Mapping[str, str] | None = None,
+    parent_iface_modports: Mapping[str, str | None] | None = None,
 ) -> tuple[str, bool]:
     """(connection, templated) for PORT: identity ``port[bits]`` unless a
     template entry matches. Multidimensional ports get a verilog-mode
@@ -1535,9 +1536,19 @@ def _connect(
     # interface ports connect to a same-named interface in the parent,
     # qualified with the modport when the port declares one (bus.master);
     # unpacked array dims ride as a /*.[dims]*/ note (bus.master
-    # bus_slave [NUM_SLAVES] -> bus_slave.master/*.[NUM_SLAVES]*/)
+    # bus_slave [NUM_SLAVES] -> bus_slave.master/*.[NUM_SLAVES]*/).
+    # EXCEPTION (autoinst_mplist.sv, documented in the file itself):
+    # when the parent already declares that interface WITH a modport
+    # (mbl_if.master msg_resp_if), the modport must NOT be respecified
+    # on the connection — VCS rejects the respecification.
     if port.is_interface:
-        conn = f"{port.name}.{port.modport}" if port.modport else port.name
+        if (
+            parent_iface_modports
+            and parent_iface_modports.get(port.name)
+        ):
+            conn = port.name
+        else:
+            conn = f"{port.name}.{port.modport}" if port.modport else port.name
         if port.unpacked:
             conn += "/*." + "".join(f"[{u}]" for u in port.unpacked) + "*/"
         return conn, False
@@ -1873,6 +1884,23 @@ def _auto_inst_one(
             mask_comments(text[open_idx + 1 : marker.offset], block=True),
         )
     )
+    # Parent interface ports WITH a modport (header declarations like
+    # mbl_if.master msg_resp_if): connections to them must not respecify
+    # the modport (see _connect). Parsed from the enclosing module span.
+    parent_iface_modports: dict[str, str | None] = {}
+    try:
+        from .inst import module_spans as _module_spans
+        from .inst import parse_module_ports as _parse_module_ports
+
+        _tlines = text.split("\n")
+        for _lo, _hi in _module_spans(_tlines):
+            if _lo <= text.count("\n", 0, marker.offset) <= _hi:
+                for _p in _parse_module_ports(_tlines[_lo : _hi + 1]).ports:
+                    if _p.is_interface:
+                        parent_iface_modports[_p.name] = _p.modport
+                break
+    except Exception:
+        parent_iface_modports = {}
     sections = []
     for header, direction in (
         ("// Interfaces", "interface"),
@@ -1890,6 +1918,7 @@ def _auto_inst_one(
                 tpl, at_value, port, param_values, lisp_env, inst_name=inst,
                 inst_vector=inst_vector, simplify=simplify,
                 parent_signals=parent_signals,
+                parent_iface_modports=parent_iface_modports,
             )
             if template_required and not templated:
                 continue  # verilog-auto-inst-template-required: omit the port

@@ -3569,8 +3569,17 @@ def _instance_headers(
     out: dict[int, tuple[str, str, int]] = {}
     i = 0
     n = len(lines)
+    # Scan comment-masked lines (same length/line numbers): a block
+    # comment must never pose as an instance header — the split-header
+    # branch otherwise matches `test_port0 AUTO_TEMPLATE` + its `(` line
+    # inside an AUTO_TEMPLATE comment and invents a phantom instance
+    # (autowire_apostrophe.sv: AUTOWIRE then emitted `wire d[2]` from
+    # that phantom instead of d_1/d_2 from the real u0's '{...} pins).
+    from .comments import mask_comments
+
+    masked = mask_comments("\n".join(lines)).split("\n")
     while i < n:
-        raw = re.sub(r"//.*$", "", lines[i])
+        raw = masked[i]
         m = re.match(r"^\s*(\w+)\s*(#\s*\()\s*$", raw)
         if m and m.group(1) in modules:
             # module #(   <- parameter override spans lines; find its close,
@@ -3585,7 +3594,7 @@ def _instance_headers(
             close_line = -1
             close_pos = -1
             while j < n and not found:
-                line = re.sub(r"//.*$", "", lines[j])
+                line = masked[j]
                 for pos, ch in enumerate(line):
                     if ch == '(':
                         depth += 1
@@ -3605,7 +3614,7 @@ def _instance_headers(
             # j is the line where the #( ... ) closes; the instance name
             # may follow on the SAME line (") u_reg (") or on the next line
             # Check same line first: ") u_reg (" after close_pos
-            cur = re.sub(r"//.*$", "", lines[j])
+            cur = masked[j]
             after = cur[close_pos+1:]
             m_same = re.match(r"\s*(\w+)\s*\(\s*$", after)
             if m_same and m_same.group(1) not in _KEYWORDS:
@@ -3614,7 +3623,7 @@ def _instance_headers(
                 continue
             # Then check next line
             if j + 1 < n:
-                nxt = re.sub(r"//.*$", "", lines[j + 1])
+                nxt = masked[j + 1]
                 m2 = re.match(r"^\s*(\w+)\s*\(\s*$", nxt)
                 if m2 and m2.group(1) not in _KEYWORDS:
                     out[i] = (m.group(1), m2.group(1), j + 1)
@@ -3634,9 +3643,9 @@ def _instance_headers(
         m = re.match(r"^\s*(\w+)\s+(\w+)\s*$", raw)
         if m and m.group(1) in modules and m.group(2) not in _KEYWORDS:
             j = i + 1
-            while j < n and not re.sub(r"//.*$", "", lines[j]).strip():
+            while j < n and not masked[j].strip():
                 j += 1
-            if j < n and re.match(r"^\s*\(", re.sub(r"//.*$", "", lines[j])):
+            if j < n and re.match(r"^\s*\(", masked[j]):
                 out[i] = (m.group(1), m.group(2), j)
                 i += 1
                 continue
