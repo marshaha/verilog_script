@@ -506,3 +506,54 @@ def test_parse_star_settings():
     ) == {"expand": False, "save": True}
     # unparseable values are ignored, not errors
     assert parse_star_settings(["// verilog-auto-star-expand: maybe"]) == {}
+
+
+def test_parse_library_flags_capital_f(tmp_path):
+    """-F file.vc reads flag files like -f (verilog-mode.el verilog-getopt:
+    -F anchors paths inside to the flag file's own directory, which is
+    exactly how read_vc_file resolves them).  Before the fix, a -F entry
+    was silently ignored and every module it listed went unresolved
+    (verilog-mode tests/flag_frel_reeves.v: whole AUTOINST/AIO missed)."""
+    file_dir = str(tmp_path)
+    lines = [
+        '// verilog-library-flags:("-F subdir/list.vc" )',
+        '// verilog-library-flags:("-F" "split.vc" )',
+        '// verilog-library-flags:(-F bare.vc )',
+    ]
+    out = parse_local_variables(lines, file_dir, env=ENV)
+    assert out["vc_files"] == [
+        os.path.join(file_dir, "subdir", "list.vc"),
+        os.path.join(file_dir, "split.vc"),
+        os.path.join(file_dir, "bare.vc"),
+    ]
+
+
+def test_cli_eai_uses_capital_f_flag_file(tmp_path):
+    """End-to-end mirror of flag_frel_reeves.v: the submodule lives only
+    behind a -F flag file (-y . plus a bare module filename, both
+    relative to the flag file's own directory)."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "flag_f_reeves_IBUF.v").write_text(
+        "module flag_f_reeves_IBUF (input a, output q);\nendmodule\n"
+    )
+    (sub / "list.vc").write_text("-y .\nflag_f_reeves_IBUF.v\n")
+    buf = tmp_path / "top.v"
+    buf.write_text(
+        "module flag_f_reeves (/*AUTOARG*/);\n"
+        "   /*AUTOOUTPUT*/\n"
+        "   /*AUTOINPUT*/\n"
+        "   flag_f_reeves_IBUF ibuf (/*AUTOINST*/);\n"
+        "endmodule\n"
+        "// Local Variables:\n"
+        '// verilog-library-flags: ("-F sub/list.vc")\n'
+        "// End:\n"
+    )
+    out_file = tmp_path / "out.v"
+    main(["aall", "-i", str(buf), "-o", str(out_file), "--ref_file", str(buf)])
+    text = out_file.read_text()
+    assert ".q" in text and ".a" in text  # AUTOINST expanded
+    import re
+
+    assert re.search(r"(?m)^output\s+q;", text)  # AUTOOUTPUT promoted
+    assert re.search(r"(?m)^input\s+a;", text)  # AUTOINPUT promoted

@@ -30,6 +30,11 @@ _INST_FILE_LINE = re.compile(r"^\s*//\s*verilog-inst-file\s*:(.*)$")
 _QUOTED = re.compile(r'"([^"]*)"')
 _Y_FLAG = re.compile(r"-y\s*(\S+)")
 _F_FLAG = re.compile(r"-f\s*(\S+)")
+# -F reads flag files like -f, but paths inside anchor to the flag
+# file's own directory (verilog-mode.el verilog-getopt: -f anchors to
+# the buffer dir, -F to the file dir).  read_vc_file already anchors to
+# the file's dir, so -F files ride the same vc_files path as -f files.
+_BIG_F_FLAG = re.compile(r"-F\s*(\S+)")
 _ENV_HEAD = re.compile(r"^\$(\w+)")
 _V_EXT = re.compile(r"\.(?:v|sv)$")
 
@@ -91,8 +96,8 @@ def parse_local_variables(
     - ``dirs``: every quoted dir of ``verilog-library-directories:("d1"
       "d2")`` lines plus every ``-y dir`` of ``verilog-library-flags``,
       resolved against FILE_DIR, in buffer order (duplicates kept).
-    - ``vc_files``: every ``-f file.vc`` of ``verilog-library-flags``,
-      resolved against FILE_DIR.
+    - ``vc_files``: every ``-f file.vc`` / ``-F file.vc`` of
+      ``verilog-library-flags``, resolved against FILE_DIR.
     - ``inst_files``: for ``verilog-inst-file:dir/file.v`` lines, the
       file's stem (the module name) mapped to the resolved file path.
     """
@@ -128,13 +133,26 @@ def parse_local_variables(
             continue
         m = _FLAGS_LINE.match(line)
         if m:
-            for tok in _quoted_tokens(m.group(1)):
+            toks = _quoted_tokens(m.group(1))
+            for idx, tok in enumerate(toks):
                 dirs.extend(
                     _resolve(ym.group(1), file_dir, env) for ym in _Y_FLAG.finditer(tok)
                 )
                 vc_files.extend(
                     _resolve(fm.group(1), file_dir, env) for fm in _F_FLAG.finditer(tok)
                 )
+                vc_files.extend(
+                    _resolve(fm.group(1), file_dir, env) for fm in _BIG_F_FLAG.finditer(tok)
+                )
+                # split form ("-F" "subdir/x.vc", or unquoted
+                # -F subdir/x.vc): the next token is the flag file,
+                # unless it is itself another flag
+                if (
+                    tok.strip() in ("-f", "-F")
+                    and idx + 1 < len(toks)
+                    and not toks[idx + 1].startswith(("-", "+"))
+                ):
+                    vc_files.append(_resolve(toks[idx + 1], file_dir, env))
             continue
         m = _INST_FILE_LINE.match(line)
         if m:
