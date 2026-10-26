@@ -1077,3 +1077,56 @@ def test_aall_autoarg_header_spacing_is_idempotent(tmp_path):
     top2 = tmp_path / "dut2.v"
     top2.write_text(out1)
     assert _run_aall(top2, libdir, tmp_path) == out1
+
+
+def test_analysis_table_memo_invalidation(monkeypatch):
+    """get_all_paras/get_all_defs/_const_symbols are fingerprint-memoized
+    across aall passes: a pass that only adds declaration lines reuses the
+    table; editing a parameter/`define line — or a multi-line decl's
+    follower — recomputes; `include/package-import buffers never memoize."""
+    puts = []
+    real_put = autodef._memo_put
+
+    def counting_put(kind, fp, value):
+        puts.append(kind)
+        real_put(kind, fp, value)
+
+    monkeypatch.setattr(autodef, "_memo_put", counting_put)
+    lines = [
+        "module m;",
+        "parameter W = 8;",
+        "`define DW 16",
+        "/* block */",
+        "endmodule",
+    ]
+    p1 = autodef.get_all_paras(lines)
+    d1 = autodef.get_all_defs(lines)
+    c1 = autodef._const_symbols(lines)
+    assert puts == ["paras", "defs", "consts"]
+    assert p1 == {"W"} and d1 == {"DW"} and c1 == {"W": 8, "DW": 16}
+
+    # a pass adding declaration/port lines leaves the fingerprint: reuse
+    lines2 = lines[:1] + ["input clk;"] + lines[1:3] + ["wire [W-1:0] x;"] + lines[3:]
+    assert autodef.get_all_paras(lines2) == p1
+    assert autodef.get_all_defs(lines2) == d1
+    assert autodef._const_symbols(lines2) == c1
+    assert puts == ["paras", "defs", "consts"]
+
+    # editing a parameter line recomputes (same names, new value)
+    lines3 = [ln.replace("W = 8", "W = 16") for ln in lines]
+    assert autodef.get_all_paras(lines3) == p1
+    assert autodef._const_symbols(lines3)["W"] == 16
+    assert puts == ["paras", "defs", "consts", "paras", "consts"]
+
+    # multi-line declaration: the keyword's follower line is fingerprinted
+    lines5 = lines[:1] + ["parameter", "  MD = 12;"] + lines[1:]
+    assert autodef._const_symbols(lines5)["MD"] == 12
+    lines6 = [ln.replace("MD = 12", "MD = 13") for ln in lines5]
+    assert autodef._const_symbols(lines6)["MD"] == 13
+
+    # an `include / package-import buffer never memoizes
+    n = len(puts)
+    autodef._const_symbols(lines + ['`include "x.vh"'])
+    autodef._const_symbols(lines + ['`include "x.vh"'])
+    autodef._const_symbols(lines + ["import foo::*;"])
+    assert len(puts) == n + 3  # computed every time

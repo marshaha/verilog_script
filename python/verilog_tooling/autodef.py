@@ -1480,9 +1480,63 @@ def _split_top_commas(text: str) -> list[str]:
     return parts
 
 
+# ---------------------------------------------------------------------------
+# analysis-table memos: aall runs ~25 passes over the same buffer, and the
+# parameter/define tables change only when a pass edits THOSE lines — a
+# pass that merely adds wire/reg/port declarations leaves the fingerprint
+# unchanged, so the memo survives it (content-keyed: a hit is a pure
+# function of the fingerprint, safe across files and processes).
+
+_TABLE_MEMO: "dict[tuple[str, tuple], object]" = {}
+
+
+def _table_fingerprint(lines: Sequence[str]) -> "tuple[str, ...] | None":
+    """The ordered line subset a parameter/define table scan can see:
+    param/autopara lines and the line after them (the ``parameter`` regexes
+    let ``\\s+`` span a newline), `` ` `` directives, block-comment
+    delimiters, module boundaries.  None when the buffer has a `` `include``
+    or a package ``import pkg::*`` (the result then depends on file
+    contents and include-dir state — never memoized)."""
+    fp: list[str] = []
+    prev_param = False
+    for ln in lines:
+        if "`include" in ln or ("import" in ln and "::" in ln):
+            return None
+        keep = (
+            prev_param
+            or "param" in ln
+            or "`" in ln
+            or "/*" in ln
+            or "*/" in ln
+            or "endmodule" in ln
+        )
+        if keep:
+            fp.append(ln)
+        prev_param = "param" in ln
+    return tuple(fp)
+
+
+def _memo_get(kind: str, fp: "tuple[str, ...] | None"):
+    if fp is None:
+        return None
+    return _TABLE_MEMO.get((kind, fp))
+
+
+def _memo_put(kind: str, fp: "tuple[str, ...] | None", value) -> None:
+    if fp is None:
+        return
+    if len(_TABLE_MEMO) > 128:
+        _TABLE_MEMO.clear()
+    _TABLE_MEMO[(kind, fp)] = value
+
+
 def get_all_defs(lines: Sequence[str]) -> set[str]:
     """Names from `` `define `` / `` `ifdef `` / `` `ifndef `` lines
     (`` `include`` files read through, analysis only)."""
+    fp = _table_fingerprint(lines)
+    hit = _memo_get("defs", fp)
+    if hit is not None:
+        return set(hit)
     from .libdirs import expand_includes
 
     lines = expand_includes(lines)
@@ -1498,6 +1552,7 @@ def get_all_defs(lines: Sequence[str]) -> set[str]:
         elif _ENDMODULE.match(lines[i]):
             break
         i += 1
+    _memo_put("defs", fp, frozenset(defs))
     return defs
 
 
@@ -1521,6 +1576,10 @@ def get_all_paras(lines: Sequence[str]) -> set[str]:
     """``parameter``/``localparam`` names, plus names inside /*autopara*/
     regions; generated autopara sections are skipped.  `` `include`` files
     are read through (analysis only)."""
+    fp = _table_fingerprint(lines)
+    hit = _memo_get("paras", fp)
+    if hit is not None:
+        return set(hit)
     from .libdirs import expand_includes
 
     lines = expand_includes(lines)
@@ -1540,6 +1599,7 @@ def get_all_paras(lines: Sequence[str]) -> set[str]:
         elif _ENDMODULE.match(line):
             break
         i += 1
+    _memo_put("paras", fp, frozenset(paras))
     return paras
 
 
@@ -1612,6 +1672,10 @@ def _const_symbols(lines: Sequence[str]) -> dict[str, int]:
     `` `include`` files are read through (analysis only), and values written
     as constant expressions of other symbols (``A+B+3``, ``$clog2(X)``,
     ``(X==1) ? 1 : $clog2(X)``) are folded to integers fixpoint-style."""
+    fp = _table_fingerprint(lines)
+    hit = _memo_get("consts", fp)
+    if hit is not None:
+        return dict(hit)
     from .libdirs import expand_includes
 
     text = "\n".join(expand_includes(lines))
@@ -1705,6 +1769,7 @@ def _const_symbols(lines: Sequence[str]) -> dict[str, int]:
                     break
         except ImportError:
             pass
+    _memo_put("consts", fp, dict(consts))
     return consts
 
 
