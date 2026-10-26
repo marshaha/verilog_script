@@ -314,6 +314,18 @@ EAI/AIT/AIU/AIU1 前的 `{count}` 选择第 N 个 `/*autoinst*/` 实例
 verilog-mode 只在被要求时读 include，且只读 `` `define``。
 用 `// verilog-auto-read-includes:nil` 关闭。
 
+仓库自带标准多实例 benchmark：`tests/bench_aall_perf.py`（400 个
+带 packed/unpacked/参数化端口的实例跑完整 `aall` 流水线；`--emacs`
+可同时计时真实的 verilog-mode 作为参照，`--verbose` 保留分步日志）：
+
+```bash
+python tests/bench_aall_perf.py --emacs
+#   python 中位数: ~13s        emacs verilog-auto: ~0.5s
+```
+
+不进 pytest 门禁（太慢）——做性能相关改动前后跑一下即可。分步日志
+能看清时间花在哪：多实例文件上 `AUTOWIRE/AUTOREG/autodef` 占大头。
+
 ## 重点命令
 
 下面六条是日常主力，完整介绍。其余命令在上表中都是一行条目——这是

@@ -334,6 +334,20 @@ original `` `include`` line. This is deliberately stronger than emacs:
 verilog-mode reads includes only when asked, and only `` `define``s.
 Opt out with `// verilog-auto-read-includes:nil`.
 
+A standard multi-instance benchmark ships as `tests/bench_aall_perf.py`
+(400 instances with packed/unpacked/parameterized ports through the full
+`aall` pipeline; `--emacs` also times real verilog-mode for reference,
+`--verbose` keeps the per-step logs):
+
+```bash
+python tests/bench_aall_perf.py --emacs
+#   python median: ~13s        emacs verilog-auto: ~0.5s
+```
+
+Not part of the pytest gate (too slow) — run it before/after perf work.
+The per-step logs show where the time goes; `AUTOWIRE/AUTOREG/autodef`
+dominates on many-instance files.
+
 ## Featured commands
 
 The six commands below are the daily drivers and are documented in
