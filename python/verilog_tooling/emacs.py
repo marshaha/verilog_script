@@ -429,13 +429,18 @@ def _apply_param_values(expr: str, param_values: Mapping[str, str]) -> str:
     fold what becomes purely numeric — ``$clog2(8)`` → ``3`` and
     ``(8)-1`` → ``7`` (verilog-mode evaluates constant expressions).
     Values may reference other parameters (``IDX_W=$clog2(VEC_W)``), so
-    substitution iterates to a fixpoint.  Doubled parens are collapsed each
-    round and the original-text guard cuts substitution CYCLES (a name swap
-    A->B, B->A) so they cannot pile up nested parens."""
+    substitution iterates to a fixpoint.  Names iterate in REVERSE
+    insertion order: verilog-mode conses par-values while reading the
+    #(...) block, so its single sequential pass substitutes the last
+    parameter first — for a name swap A->B, B->A that makes B win on
+    both pins (autoinst_swapped_vec.v: both [] expand to [B_WL-1:0]),
+    and reversed fixpoint iteration converges to the same answer.
+    Doubled parens are collapsed each round and the original-text guard
+    cuts substitution CYCLES so they cannot pile up nested parens."""
     original = expr
     for _ in range(8):
         prev = expr
-        for name, value in param_values.items():
+        for name, value in reversed(list(param_values.items())):
             if value == name:
                 continue  # identity self-map: no-op (avoids paren explosion)
             # Only wrap in parens if the value needs it (contains operators).
