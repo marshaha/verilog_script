@@ -477,3 +477,22 @@ def test_detick_name():
     assert detick_name("`SUBMOD_UNDEFED", defines) == "SUBMOD_UNDEFED"
     assert detick_name("submod_mod", defines) == "submod_mod"
     assert detick_name("`CHAIN", defines) == "submod_decl_from_def"
+
+
+def test_param_packed_dims_inherited_across_comma_list():
+    """parameter logic [5:0] BLUP=3, ZOT=4 shares the dims."""
+    from verilog_tooling.emacs import parse_module_params
+
+    src = (
+        "module xyz\n"
+        "  #(parameter int FOO=1,\n"
+        "    parameter logic [5:0] BLUP=3, ZOT=4,\n"
+        "    parameter LDWRDS=5)\n"
+        "   (input x1, output y);\n"
+        "endmodule\n"
+    ).splitlines()
+    params = {p.name: p for p in parse_module_params(src)}
+    assert params["FOO"].packed == ()
+    assert params["BLUP"].packed == ("5:0",)
+    assert params["ZOT"].packed == ("5:0",)
+    assert params["LDWRDS"].packed == ()

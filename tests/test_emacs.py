@@ -82,7 +82,11 @@ def test_parse_module_params_body_form_skips_types_and_localparam():
         "    localparam L = 1;",
         "endmodule",
     ]
-    assert parse_module_params(lines) == (Param("W", "8"), Param("D", "W*2"), Param("X", "-1"))
+    assert parse_module_params(lines) == (
+        Param("W", "8"),
+        Param("D", "W*2"),
+        Param("X", "-1", ("3:0",)),
+    )
 
 
 def test_parse_module_params_none():

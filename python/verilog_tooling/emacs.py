@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 
 from .comments import mask_comments
 from typing import Mapping, Sequence
@@ -94,10 +94,13 @@ _TYPE_WORDS = {
 
 @dataclass(frozen=True)
 class Param:
-    """One module parameter; ``value`` is the raw default-value text."""
+    """One module parameter; ``value`` is the raw default-value text.
+    ``packed`` holds the declared packed ranges (``logic [5:0] BLUP``),
+    which AUTOINSTPARAM renders as a subscript (``.BLUP (BLUP[5:0])``)."""
 
     name: str
     value: str | None = None
+    packed: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -807,6 +810,7 @@ def _param_from_entry(entry: str) -> Param | None:
     if re.match(r"^localparam\b", entry):
         return None
     entry = re.sub(r"^parameter\b", "", entry).strip()
+    packed: list[str] = []
     while True:
         m = re.match(r"(\w+)\s+", entry)
         if m and m.group(1) in _TYPE_WORDS:
@@ -816,6 +820,7 @@ def _param_from_entry(entry: str) -> Param | None:
             j = entry.find("]")
             if j < 0:
                 return None
+            packed.append(re.sub(r"\s+", "", entry[1:j]))
             entry = entry[j + 1 :].lstrip()
             continue
         break
@@ -835,7 +840,7 @@ def _param_from_entry(entry: str) -> Param | None:
     if not vm:
         return None
     value = vm.group(1)
-    return Param(name, value.strip() if value else None)
+    return Param(name, value.strip() if value else None, tuple(packed))
 
 
 def parse_module_params(lines: Sequence[str]) -> tuple[Param, ...]:
@@ -857,20 +862,38 @@ def parse_module_params(lines: Sequence[str]) -> tuple[Param, ...]:
         open_idx = text.index("(", m.start())
         inner, end = _balanced(text, open_idx)
         header_span = (open_idx, end)
-        for entry in _split_top_commas(inner):
-            param = _param_from_entry(entry)
-            if param:
-                params.append(param)
+        params.extend(_params_from_entries(_split_top_commas(inner)))
     body = text
     if header_span:
         start, end = header_span
         body = text[:start] + " " * (end - start) + text[end:]
     for bm in re.finditer(r"^\s*parameter\b([^;]*);", body, re.M):
-        for entry in _split_top_commas(bm.group(1)):
-            param = _param_from_entry(entry)
-            if param:
-                params.append(param)
+        params.extend(_params_from_entries(_split_top_commas(bm.group(1))))
     return tuple(params)
+
+
+def _params_from_entries(entries) -> list[Param]:
+    """Parse comma-split parameter entries, with type/dims inheritance:
+    in ``parameter logic [5:0] BLUP=3, ZOT=4`` the type and dims apply
+    to every name in the list (autoinstparam_int.v: ZOT gets [5:0]
+    too).  A new ``parameter``/``localparam`` keyword starts a new
+    declaration and resets the inherited dims."""
+    out: list[Param] = []
+    cur_packed: tuple = ()
+    for entry in entries:
+        stripped = entry.strip()
+        is_new = stripped.startswith("parameter") or stripped.startswith("localparam")
+        param = _param_from_entry(entry)
+        if param is None:
+            if stripped.startswith("localparam"):
+                cur_packed = ()
+            continue
+        if is_new:
+            cur_packed = param.packed
+        elif not param.packed:
+            param = _dc_replace(param, packed=cur_packed)
+        out.append(param)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -918,7 +941,20 @@ def _resolve_instance_at(
     The module keeps a leading backtick when written ticked
     (`` `SUBMOD_A ``) — callers expand it with detick_name before
     looking the module up; the instance name is returned bare."""
+    m_full = masked if masked is not None else mask_comments(text)
     inst, j = _prev_word(text, open_idx)
+    if not inst:
+        # Pin list preceded by a #(...) parameter-override group:
+        # module inst #(...) ( ... ) — skip the group (and its #)
+        # and read the instance name before it (autoinstparam_int.v)
+        grp = _skip_group_back(text, open_idx, m_full)
+        if grp is not None:
+            k = grp[0]
+            while k > 0 and text[k - 1] in " \t\n":
+                k -= 1
+            if k > 0 and text[k - 1] == "#":
+                k -= 1
+                inst, j = _prev_word(text, k)
     if not inst:
         # Might be an array instance: u_or [31:0] (
         # Skip back over [...] and try again
@@ -942,7 +978,6 @@ def _resolve_instance_at(
     # (and any #(...) group) before it is reachable
     if j > 0 and text[j - 1] == "`":
         j -= 1
-    m_full = masked if masked is not None else mask_comments(text)
     group = _skip_group_back(text, j, m_full)
     if group is not None:
         # parameter override: the #( ... ) group before the instance name
@@ -1029,6 +1064,23 @@ def _resolve_param_instance(text: str, open_idx: int, close_idx: int) -> tuple[s
     # the instance name follows the block; // comment lines may intervene
     mi = re.match(r"(?:\s|//[^\n]*)*(\w+)\s*\(", text[close_idx + 1 : close_idx + 1000])
     inst = mi.group(1) if mi else ""
+    if not inst:
+        # shape 2: module inst #(...) ( ... ) — the word before '#'
+        # was the instance name, not the module (autoinstparam_int.v)
+        inst = module
+        module, mj = _prev_word(text, mj)
+        module = _with_tick(text, module, mj)
+        # Handle # <value> (e.g., buf #1 mybuf): module would be "1"
+        if module and module[0].isdigit():
+            k = mj
+            while k > 0 and text[k - 1] in " \t\n":
+                k -= 1
+            if k > 0 and text[k - 1] == "#":
+                k -= 1
+                module, mk = _prev_word(text, k)
+                module = _with_tick(text, module, mk)
+        if not module:
+            raise ValueError("AUTOINSTPARAM: cannot resolve module name")
     return module, inst
 
 
@@ -1826,8 +1878,9 @@ def _auto_param_one(
             # verilog-mode: every parameter connects by identity (even a
             # name the parent does not define — the user fills it in or
             # templates it); entries manually written before the marker
-            # are reset, not preserved
-            conn = param.name
+            # are reset, not preserved.  A declared packed range rides
+            # as a subscript (autoinstparam_int.v: BLUP[5:0]).
+            conn = param.name + "".join(f"[{d}]" for d in param.packed)
         entries.append((param.name, conn,
                         "// Templated" if templated else None, ()))
     if not entries:

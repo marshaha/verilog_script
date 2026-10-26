@@ -295,6 +295,12 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         body_ns = re.sub(r"\s*$", "", body)
         body_ns = re.sub(r"\)\s*;$", "", body_ns)
         body_ns = re.sub(r"[;|,]$", "", body_ns)
+        # Two declarations on one line (``input x; output y;``): the
+        # single-name rebuild below would keep only the last one and
+        # drop the first entirely.  Leave such lines untouched.
+        if ";" in body_ns:
+            out.append(line)
+            continue
         # A multi-name declaration (``input clk, wen,``) names several
         # ports on one line; the single-name rebuild below would keep
         # only the last one.  Leave such lines untouched.

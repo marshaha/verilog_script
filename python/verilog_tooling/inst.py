@@ -178,10 +178,12 @@ class Port:
 
 @dataclass(frozen=True)
 class Param:
-    """One module parameter; ``value`` is the raw default-value text."""
+    """One module parameter; ``value`` is the raw default-value text.
+    ``packed`` holds declared packed ranges (see emacs.Param)."""
 
     name: str
     value: str | None = None
+    packed: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -1049,7 +1051,53 @@ def parse_module_ports(
                 if _port_continues(nxt) and _parse_port_line(nxt) is None:
                     break  # another decl will finish there: leave it to them
                 joined += " " + nxt
-            ports_here = _parse_port_line_multi(joined)
+            # Several declarations on one line (``input x; output
+            # y;``): split on top-level ';' (block comments and
+            # (* *) attributes skipped — an attribute may itself
+            # contain ';', e.g. (* groundSensitivity="gnd "; *))
+            # so each segment parses as its own declaration instead
+            # of the single-name parse keeping only the first
+            # (autoinstparam_int.v: pdq's output y was lost)
+            _segs: list[str] = []
+            _cur = ""
+            _in_bc = False
+            _in_attr = False
+            _k = 0
+            while _k < len(joined):
+                _two = joined[_k : _k + 2]
+                if _in_bc:
+                    if _two == "*/":
+                        _in_bc = False
+                        _k += 2
+                    else:
+                        _k += 1
+                    continue
+                if _in_attr:
+                    if _two == "*)":
+                        _in_attr = False
+                        _k += 2
+                    else:
+                        _k += 1
+                    continue
+                if _two == "/*":
+                    _in_bc = True
+                    _k += 2
+                    continue
+                if _two == "(*":
+                    _in_attr = True
+                    _k += 2
+                    continue
+                if joined[_k] == ";":
+                    _segs.append(_cur)
+                    _cur = ""
+                    _k += 1
+                    continue
+                _cur += joined[_k]
+                _k += 1
+            _segs.append(_cur)
+            ports_here = []
+            for _seg in _segs:
+                ports_here.extend(_parse_port_line_multi(_seg))
             if ports_here:
                 g = _flat_guard(guard_stack)
                 if g:

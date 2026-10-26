@@ -897,3 +897,39 @@ def test_aall_tick_define_module_names(tmp_path, capsys):
     assert ".q" in out and ".a" in out  # submod_mod instance expanded
     assert out.count(".q") == 3  # all three instances contribute q
     assert "wire" in out and "q;" in out
+
+
+def test_aall_inst_before_param_group_and_param_dims(tmp_path, capsys):
+    """module inst #(...) (...) shape (autoinstparam_int.v): the pin
+    list after a parameter-override group resolves, AUTOINSTPARAM
+    resolves the module too, logic [5:0] params connect with their
+    subscript (BLUP[5:0], ZOT[5:0] shared across the comma list), and
+    two declarations on one body line (input x; output y;) both parse."""
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module xyz\n"
+        "  #(parameter int FOO=1,\n"
+        "    parameter logic [5:0] BLUP=3, ZOT=4)\n"
+        "   (input x1, output y);\n"
+        "endmodule\n"
+        "module pdq;\n"
+        "   input x; output y;\n"
+        "endmodule\n"
+        "module abc;\n"
+        "   xyz XYZ\n"
+        "     #(/*AUTOINSTPARAM*/)\n"
+        "   (/*AUTOINST*/);\n"
+        "   pdq PDQ\n"
+        "     #(/*AUTOINSTPARAM*/)\n"
+        "   (/*AUTOINST*/);\n"
+        "endmodule\n"
+    )
+    capsys.readouterr()
+    out = _run_aall(top, tmp_path, tmp_path)
+    import re as _re
+
+    squashed = _re.sub(r"\s+", " ", out).replace(" )", ")")
+    assert ".BLUP (BLUP[5:0])" in squashed
+    assert ".ZOT (ZOT[5:0])" in squashed
+    assert ".FOO (FOO)" in squashed
+    assert ".y (y)" in squashed and ".x (x)" in squashed
