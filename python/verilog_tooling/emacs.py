@@ -89,6 +89,7 @@ _DEFAULT_COLUMN = 40
 _TYPE_WORDS = {
     "int", "integer", "logic", "bit", "reg", "signed", "unsigned",
     "byte", "shortint", "longint", "time", "real", "realtime", "type",
+    "string",
 }
 
 
@@ -1404,9 +1405,14 @@ def _connect(
                 conn = _apply_param_values(conn, param_values)
             return conn, True
     # interface ports connect to a same-named interface in the parent,
-    # qualified with the modport when the port declares one (bus.master)
+    # qualified with the modport when the port declares one (bus.master);
+    # unpacked array dims ride as a /*.[dims]*/ note (bus.master
+    # bus_slave [NUM_SLAVES] -> bus_slave.master/*.[NUM_SLAVES]*/)
     if port.is_interface:
-        return (f"{port.name}.{port.modport}" if port.modport else port.name), False
+        conn = f"{port.name}.{port.modport}" if port.modport else port.name
+        if port.unpacked:
+            conn += "/*." + "".join(f"[{u}]" for u in port.unpacked) + "*/"
+        return conn, False
     # verilog-mode: multidimensional ports are not expanded into the
     # connection; their full shape is attached as a /*...*/ comment.
     if port.is_multidim:

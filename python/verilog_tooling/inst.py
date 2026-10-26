@@ -118,7 +118,60 @@ _LINE_COMMENT = re.compile(r"^\s*//")
 _DIRECTIVE = re.compile(r"^\s*`(?:if|ifdef|ifndef|elsif|else|endif)\b")
 _BLANK = re.compile(r"^\s*$")
 _PORT_KEYWORD = re.compile(r"^\s*(input|output|inout)\b\s*")
-_IFACE_PORT_DECL = re.compile(r"^\s*(\w+)(?:\.(\w+))?\s+(\w+)\s*\)?\s*[,;]?\s*$")
+_IFACE_PORT_DECL = re.compile(
+    r"^\s*(\w+)(?:\.(\w+))?\s+(\w+)((?:\s*\[[^\]]*\])*)\s*\)?\s*[,;]?\s*$"
+)
+
+
+def _iface_match(line: str) -> "tuple[str, str | None, str, tuple] | None":
+    """Match an interface port declaration: ``iface name``,
+    ``iface.modport name``, ``iface #(.P(v)) name`` (a parameter
+    override group between type and name, autoinst_iface_noparam.v) or
+    ``iface.modport name [UNPACKED]`` (autoinst_import2012.v).
+    Returns (iface, modport, name, unpacked).  A dotted type is
+    self-evidently an interface port even when the type is not a known
+    interface (autoinst_modport_param.v declares no `interface svi`
+    anywhere)."""
+    im = _IFACE_PORT_DECL.match(line.strip())
+    if im:
+        return (
+            im.group(1),
+            im.group(2),
+            im.group(3),
+            tuple(re.findall(r"\[([^\]]*)\]", im.group(4) or "")),
+        )
+    # strip one balanced #(...) override group and retry
+    m = re.search(r"#\s*\(", line)
+    if not m:
+        return None
+    depth = 0
+    j = m.end() - 1
+    while j < len(line):
+        if line[j] == "(":
+            depth += 1
+        elif line[j] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        j += 1
+    if depth != 0:
+        return None
+    stripped = line[: m.start()] + " " + line[j + 1 :]
+    im = _IFACE_PORT_DECL.match(stripped.strip())
+    if im:
+        return (
+            im.group(1),
+            im.group(2),
+            im.group(3),
+            tuple(re.findall(r"\[([^\]]*)\]", im.group(4) or "")),
+        )
+    return None
+
+
+def _iface_known(match: "tuple[str, str | None, str, tuple] | None", interfaces) -> bool:
+    """Accept an _iface_match result: a modport is self-evident, a
+    plain type must be a known interface name."""
+    return bool(match) and bool(match[1] or (interfaces and match[0] in interfaces))
 _IFACE_HEADER = re.compile(r"\binterface\s+(\w+)\s*(?:#\s*\(|\(|;)")
 _BREAK_LINE = re.compile(r"^\s*(?:always|endmodule|wire)\b")
 _PORT_NAME = re.compile(r"(\w+)\s*\(")
@@ -822,8 +875,7 @@ def _expand_ansi_header(lines: list[str], interfaces: Iterable[str] | None = Non
     # known interface type present AND the header body sits on a single
     # logical line)
     def _iface_decl(part: str) -> bool:
-        im = _IFACE_PORT_DECL.match(part.strip())
-        return bool(im) and im.group(1) in interfaces
+        return _iface_known(_iface_match(part.strip()), interfaces)
 
     if not re.search(r"\b(input|output|inout)\b", inner) and not (
         interfaces and any(_iface_decl(part) for part in _split_top_commas(inner))
@@ -904,10 +956,8 @@ def _split_ansi_ports(inner: str, interfaces: Iterable[str] | None = None) -> li
                 nm = nm.strip().rstrip(",")
                 if nm:
                     out.append(f"{cur_dir} {nm}")
-        elif interfaces:
-            im = _IFACE_PORT_DECL.match(p)
-            if im and im.group(1) in interfaces:
-                out.append(p)
+        elif _iface_known(_iface_match(p), interfaces):
+            out.append(p)
     return out
 
 
@@ -960,8 +1010,11 @@ def parse_module_ports(
             line = _strip_lc(line)
         line = re.sub(r"^\s*,", "", line)
         # the header's opening '(' may sit at the start of the first port
-        # line itself (``(output [w-1:0] q,`` after a #(...) block)
-        line = re.sub(r"^\s*\((?=\s*(?:input|output|inout)\b)", "", line)
+        # line itself (``(output [w-1:0] q,`` after a #(...) block, or
+        # ``(svi.master svi_modport,`` for an interface first port)
+        line = re.sub(
+            r"^\s*\((?=\s*(?:(?:input|output|inout)\b|\w+(?:\.\w+)?\s+\w+))", "", line
+        )
         if re.match(r"^\s*module\b", line):
             seen_module = True
             if not mod_name:
@@ -1136,21 +1189,21 @@ def parse_module_ports(
                     )
             decl_open = _strip_lc(line).rstrip().endswith(",")
             continue
-        if interfaces:
-            im = _IFACE_PORT_DECL.match(line)
-            if im and im.group(1) in interfaces:
-                entries.append(
-                    Port(
-                        name=im.group(3),
-                        direction="interface",
-                        is_interface=True,
-                        modport=im.group(2),
-                        iface=im.group(1),
-                        guard=_flat_guard(guard_stack),
-                    )
+        im = _iface_match(line)
+        if _iface_known(im, interfaces):
+            entries.append(
+                Port(
+                    name=im[2],
+                    direction="interface",
+                    is_interface=True,
+                    modport=im[1],
+                    iface=im[0],
+                    unpacked=im[3],
+                    guard=_flat_guard(guard_stack),
                 )
-                have_port = True
-                continue
+            )
+            have_port = True
+            continue
         if _BREAK_LINE.match(line) or re.search(r"\bautodef\b", line) or _AUTOINST_MARK.search(line):
             break
     while entries and isinstance(entries[-1], Keep) and _BLANK.match(entries[-1].line):
@@ -1189,6 +1242,8 @@ def get_port_max_len(
         if entry.is_interface and entry.modport:
             # identity connection text: name.modport
             conn += f".{entry.modport}"
+        if entry.is_interface and entry.unpacked:
+            conn += "/*." + "".join(f"[{u}]" for u in entry.unpacked) + "*/"
         elif entry.width and not sort:
             # identity connection text: name[width]  (without sort the
             # automatic.vim width rule name[width:0] adds len(width)+4)
@@ -1241,7 +1296,10 @@ def default_connection(port: Port, inst_vector: str = "t") -> str:
     INST_VECTOR is verilog-auto-inst-vector: 't' (default) always uses the
     subscript, 'nil' skips it, 'unsigned' uses it only for unsigned ports."""
     if port.is_interface:
-        return f"{port.name}.{port.modport}" if port.modport else port.name
+        conn = f"{port.name}.{port.modport}" if port.modport else port.name
+        if port.unpacked:
+            conn += "/*." + "".join(f"[{u}]" for u in port.unpacked) + "*/"
+        return conn
     if port.is_multidim:
         inner = "".join(f"[{d}]" for d in port.packed)
         if port.unpacked:

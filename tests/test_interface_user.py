@@ -38,10 +38,15 @@ def mods_with_iface():
 
 
 def test_unknown_interface_name_drops_the_port():
-    """Without the name being known, the interface port vanishes from the
-    parse (the gap --interface fills)."""
-    names = [p.name for p in parse_module_ports(SUB.splitlines()).ports]
+    """Without the name being known, a PLAIN interface port vanishes
+    from the parse (the gap --interface fills).  A dotted type is
+    self-evidently an interface port and parses even unknown
+    (autoinst_modport_param.v declares no `interface svi` either)."""
+    plain = SUB.replace("axera_apb_interface.master apb", "axera_apb_interface apb")
+    names = [p.name for p in parse_module_ports(plain.splitlines()).ports]
     assert names == ["clk", "dout"]
+    dotted = [p.name for p in parse_module_ports(SUB.splitlines()).ports]
+    assert "apb" in dotted
     ports = parse_module_ports(
         SUB.splitlines(), interfaces={"axera_apb_interface"}
     ).ports

@@ -1011,9 +1011,12 @@ def test_parse_module_ports_interface_ansi_header():
 
 
 def test_parse_module_ports_unknown_interface_names_ignored():
-    # without the interface-name set the lines are not port declarations
+    # without the interface-name set, a PLAIN unknown type is not a port
+    # declaration — but a dotted type (cpu_bus.master) is self-evidently
+    # an interface port and parses even with no interface set
+    # (autoinst_modport_param.v declares no `interface svi` either)
     moddef = parse_module_ports(SUB_IF.splitlines())
-    assert moddef.port_names() == ["clk", "din", "done"]
+    assert moddef.port_names() == ["bus", "clk", "din", "done"]
 
 
 def test_auto_inst_regenerates_interface_ports():
