@@ -57,6 +57,8 @@ from __future__ import annotations
 
 import argparse
 import re
+
+from .comments import strip_line_comments
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -230,8 +232,6 @@ def _strip_line(line: str) -> str:
         m = re.match(r"^\s*/\*.*?\*/", line)
         if m is not None and not re.match(r"\s*/\*\s*\b(?:autodef|autoinst)\b\s*\*/\s*$", line):
             line = line[m.end() :] if line[m.end() :].strip() else ""
-    from .comments import strip_line_comments
-
     line = strip_line_comments(line)  # // cut; /* */ markers kept visible
     return re.sub(r"^\s*,", "", line)
 
@@ -255,8 +255,6 @@ def _skip_comment_line(lines: Sequence[str], i: int) -> int:
     open mid-line; when it does, the rest of that line is comment.  The
     ``//`` cut is state-aware: a ``/*`` inside a line comment does not open
     a pair, a ``//`` inside a pair is not a line comment."""
-    from .comments import strip_line_comments
-
     in_pair = False
     for j in range(i, len(lines)):
         line = lines[j]
