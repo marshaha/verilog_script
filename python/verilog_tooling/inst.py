@@ -2397,15 +2397,20 @@ def _cli_resolve(args, lines: list[str]) -> tuple[list[str], dict[str, str], lis
 def buffer_module_defs(text: str) -> dict[str, list[str]]:
     """Modules defined in TEXT itself, {name: definition lines} — the
     fallback when no library file provides a module (small multi-module
-    files and self-contained tests)."""
+    files and self-contained tests). A declaration written ticked
+    (``module `SUBMOD_DECL``) registers under its `define-expanded name
+    (autoinst_moddefine.v); an undefined tick keeps its bare name."""
+    from . import emacs
+
+    defines = emacs._buffer_defines(text)
     mods: dict[str, list[str]] = {}
     lines = text.splitlines()
     i = 0
     n = len(lines)
     while i < n:
-        m = re.match(r"\s*module\s+(\w+)", lines[i])
+        m = re.match(r"\s*module\s+(`?)(\w+)", lines[i])
         if m:
-            name = m.group(1)
+            name = emacs.detick_name(m.group(1) + m.group(2), defines)
             start = i
             while i < n and not re.match(r"\s*endmodule\b", lines[i]):
                 i += 1
@@ -2588,11 +2593,15 @@ def _which_resolvable(
     joined = "\n".join(lines)
     joined_masked = emacs.mask_comments(joined)
     stacks = emacs._scan_parens_at(joined, [m.offset for m in markers_all])
+    defines = emacs._buffer_defines(joined)
     resolvable = []
     for mi, marker in enumerate(markers_all):
         try:
             stack = stacks[marker.offset]
-            mod = emacs._resolve_instance_at(joined, stack[-1], joined_masked)[0]
+            mod = emacs.detick_name(
+                emacs._resolve_instance_at(joined, stack[-1], joined_masked)[0],
+                defines,
+            )
         except (ValueError, IndexError):
             continue
         if mod in resolved:
@@ -2890,10 +2899,14 @@ def _main_emacs(command: str, text: str, lines: list[str], args) -> list[str]:
         joined = "\n".join(lines)
         joined_masked = emacs.mask_comments(joined)
         stacks = emacs._scan_parens_at(joined, [m.offset for m in markers_all])
+        defines = emacs._buffer_defines(joined)
         for mi, marker in enumerate(markers_all):
             try:
                 stack = stacks[marker.offset]
-                mod = emacs._resolve_instance_at(joined, stack[-1], joined_masked)[0]
+                mod = emacs.detick_name(
+                    emacs._resolve_instance_at(joined, stack[-1], joined_masked)[0],
+                    defines,
+                )
             except (ValueError, IndexError):
                 continue
             if mod in files or mod in buffer_mods:

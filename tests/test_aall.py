@@ -859,3 +859,41 @@ endmodule
     decls = [ln for ln in out if "count" in ln and ln.strip().startswith(("logic", "reg", "wire"))]
     assert len(decls) == 1
     assert decls[0].strip().startswith("logic")
+
+
+def test_aall_tick_define_module_names(tmp_path, capsys):
+    """`define'd module names expand at both ends (autoinst_moddefine.v):
+    `SUBMOD_A in the instance position resolves to submod_mod, and a
+    `module `SUBMOD_DECL` declaration registers under its expanded name
+    submod_decl_from_def; an undefined tick (SUBMOD_UNDEFED) keeps its
+    bare name. All three instances expand."""
+    top = tmp_path / "top.v"
+    top.write_text(
+        "module top (/*AUTOARG*/);\n"
+        "   /*AUTOWIRE*/\n"
+        "`define SUBMOD_A submod_mod\n"
+        "`define SUBNAME_B subname_b\n"
+        "   `SUBMOD_A `SUBNAME_B\n"
+        "     (/*AUTOINST*/);\n"
+        "   `SUBMOD_UNDEFED subundefed\n"
+        "     (/*AUTOINST*/);\n"
+        "   submod_decl_from_def subundefed2\n"
+        "     (/*AUTOINST*/);\n"
+        "endmodule\n"
+        "module submod_mod (/*AUTOARG*/);\n"
+        "   input a;\n"
+        "   output q;\n"
+        "endmodule\n"
+        "module SUBMOD_UNDEFED (/*AUTOARG*/);\n"
+        "   output q;\n"
+        "endmodule\n"
+        "`define SUBMOD_DECL submod_decl_from_def\n"
+        "module `SUBMOD_DECL (/*AUTOARG*/);\n"
+        "   output q;\n"
+        "endmodule\n"
+    )
+    capsys.readouterr()
+    out = _run_aall(top, tmp_path, tmp_path)
+    assert ".q" in out and ".a" in out  # submod_mod instance expanded
+    assert out.count(".q") == 3  # all three instances contribute q
+    assert "wire" in out and "q;" in out

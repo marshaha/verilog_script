@@ -551,6 +551,21 @@ def _inst_pin_scan(
     instances: list = []
     seen: set[int] = set()
 
+    def _written_inst(open_idx: int, inst: str) -> str:
+        # the instance word ends just before the pin-list paren (modulo
+        # whitespace); reattach its backtick for the // From comment,
+        # which verilog-mode writes with the name as written
+        # (`` `SUBNAME_B `` — autoinst_moddefine.v)
+        j = open_idx
+        while j > 0 and text[j - 1] in " \t\n":
+            j -= 1
+        end = j
+        while j > 0 and (text[j - 1].isalnum() or text[j - 1] == "_"):
+            j -= 1
+        if text[j:end] == inst and j > 0 and text[j - 1] == "`":
+            return "`" + inst
+        return inst
+
     def _add_named(module: str, inst: str, moddef: ModuleDef, open_idx: int) -> None:
         # a marked instance is also matched by _instance_headers below;
         # dedup on the instance's opening-paren position (both passes find
@@ -576,9 +591,15 @@ def _inst_pin_scan(
         open_idx = st[-1]
         try:
             module, inst = emacs._resolve_instance_at(text, open_idx, text_masked)
+            # lookup by the expanded name, but keep the as-written names
+            # for the // From comment (verilog-mode writes `SUBNAME_B of
+            # `SUBMOD_A.v, ticks included — autoinst_moddefine.v)
+            moddef = modules.get(
+                emacs.detick_name(module, emacs._buffer_defines(text))
+            )
         except ValueError:
             continue
-        moddef = modules.get(module)
+
         if moddef is None:
             # Gate primitive (or/buf/etc.): parse positional ports.
             if module in emacs._GATE_PRIMITIVES and open_idx not in seen:
@@ -591,7 +612,7 @@ def _inst_pin_scan(
                     ("primitive", module, inst, emacs._GATE_PRIMITIVES[module], exprs)
                 )
             continue
-        _add_named(module, inst, moddef, open_idx)
+        _add_named(module, _written_inst(open_idx, inst), moddef, open_idx)
     # marker-less instances whose module name resolves in MODULES (the same
     # rule autodef documents)
     line_off = [0]

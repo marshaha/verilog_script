@@ -466,3 +466,14 @@ def test_buffer_defines_ignores_commented_out():
 
     text = "`define foo 6\n// `define fake 9\n`define flag\n"
     assert _buffer_defines(text) == {"foo": "6", "flag": "1"}
+
+
+def test_detick_name():
+    """verilog-symbol-detick with wing-it for module names."""
+    from verilog_tooling.emacs import detick_name
+
+    defines = {"SUBMOD_A": "submod_mod", "DECL": "submod_decl_from_def", "CHAIN": "`DECL"}
+    assert detick_name("`SUBMOD_A", defines) == "submod_mod"
+    assert detick_name("`SUBMOD_UNDEFED", defines) == "SUBMOD_UNDEFED"
+    assert detick_name("submod_mod", defines) == "submod_mod"
+    assert detick_name("`CHAIN", defines) == "submod_decl_from_def"

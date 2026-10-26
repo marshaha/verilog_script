@@ -285,6 +285,33 @@ def _prev_word(text: str, i: int) -> tuple[str, int]:
     return text[j:end], j
 
 
+def _with_tick(text: str, word: str, start: int) -> str:
+    """Reattach a leading backtick when the word in TEXT at START was
+    written ticked (`` `NAME ``) — _prev_word strips it, but module
+    resolution needs to know: a ticked name is a `define reference."""
+    if word and start > 0 and text[start - 1] == "`":
+        return "`" + word
+    return word
+
+
+def detick_name(name: str, defines: "dict[str, str]") -> str:
+    """verilog-symbol-detick with wing-it for a module name: while NAME
+    starts with a backtick, strip it and expand through DEFINES; an
+    undefined macro keeps its bare name (`` `SUBMOD_UNDEFED `` still
+    names module SUBMOD_UNDEFED — autoinst_moddefine.v). A plain name
+    is returned unchanged (a module literally named like a macro is
+    not expanded). Chained defines resolve in a loop, capped."""
+    for _ in range(100):
+        if not name.startswith("`"):
+            return name
+        bare = name[1:]
+        val = defines.get(bare)
+        if val is None:
+            return bare
+        name = val.strip()
+    return name
+
+
 def _skip_group_back(
     text: str, i: int, masked: "str | None" = None
 ) -> tuple[int, int] | None:
@@ -886,7 +913,11 @@ def find_auto_markers(
 def _resolve_instance_at(
     text: str, open_idx: int, masked: "str | None" = None
 ) -> tuple[str, str]:
-    """(module, instance) for the pin list opened at OPEN_IDX."""
+    """(module, instance) for the pin list opened at OPEN_IDX.
+
+    The module keeps a leading backtick when written ticked
+    (`` `SUBMOD_A ``) — callers expand it with detick_name before
+    looking the module up; the instance name is returned bare."""
     inst, j = _prev_word(text, open_idx)
     if not inst:
         # Might be an array instance: u_or [31:0] (
@@ -906,6 +937,11 @@ def _resolve_instance_at(
                 inst, j = _prev_word(text, k)
     if not inst:
         raise ValueError("AUTOINST: cannot resolve instance name")
+    # a ticked instance name (`` `SUBNAME_B ``) leaves j at the word start
+    # with the backtick just before it; step past it so the module word
+    # (and any #(...) group) before it is reachable
+    if j > 0 and text[j - 1] == "`":
+        j -= 1
     m_full = masked if masked is not None else mask_comments(text)
     group = _skip_group_back(text, j, m_full)
     if group is not None:
@@ -916,6 +952,7 @@ def _resolve_instance_at(
         if j > 0 and text[j - 1] == "#":
             j -= 1
     module, mj = _prev_word(text, j)
+    module = _with_tick(text, module, mj)
     # Handle # <value> (e.g., buf #1 mybuf): module would be "1", skip it
     if module and module[0].isdigit():
         # Skip back over the number and #
@@ -924,7 +961,8 @@ def _resolve_instance_at(
             k -= 1
         if k > 0 and text[k - 1] == "#":
             k -= 1
-            module, _ = _prev_word(text, k)
+            module, mk = _prev_word(text, k)
+            module = _with_tick(text, module, mk)
     if not module:
         raise ValueError("AUTOINST: cannot resolve module name")
     return module, inst
@@ -984,7 +1022,8 @@ def _resolve_param_instance(text: str, open_idx: int, close_idx: int) -> tuple[s
         j -= 1
     if j > 0 and text[j - 1] == "#":
         j -= 1
-    module, _ = _prev_word(text, j)
+    module, mj = _prev_word(text, j)
+    module = _with_tick(text, module, mj)
     if not module:
         raise ValueError("AUTOINSTPARAM: cannot resolve module name")
     # the instance name follows the block; // comment lines may intervene
@@ -1005,6 +1044,7 @@ def marker_modules(
         markers.sort(key=lambda m: m.offset)
     stacks = _scan_parens_at(text, [m.offset for m in markers])
     text_masked = mask_comments(text)
+    defines = _buffer_defines(text)
     modules = []
     for marker in markers:
         stack = stacks[marker.offset]
@@ -1013,13 +1053,23 @@ def marker_modules(
         open_idx = stack[-1]
         try:
             if keyword == "AUTOINST" or text[marker.offset : marker.end] == ".*":
-                modules.append(_resolve_instance_at(text, open_idx, text_masked)[0])
+                modules.append(
+                    detick_name(
+                        _resolve_instance_at(text, open_idx, text_masked)[0],
+                        defines,
+                    )
+                )
             else:
                 modules.append(
-                    _resolve_param_instance(text, open_idx, _matching_paren(text, open_idx))[0]
+                    detick_name(
+                        _resolve_param_instance(
+                            text, open_idx, _matching_paren(text, open_idx)
+                        )[0],
+                        defines,
+                    )
                 )
         except ValueError:
-            continue  # instance arrays / `define'd names: not expandable, skip
+            continue  # instance arrays: not expandable, skip
     return modules
 
 
@@ -1462,6 +1512,9 @@ def auto_inst(
     template_required = _inst_template_required(lines)
     inst_vector = _inst_vector(lines)
     simplify = _local_simplify_expressions(lines)
+    # `define table for detick-expanding ticked module names (`SUBMOD_A);
+    # define lines are never rewritten by the loop, so one scan suffices
+    defines = _buffer_defines(text)
     # file-local Python files: load once, not per-instance
     py_base_env: dict = {}
     for py_file in _local_python_files(lines):
@@ -1496,8 +1549,9 @@ def auto_inst(
             continue
         try:
             module, inst = _resolve_instance_at(text, open_idx, m_full)
+            module = detick_name(module, defines)
         except ValueError:
-            continue  # instance array / `define'd name: skip, not expandable
+            continue  # instance array: skip, not expandable
         try:
             moddef = modules[module]
         except KeyError:
@@ -1690,6 +1744,8 @@ def auto_param(
     lines = text.split("\n")
     markers = _select_markers(lines, "AUTOINSTPARAM", which)
     stacks = _scan_parens_at(text, [m.offset for m in markers])
+    # `define table for detick-expanding ticked module names
+    defines = _buffer_defines(text)
     for marker in reversed(markers):
         stack = stacks[marker.offset]
         if not stack:
@@ -1705,8 +1761,9 @@ def auto_param(
         close_idx = _matching_paren(text, open_idx)
         try:
             module, inst = _resolve_param_instance(text, open_idx, close_idx)
+            module = detick_name(module, defines)
         except ValueError:
-            continue  # instance array / `define'd name: skip, not expandable
+            continue  # instance array: skip, not expandable
         try:
             params = module_params[module]
         except KeyError:
