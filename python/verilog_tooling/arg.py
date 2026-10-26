@@ -381,6 +381,15 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
             if not is_escaped:
                 name = _UNPACKED_TAIL.sub("", name)  # `val[3:0]` / `val [3:0]`
             name = name.strip(" ,\t")
+            # Idempotency: the entry text is copied into the regenerated
+            # header, but the body declarations it is copied from are
+            # only aligned later in the same pass (APF runs after arg),
+            # so an entry that keeps body padding lags one pass behind
+            # (autoarg_starparen.v: pass 1 `logic d,`, pass 2
+            # `logic                 d,`).  Collapse internal whitespace
+            # to single spaces here; the words themselves (including
+            # exempt type words like logic/signed) are untouched.
+            name = re.sub(r"[ \t]+", " ", name)
             if name:
                 # verilog-mode's declaration table is keyed by signal
                 # name, so a port declared twice — the `ifdef/`else

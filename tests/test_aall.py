@@ -1043,3 +1043,37 @@ def test_pin_scan_cache_shared_across_all_aall_pin_passes(monkeypatch):
     assert got == ref
     assert len(cache) == 1  # one span
     assert len(calls) == 1  # ...scanned once for all nine passes
+
+
+STAR_HEADER = """\
+module dut (/*autoarg*/);
+input clk;
+input rst_n;
+output logic d;
+
+always @(* )
+begin
+  d = 1'b0;
+end
+
+endmodule
+"""
+
+
+def test_aall_autoarg_header_spacing_is_idempotent(tmp_path):
+    """AUTOARG header entries must not inherit body-declaration padding:
+    APF aligns the body after arg runs, so a header entry copied from an
+    unaligned body (`logic d,`) came back padded on the next run
+    (`logic                 d,` — autoarg_starparen.v, lowercase marker).
+    The header entry is now single-spaced, so two aall runs agree byte
+    for byte.  The kept `logic` word itself is the frozen Vim behavior
+    (Emacs strips it to a bare name); only the spacing is fixed here."""
+    libdir = tmp_path / "lib"
+    libdir.mkdir()
+    top = tmp_path / "dut.v"
+    top.write_text(STAR_HEADER)
+    out1 = _run_aall(top, libdir, tmp_path)
+    assert re.search(r"(?m)^\s+logic d, $", out1)
+    top2 = tmp_path / "dut2.v"
+    top2.write_text(out1)
+    assert _run_aall(top2, libdir, tmp_path) == out1

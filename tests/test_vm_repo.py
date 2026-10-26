@@ -109,8 +109,10 @@ EXCLUDE_PREFIXES = (
 KNOWN_FAILURES = frozenset(
     # autoinst_ifdef_fredrickson_200503_top.v: intentional emacs divergence:
     # `ifdef guards preserved in expansions (emacs drops them)
-    # autoinst_name_bug245.v: APF/inst-vector parts fixed (94f2f64); remaining
-    # diff is AUTOINPUT escaped-name extraction + type-column alignment
+    # autoinst_name_bug245.v: pre-section pins fixed (#31); remaining diff
+    # is exactly two decided rules: the .v downgrade covering inputs too
+    # (user call 2026-10-26: keep — input logic clk stays demoted) and
+    # the hand-wire-not-promoted house rule (f4_dotnamed)
     # autoinstparam_local.v: crash fixed (897fb57 empty-INST ');'); remaining
     # diff is `( DATA_WIDTH )' paren padding vs our `(DATA_WIDTH)' house style
     # .v-downgrade expected diffs (9d4036e option b, deliberate: .v files
