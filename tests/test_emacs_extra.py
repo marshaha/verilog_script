@@ -680,14 +680,17 @@ def test_kill_auto_arg_escaped_semicolon_does_not_block():
 
 
 def test_elem_net_escaped_name_and_select():
-    """_ELEM_NET: brackets inside an escaped name are name characters;
-    a bracket group after whitespace is a bit-select."""
-    from verilog_tooling.wire import _ELEM_NET
+    """_elem_net: brackets inside an escaped name are name characters;
+    a bracket group after whitespace is a bit-select; nested brackets
+    scan balanced (autowire_red_bracket.v: x[(TEST[1])-1:0])."""
+    from verilog_tooling.wire import _elem_net
 
-    m = _ELEM_NET.match("\\o[10]")
-    assert m and m.group(1) == "\\o[10]" and m.group(2) == ""
-    m = _ELEM_NET.match("\\c-escaped-vec [2:0]")
-    assert m and m.group(1) == "\\c-escaped-vec" and "[2:0]" in m.group(2)
+    parsed = _elem_net("\\o[10]")
+    assert parsed and parsed[0] == "\\o[10]" and parsed[1] == []
+    parsed = _elem_net("\\c-escaped-vec [2:0]")
+    assert parsed and parsed[0] == "\\c-escaped-vec" and parsed[1] == ["2:0"]
+    parsed = _elem_net("x[(TEST[1])-1:0]")
+    assert parsed and parsed[0] == "x" and parsed[1] == ["(TEST[1])-1:0"]
 
 
 def test_emit_signal_escaped_name_space_before_terminator():
@@ -842,3 +845,71 @@ def test_template_nohookup_survives_eai_and_blocks_aio():
     assert any("Templated AUTONOHOOKUP" in l for l in expanded)
     out = inout.auto_input(expanded, {"a2": sub}, True)
     assert not any(re.match(r"\s*input\s+i1\b", l) for l in out)
+
+
+def test_autosense_define_kept_without_read_defines():
+    """A buffer `define is NOT in verilog-mode's table unless the file
+    requests verilog-read-defines, so it stays in the AUTOSENSE list
+    (wasson.v: `FOO is defined yet listed). With defines-constant on,
+    defines are excluded."""
+    from verilog_tooling import sense
+
+    lines = [
+        "`define FOO 1'b1",
+        "module foo(__a,b);",
+        "   input __a;",
+        "   output b;",
+        "   always @(/*AUTOSENSE*/) begin",
+        "      b = __a ^ `FOO ;",
+        "   end",
+        "endmodule",
+    ]
+    out = sense.auto_sense(lines)
+    assert any("__a or `FOO" in l for l in out)
+    lines_const = lines + [
+        "// Local Variables:",
+        "// verilog-auto-sense-defines-constant: t",
+        "// End:",
+    ]
+    out_const = sense.auto_sense(lines_const)
+    assert not any("`FOO" in l for l in out_const if "AUTOSENSE" in l)
+
+
+def test_read_defines_vh_vars_from_params():
+    """eval:(verilog-read-defines) populates vh-<param> from parameter
+    AND localparam values, skipping a UDT type word (read_define_param.v)."""
+    from verilog_tooling.emacs import read_local_eval_defuns
+
+    text = (
+        "module x;\n"
+        "   parameter Pp = 1;\n"
+        "   localparam Lp = 2;\n"
+        "   parameter mytype_t Pt = 3;\n"
+        "endmodule\n"
+        "// Local Variables:\n"
+        "// eval:(verilog-read-defines)\n"
+        "// End:\n"
+    )
+    env = read_local_eval_defuns(text)
+    assert env["vh-Pp"] == "1"
+    assert env["vh-Lp"] == "2"
+    assert env["vh-Pt"] == "3"
+
+
+def test_autoinstparam_unpacked_dims_note():
+    """A parameter's unpacked dims ride as a /*.[...]*/ note on the
+    AUTOINSTPARAM connection (autoinst_unsigned_bug302.v)."""
+    from verilog_tooling.emacs import _auto_param_one, parse_module_params
+
+    params = parse_module_params(
+        ["module m;", "parameter bit No3 [No1:0][No2-1:0] = 0;", "endmodule"]
+    )
+    assert params and params[0].unpacked == ("No1:0", "No2-1:0")
+    text = "module top; m #(/*AUTOINSTPARAM*/); endmodule"
+    out = _auto_param_one(
+        text, __import__("verilog_tooling.emacs", fromlist=["find_auto_markers"]).find_auto_markers(
+            text.split("\n"), "AUTOINSTPARAM"
+        )[0],
+        text.index("("), text.index(")"), params, "m", "u", None, False, 80,
+    )
+    assert "No3/*.[No1:0][No2-1:0]*/" in out

@@ -552,6 +552,20 @@ def _scan_module_decls(masked_span: str, orig_span: str) -> _ModuleInfo:
     return info
 
 
+def _read_defines_requested(lines: Sequence[str]) -> bool:
+    """True when the file asks verilog-mode to read defines: an
+    ``eval:(verilog-read-defines ...)`` Local Variables line, or a
+    non-nil ``verilog-auto-read-includes``.  Without one, verilog-mode
+    never runs verilog-read-defines, so its `define table is EMPTY at
+    AUTO time — a buffer `define like wasson.v's FOO is then NOT
+    deticked and stays in the AUTOSENSE list."""
+    text = "\n".join(lines)
+    if re.search(r"eval:\s*\(\s*verilog-read-defines\b", text):
+        return True
+    m = re.search(r"verilog-auto-read-includes\s*:\s*(\w+)", text)
+    return bool(m and m.group(1).lower() != "nil")
+
+
 def _collect_defines(lines: Sequence[str]) -> dict[str, str]:
     """`` `define NAME value`` -> value, from the buffer and `` `include``\\ d
     files (analysis only).  Mirrors ``verilog-read-defines``: defines start
@@ -1052,11 +1066,14 @@ def _expand_sense_at(
     )
     sc = _scan_always(out, ctx.defines, ctx.defines_constant, close_idx + 1)
 
-    # verilog-auto-sense-sigs
-    const_names = (
-        info.consts | info.auto_consts | info.params | set(ctx.defines)
-        | ctx.inc_consts
-    )
+    # verilog-auto-sense-sigs: `define names join the exclusion set
+    # ONLY when verilog-auto-sense-defines-constant is non-nil (its doc:
+    # "When true, the defines will not be included"); by default a
+    # `define'd name stays in the list (wasson.v: `FOO is defined yet
+    # listed).
+    const_names = info.consts | info.auto_consts | info.params | ctx.inc_consts
+    if ctx.defines_constant:
+        const_names |= set(ctx.defines)
     exclusions = [sc.sigs_temp, presense]
     if not ctx.include_inputs:
         exclusions.insert(0, sc.sigs_out_d + sc.sigs_out_i)
@@ -1101,7 +1118,7 @@ def auto_sense(lines: Sequence[str], *, fill_column: int = 80) -> list[str]:
     """
     lines = list(lines)
     ctx = _SenseCtx(
-        defines=_collect_defines(lines),
+        defines=_collect_defines(lines) if _read_defines_requested(lines) else {},
         defines_constant=_local_bool(
             lines, "verilog-auto-sense-defines-constant", False
         ),
@@ -1205,7 +1222,7 @@ def auto_reset(lines: Sequence[str]) -> list[str]:
     """
     lines = list(lines)
     ctx = _ResetCtx(
-        defines=_collect_defines(lines),
+        defines=_collect_defines(lines) if _read_defines_requested(lines) else {},
         defines_constant=_local_bool(
             lines, "verilog-auto-sense-defines-constant", False
         ),

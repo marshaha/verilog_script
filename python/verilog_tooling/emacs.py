@@ -98,11 +98,15 @@ class Param:
     """One module parameter; ``value`` is the raw default-value text.
     ``packed`` holds the declared packed ranges (``logic [5:0] BLUP``),
     which AUTOINSTPARAM renders as a subscript (``.BLUP (BLUP[5:0])``).
+    ``unpacked`` holds dimensions after the name
+    (``parameter bit No3 [No1:0][No2-1:0]``), rendered as a
+    ``/*.[...][...]*/`` note (autoinst_unsigned_bug302.v).
     ``is_type`` marks ``parameter type NAME``."""
 
     name: str
     value: str | None = None
     packed: tuple = ()
+    unpacked: tuple = ()
     is_type: bool = False
 
 
@@ -667,6 +671,59 @@ def _buffer_defines(text: str) -> dict[str, str]:
     return defines
 
 
+def _read_defines_vh_vars(text: str) -> dict[str, str]:
+    """``vh-<name>`` -> value for simple parameter/localparam assignments
+    in TEXT, for ``eval:(verilog-read-defines)``: verilog-mode stores
+    every parameter (and localparam) value in a ``vh-`` variable, which
+    ``@\"...\"`` templates and AUTOINSERTLISP ``insert`` forms then read
+    (read_define_param.v: vh-Pp=1, vh-Lp=2, vh-Pt=3).  A UDT type word
+    ahead of the name (``mytype_t Pt``) is skipped like any other type
+    word; packed/unpacked dims are skipped; valueless names get no
+    entry.  Header ``#(...)`` lists are scanned as well as body decls."""
+    from .comments import mask_comments
+
+    masked = mask_comments(text)
+    values: dict[str, str] = {}
+
+    def _entries_from(chunk: str) -> None:
+        for entry in _split_top_commas(chunk):
+            s = entry.strip()
+            s = re.sub(r"^(parameter|localparam)\b", "", s).strip()
+            if not s:
+                continue
+            # the assignment '=' at bracket/paren depth 0
+            depth = 0
+            eq = -1
+            for k, ch in enumerate(s):
+                if ch in "[({":
+                    depth += 1
+                elif ch in "])}":
+                    depth -= 1
+                elif ch == "=" and depth == 0:
+                    eq = k
+                    break
+            if eq < 0:
+                continue
+            lhs, rhs = s[:eq], s[eq + 1 :].strip()
+            # strip bracket groups; the name is the last identifier left
+            lhs = re.sub(r"\[[^\]]*\]", " ", lhs)
+            names = re.findall(r"[a-zA-Z_]\w*", lhs)
+            if not names or not rhs:
+                continue
+            values[names[-1]] = rhs
+
+    for bm in re.finditer(r"^\s*(?:parameter|localparam)\b([^;]*);", masked, re.M):
+        _entries_from(bm.group(1))
+    m = re.search(r"\bmodule\s+\w+\s*(?:import\s+[\w:]+\s*::\s*\*\s*;\s*)?#\s*\(", masked)
+    if m:
+        try:
+            inner, _end = _balanced(masked, masked.index("(", m.start()))
+        except ValueError:
+            inner = ""
+        _entries_from(inner)
+    return {f"vh-{name}": val for name, val in values.items()}
+
+
 def read_local_eval_defuns(text: str) -> dict:
     """User elisp definitions from the file's Local Variables ``eval:``
     block(s) — Emacs evaluates them when the file is visited, so they
@@ -740,6 +797,11 @@ def read_local_eval_defuns(text: str) -> dict:
                 # a following defun (not a variable line) continues;
                 # a variable line ends this eval: entry
                 continue
+    # eval:(verilog-read-defines ...) populates vh-<param> variables
+    # from the file's parameter/localparam values (read_define_param.v);
+    # a filename argument (another file's defines) is not supported.
+    if re.search(r"eval\s*:\s*\(\s*verilog-read-defines\b", section):
+        env.update(_read_defines_vh_vars(text))
     return env
 
 
@@ -941,18 +1003,23 @@ def _param_from_entry(entry: str) -> Param | None:
         return None
     name = m.group(1)
     rest = entry[m.end():].lstrip()
-    # Skip unpacked dimensions after the name: No3 [No1:0][No2-1:0] = ...
+    # Unpacked dimensions after the name: No3 [No1:0][No2-1:0] = ...
+    unpacked: list[str] = []
     while rest.startswith("["):
         j = rest.find("]")
         if j < 0:
             return None
+        unpacked.append(re.sub(r"\s+", "", rest[1:j]))
         rest = rest[j + 1:].lstrip()
     # Now rest should be [= value] [,;] or empty
     vm = re.match(r"(?:=\s*(.*?))?\s*[;,]?\s*$", rest, re.S)
     if not vm:
         return None
     value = vm.group(1)
-    return Param(name, value.strip() if value else None, tuple(packed), is_type)
+    return Param(
+        name, value.strip() if value else None, tuple(packed),
+        tuple(unpacked), is_type,
+    )
 
 
 def parse_module_params(lines: Sequence[str]) -> tuple[Param, ...]:
@@ -2114,8 +2181,11 @@ def _auto_param_one(
             # name the parent does not define — the user fills it in or
             # templates it); entries manually written before the marker
             # are reset, not preserved.  A declared packed range rides
-            # as a subscript (autoinstparam_int.v: BLUP[5:0]).
+            # as a subscript (autoinstparam_int.v: BLUP[5:0]); unpacked
+            # dimensions ride as a /*.[...]*/ note (unsigned_bug302).
             conn = param.name + "".join(f"[{d}]" for d in param.packed)
+            if param.unpacked:
+                conn += "/*." + "".join(f"[{d}]" for d in param.unpacked) + "*/"
         entries.append((param.name, conn,
                         "// Templated" if templated else None, ()))
     if not entries:

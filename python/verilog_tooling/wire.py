@@ -274,11 +274,41 @@ _EXPR_LEAD_OPS = re.compile(r"^\s*[~!&|^+\-]+")
 _EXPR_CAST = re.compile(r"^\s*[a-zA-Z_]\w*\s*'")
 _SIZED_LITERAL = re.compile(r"^\s*\d+'")
 _REPLICATION = re.compile(r"^\s*\d+\s*(\{.*\})\s*$")
-_ELEM_NET = re.compile(r"^(\\[^ \t]+|[a-zA-Z_]\w*)\s*((?:\[[^\]]*\]\s*)*)$")
-# The escaped alternative is first: an escaped identifier runs to
-# whitespace, so brackets inside it (\\o[10]) are name characters, not
-# a bit-select — only a bracket group AFTER whitespace is a select
-# (\\c-escaped-vec [2:0] -> name + width 2).
+def _elem_net(expr: str) -> "tuple[str, list[str]] | None":
+    """(name, [bracket-group inners]) for a plain element net
+    ``name`` / ``name[sel]`` / ``name[sel][sel]`` — or None.  Bracket
+    groups NEST (autowire_red_bracket.v: ``x[(TEST[1])-1:0]``), so the
+    suffix is scanned with depth counting, not ``[^\\]]*``.  The escaped
+    alternative is first: an escaped identifier runs to whitespace, so
+    brackets inside it (\\o[10]) are name characters, not a bit-select
+    — only a bracket group AFTER whitespace is a select
+    (\\c-escaped-vec [2:0] -> name + width 2)."""
+    m = re.match(r"(\\[^ \t]+|[a-zA-Z_]\w*)", expr)
+    if not m:
+        return None
+    name = m.group(1)
+    i = m.end()
+    n = len(expr)
+    groups: list[str] = []
+    while True:
+        while i < n and expr[i] in " \t":
+            i += 1
+        if i >= n:
+            return name, groups
+        if expr[i] != "[":
+            return None
+        depth = 1
+        j = i + 1
+        while j < n and depth:
+            if expr[j] == "[":
+                depth += 1
+            elif expr[j] == "]":
+                depth -= 1
+            j += 1
+        if depth:
+            return None
+        groups.append(expr[i + 1 : j - 1])
+        i = j
 
 
 def _expr_nets(expr: str) -> "list[tuple[str, str]]":
@@ -304,14 +334,14 @@ def _expr_nets(expr: str) -> "list[tuple[str, str]]":
     expr = _EXPR_CAST.sub("", expr)
     if expr.startswith("(") and expr.endswith(")"):  # cast around parens
         return _expr_nets(expr[1:-1])
-    m = _ELEM_NET.match(expr)
-    if not m:
+    parsed = _elem_net(expr)
+    if not parsed:
         return out
-    ranges = re.findall(r"\[[^\]]*\]", m.group(2))
+    name, groups = parsed
     width = "c0"
-    if len(ranges) == 1 and ":" in ranges[0]:
-        width = ranges[0][1:-1].split(":")[0].strip()
-    out.append((m.group(1), width))
+    if len(groups) == 1 and ":" in groups[0]:
+        width = groups[0].split(":")[0].strip()
+    out.append((name, width))
     return out
 
 
@@ -1031,7 +1061,7 @@ def _process_named_instance(
         unwrapped = stripped
         while unwrapped.startswith("("):
             inner = _unwrap_parens(unwrapped)
-            if inner is None or not _ELEM_NET.match(inner):
+            if inner is None or not _elem_net(inner):
                 break
             unwrapped = inner
         if unwrapped != stripped:
@@ -1090,7 +1120,7 @@ def _process_named_instance(
             check_expr = cast_m.group(1).strip() if cast_m else stripped
         else:
             check_expr = stripped
-        if simple_only and not _ELEM_NET.match(check_expr):
+        if simple_only and not _elem_net(check_expr):
             continue
         net = conn_net_name(check_expr)
         if net is None:
@@ -1223,18 +1253,18 @@ def _process_named_instance(
             if _dot not in [d.strip() for d in udims]:
                 uidx = _dot
         elif port.unpacked:
-            em = _ELEM_NET.match(stripped)
-            if em:
-                ranges = re.findall(r"\[([^\]]+)\]", em.group(2))
+            parsed = _elem_net(stripped)
+            if parsed:
+                ranges = parsed[1]
                 # a select equal to the PACKED range is a packed
                 # bit-select of the whole array, not an element index
                 packed_txt = re.sub(r"\s+", "", port.packed[-1] if port.packed else "")
                 if ranges and re.sub(r"\s+", "", ranges[-1]) != packed_txt:
                     uidx = ranges[-1].strip()
         else:
-            em = _ELEM_NET.match(stripped)
-            if em:
-                ranges = re.findall(r"\[([^\]]+)\]", em.group(2))
+            parsed = _elem_net(stripped)
+            if parsed:
+                ranges = parsed[1]
                 npacked = len(port.packed)
                 if npacked and len(ranges) == npacked + 1:
                     # name[U][packed...]: the leading select is an
