@@ -1478,6 +1478,7 @@ class VerilogBuffer:
     def __init__(self, lines: Sequence[str]) -> None:
         self._lines = list(lines)
         self._stripped: list[str] | None = None
+        self._masked_text: str | None = None
 
     def _stripped_lines(self) -> list[str]:
         """Lines with ``//`` comments removed, computed once (the instance
@@ -1485,6 +1486,20 @@ class VerilogBuffer:
         if self._stripped is None:
             self._stripped = [_strip_lc(line) for line in self._lines]
         return self._stripped
+
+    def _masked_stripped_text(self) -> str:
+        """mask_comments over the joined stripped lines, computed once.
+
+        resolve_instance feeds _skip_group_back a growing buffer PREFIX
+        per marker; the pinned prefix identity (test_mask_perf_invariants:
+        mask(t)[:c+1] == mask(t[:c+1]) when t[c]==')') makes a slice of
+        this full-text mask valid for every such prefix, so the per-marker
+        work drops from O(position) re-masking to one mask per buffer."""
+        if self._masked_text is None:
+            from .comments import mask_comments
+
+            self._masked_text = mask_comments("\n".join(self._stripped_lines()))
+        return self._masked_text
 
     @property
     def lines(self) -> list[str]:
@@ -1539,7 +1554,7 @@ class VerilogBuffer:
         if not inst:
             raise ValueError(f"cannot resolve instance name, line: {marker_idx + 1}")
         try:
-            group = emacs._skip_group_back(head, k)
+            group = emacs._skip_group_back(head, k, self._masked_stripped_text())
         except ValueError:
             raise ValueError(
                 f"() pair not-match in autoinst, line: {marker_idx + 1}"

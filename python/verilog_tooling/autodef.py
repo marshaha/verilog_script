@@ -3988,6 +3988,13 @@ def _auto_def_t_single(
     from . import emacs as _emacs
 
     _text = "\n".join(lines)
+    # one mask for the whole pass: _text is built once and every offset
+    # below (_stacks/_line_off/pin_off) refers to it; read_inst_param_values
+    # re-masks per call without it (O(instances × buffer) — perf)
+    _masked = _emacs.mask_comments(_text)
+    # shared buffer for resolve_instance below: its caches (stripped lines,
+    # full-text mask) turn the per-marker prefix scans into one pass
+    _vb = VerilogBuffer(lines)
     _markers = _emacs.find_auto_markers(lines, "autoinst")
     _stacks = _emacs._scan_parens_at(_text, [m.offset for m in _markers])
     param_by_line: dict[int, dict[str, str]] = {}
@@ -3995,7 +4002,7 @@ def _auto_def_t_single(
         _st = _stacks[_mk.offset]
         if _st:
             param_by_line[_text.count("\n", 0, _mk.offset)] = _emacs.read_inst_param_values(
-                _text, _st[-1]
+                _text, _st[-1], _masked
             )
     # pin-list '(' offset per /*autoinst*/ marker line (whole-instance scan:
     # hand-written connections BEFORE the marker drive nets too)
@@ -4188,7 +4195,7 @@ def _auto_def_t_single(
         elif _AUTOINST_MARK.search(line):
             module = ""
             try:
-                module, _ = VerilogBuffer(lines).resolve_instance(i)
+                module, _ = _vb.resolve_instance(i)
             except ValueError:
                 m = re.match(r"\s*(\w+)", line)
                 module = m.group(1) if m else ""
@@ -4239,7 +4246,7 @@ def _auto_def_t_single(
                         "(", lines[i].index(_inst) + len(_inst)
                     )
                     pvals = _emacs.effective_param_values(
-                        moddef, _emacs.read_inst_param_values(_text, pin_off)
+                        moddef, _emacs.read_inst_param_values(_text, pin_off, _masked)
                     )
                 except ValueError:
                     pvals = _emacs.param_default_values(moddef)
@@ -4253,7 +4260,7 @@ def _auto_def_t_single(
             pin_off = _line_off[hl] + lines[hl].rfind("(")
             pvals = _emacs.effective_param_values(
                 moddef,
-                _emacs.read_inst_param_values(_text, pin_off) if pin_off >= 0 else {},
+                _emacs.read_inst_param_values(_text, pin_off, _masked) if pin_off >= 0 else {},
             )
             i = _scan_inst_body(lines, start, inst_io, signals, loop_bounds, sym_hi, pvals)
             continue
