@@ -1021,7 +1021,12 @@ def _run_shell(cmd: str) -> list[str]:
     return proc.stdout.splitlines()
 
 
-def _auto_insert(lines: Sequence[str], mark_re: "re.Pattern[str]", kind: str) -> list[str]:
+def _auto_insert(
+    lines: Sequence[str],
+    mark_re: "re.Pattern[str]",
+    kind: str,
+    env: dict | None = None,
+) -> list[str]:
     out: list[str] = []
     for line in lines:
         out.append(line)
@@ -1037,10 +1042,31 @@ def _auto_insert(lines: Sequence[str], mark_re: "re.Pattern[str]", kind: str) ->
         elif content.startswith("!"):
             inserted = _run_shell(content[1:].strip())
         else:
-            _warn(
-                f"{kind}: only the '!shell-cmd' form is supported "
-                f"(got: {content.strip()[:40]}); no expansion"
-            )
+            # Elisp form: evaluate for its `insert` side effects (the
+            # marker content is the inside of the parens, so re-wrap).
+            # The sink lives on the shared env dict so user defuns
+            # (whose bodies close over that same env) see it.
+            from .template import _elisp_eval, _elisp_parse, _elisp_tokenize
+
+            scope = env if env is not None else {}
+            sink: list[str] = []
+            scope["__insert__"] = sink
+            scope["__allow_shell__"] = True
+            try:
+                _elisp_eval(
+                    _elisp_parse(_elisp_tokenize(f"({content})")), scope
+                )
+            except Exception as exc:  # noqa: BLE001 - a bad form must not abort the file
+                # Side effects before the failure persist in Emacs (the
+                # buffer keeps what insert-file already inserted), so a
+                # non-empty sink still expands; only a fully failed form
+                # yields no region.
+                if not sink:
+                    _warn(f"{kind}: elisp evaluation failed ({exc}); no expansion")
+            text = "".join(sink)
+            inserted = text.split("\n")
+            if inserted and inserted[-1] == "":
+                inserted.pop()
         if inserted:
             # emacs inserts at point (column 0); the command owns indentation
             out.append(pad + _INSERT_HEADER)
@@ -1050,21 +1076,36 @@ def _auto_insert(lines: Sequence[str], mark_re: "re.Pattern[str]", kind: str) ->
     return out
 
 
-def auto_insert_lisp(lines: Sequence[str]) -> list[str]:
-    """Expand /*AUTOINSERTLISP(!cmd)*/ markers: run CMD, insert its stdout.
+def auto_insert_lisp(lines: Sequence[str], base_dir: str | None = None) -> list[str]:
+    """Expand /*AUTOINSERTLISP(...)*/ markers: ``!cmd`` runs CMD and
+    inserts its stdout; an elisp form is evaluated for its ``insert``
+    side effects, with user defuns from the file's Local Variables
+    ``eval:`` block in scope (Emacs evaluates those at visit time).
+    ``insert-file`` resolves against BASE_DIR (the buffer file's
+    directory) first, then the cwd.
 
     The lisp is evaluated *before* other AUTOs in emacs; ordering within a
     pipeline is the caller's job (cf. ``verilog-auto``).
     """
     lines = kill_auto_insert_lisp(lines)
-    return _auto_insert(lines, _INSERTLISP_MARK, "AUTOINSERTLISP")
+    from .emacs import read_local_eval_defuns
+
+    env = read_local_eval_defuns("\n".join(lines))
+    if base_dir:
+        env["__base_dir__"] = base_dir
+    return _auto_insert(lines, _INSERTLISP_MARK, "AUTOINSERTLISP", env)
 
 
-def auto_insert_last(lines: Sequence[str]) -> list[str]:
-    """Expand /*AUTOINSERTLAST(!cmd)*/ markers: identical to
+def auto_insert_last(lines: Sequence[str], base_dir: str | None = None) -> list[str]:
+    """Expand /*AUTOINSERTLAST(...)*/ markers: identical to
     :func:`auto_insert_lisp`, but runs *after* other AUTOs in emacs."""
     lines = kill_auto_insert_last(lines)
-    return _auto_insert(lines, _INSERTLAST_MARK, "AUTOINSERTLAST")
+    from .emacs import read_local_eval_defuns
+
+    env = read_local_eval_defuns("\n".join(lines))
+    if base_dir:
+        env["__base_dir__"] = base_dir
+    return _auto_insert(lines, _INSERTLAST_MARK, "AUTOINSERTLAST", env)
 
 
 # ---------------------------------------------------------------------------

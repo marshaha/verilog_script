@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import subprocess
 from typing import Callable
 
 _LITERAL_PORT = re.compile(r"[A-Za-z0-9`_$]+")
@@ -328,7 +329,13 @@ def _elisp_tokenize(code: str) -> list:
             buf: list[str] = []
             while j < n:
                 if code[j] == "\\" and j + 1 < n:
-                    buf.append(code[j + 1])
+                    # Elisp string escapes: \n is a newline (not the
+                    # letter n — the AUTOINSERTLISP hello defun ends its
+                    # insert text with \n), \" and \\ are themselves.
+                    esc = code[j + 1]
+                    buf.append(
+                        {"n": "\n", "t": "\t", "r": "\r"}.get(esc, esc)
+                    )
                     j += 2
                 elif code[j] == '"':
                     break
@@ -461,6 +468,75 @@ def _elisp_eval(form, scope: dict):
         for a in args:
             r = _elisp_eval(a, scope)
         return r
+    if name == "insert":
+        # AUTOINSERTLISP side effect: the caller reads scope["__insert__"]
+        # (a list) as the region content. Outside that context there is
+        # no buffer to insert into, so this is an error like any other
+        # unsupported form.
+        sink = scope.get("__insert__") if isinstance(scope, dict) else None
+        if not isinstance(sink, list):
+            raise ValueError("insert outside AUTOINSERTLISP has no sink")
+        for a in args:
+            sink.append(_elisp_str(_elisp_eval(a, scope)))
+        return ""
+    if name == "insert-file":
+        # Emacs inserts the file's contents at point (the AUTOINSERTLISP
+        # region content here) and returns nil. The path resolves
+        # against the buffer file's directory first, then the cwd.
+        fname = _elisp_str(_elisp_eval(args[0], scope)) if args else ""
+        sink = scope.get("__insert__") if isinstance(scope, dict) else None
+        if not isinstance(sink, list):
+            raise ValueError("insert-file outside AUTOINSERTLISP has no sink")
+        candidates = []
+        if fname:
+            if fname.startswith("/"):
+                candidates.append(fname)
+            else:
+                base = scope.get("__base_dir__") if isinstance(scope, dict) else None
+                if base:
+                    candidates.append(base.rstrip("/") + "/" + fname)
+                candidates.append(fname)
+        for cand in candidates:
+            try:
+                with open(cand, "r", errors="replace") as fh:
+                    sink.append(fh.read())
+                break
+            except OSError:
+                continue
+        else:
+            raise ValueError(f"insert-file: cannot read {fname!r}")
+        return ""
+    if name == "verilog-library-filenames":
+        # Search-path helper (filename &optional current check-ext).
+        # AUTOINSERTLISP discards the value; only side effects matter,
+        # so returning the resolved path (or nothing) is sufficient.
+        fname = _elisp_str(_elisp_eval(args[0], scope)) if args else ""
+        if fname:
+            base = scope.get("__base_dir__") if isinstance(scope, dict) else None
+            if base:
+                cand = base.rstrip("/") + "/" + fname
+                try:
+                    with open(cand, "r"):
+                        pass
+                    return cand
+                except OSError:
+                    pass
+            return fname
+        return ""
+    if name == "shell-command-to-string":
+        # Gated: only the AUTOINSERTLISP path sets __allow_shell__ (the
+        # same trust as the '!shell-cmd' marker form); template @"..."
+        # evaluation must not shell out.
+        if not (isinstance(scope, dict) and scope.get("__allow_shell__")):
+            raise ValueError("shell-command-to-string is not allowed here")
+        cmd = _elisp_str(_elisp_eval(args[0], scope)) if args else ""
+        try:
+            proc = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=30
+            )
+            return proc.stdout
+        except Exception:  # noqa: BLE001 - a failed shell command inserts nothing
+            return ""
     if name == "setq":
         r = ""
         for k in range(0, len(args) - 1, 2):

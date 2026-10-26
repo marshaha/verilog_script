@@ -554,3 +554,67 @@ def test_read_local_eval_defuns_accepts_comment_end_line():
         "// End:\n"
     )
     assert "uc" in read_local_eval_defuns(text)
+
+
+# ---------------------------------------------------------------------------
+# AUTOINSERTLISP elisp form (ExampInsertLisp / autolisp_truex / include)
+# ---------------------------------------------------------------------------
+
+
+def test_auto_insert_lisp_defun_insert_concat():
+    """The hello defun: Local Variables eval defun + insert + concat,
+    with \\n as a real newline (not the letter n)."""
+    from verilog_tooling.misc import auto_insert_lisp
+
+    lines = [
+        "module ExampInsertLisp;",
+        '   /*AUTOINSERTLISP(my-verilog-insert-hello "world")*/',
+        "endmodule",
+        "/*",
+        " Local Variables:",
+        " eval:",
+        '   (defun my-verilog-insert-hello (who)',
+        '     (insert (concat "initial $write(\\"hello " who "\\");\\n")))',
+        " End:",
+        "*/",
+    ]
+    out = auto_insert_lisp(lines)
+    body = "\n".join(out)
+    assert 'initial $write("hello world");' in body
+    assert '");n' not in body
+    assert "// Beginning of automatic insert lisp" in body
+
+
+def test_auto_insert_lisp_empty_and_shell_forms():
+    """(+ 1) inserts nothing (no region); the shell-command form
+    inserts the command output."""
+    from verilog_tooling.misc import auto_insert_lisp
+
+    lines = [
+        "module m;",
+        "   /*AUTOINSERTLISP(+ 1)*/",
+        '   /*AUTOINSERTLISP(insert (shell-command-to-string "echo //hello"))*/',
+        "endmodule",
+    ]
+    out = auto_insert_lisp(lines)
+    body = "\n".join(out)
+    assert body.count("// Beginning of automatic insert lisp") == 1
+    assert "//hello" in body
+
+
+def test_auto_insert_lisp_insert_file(tmp_path):
+    """(insert-file ...) resolves against base_dir (the buffer file's
+    directory) and inserts the file's contents."""
+    from verilog_tooling.misc import auto_insert_lisp
+
+    inc = tmp_path / "decls.vh"
+    inc.write_text("  input bar;\n  output foo;\n")
+    lines = [
+        "module m;",
+        '   /*AUTOINSERTLISP(verilog-library-filenames (insert-file "decls.vh"))*/',
+        "endmodule",
+    ]
+    out = auto_insert_lisp(lines, base_dir=str(tmp_path))
+    body = "\n".join(out)
+    assert "input bar;" in body
+    assert "output foo;" in body

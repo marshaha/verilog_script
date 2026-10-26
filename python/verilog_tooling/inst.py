@@ -2875,7 +2875,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     ifaces.update(xfer.buffer_interfaces(lines, td_re))
 
     # 1. AUTOINSERTLISP (emacs runs it first)
-    lines = misc.auto_insert_lisp(lines)
+    lines = misc.auto_insert_lisp(lines, base_dir=str(Path(args.in_file).parent))
     _log("aall: AUTOINSERTLISP done")
 
     # 2. EAP (AUTOINSTPARAM)
@@ -2999,7 +2999,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     # port-list names.
     lines = arg.auto_arg(lines, modules_w)
     _log("aall: autoarg done")
-    lines = misc.auto_insert_last(lines)
+    lines = misc.auto_insert_last(lines, base_dir=str(Path(args.in_file).parent))
     _log("aall: AUTOINSERTLAST done")
     if args.star_expand and not args.star_save:
         # verilog-auto-star-save is nil: the .* expansions fed the passes

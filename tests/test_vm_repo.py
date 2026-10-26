@@ -123,8 +123,6 @@ KNOWN_FAILURES = frozenset(
 
 SKIP_TABLE = {
     "automodport_if.v": "support module for automodport tests (no implemented AUTO markers)",
-    "autolisp_truex.v": "AUTOINSERTLISP user-defined elisp fns not evaluable",
-    "autolisp_include.v": "AUTOINSERTLISP + verilog-auto-read-includes not implemented",
     "autolisp_include_inc.vh": "include fragment with eval Local Variables only",
 }
 
@@ -268,7 +266,7 @@ def run_pipeline(text: str, ref_file: str) -> list[str]:
     ifaces.update(xfer.buffer_interfaces(lines, td_re))
 
     # 1. AUTOINSERTLISP
-    lines = misc.auto_insert_lisp(lines)
+    lines = misc.auto_insert_lisp(lines, base_dir=str(Path(ref_file).parent))
 
     # 1. EAP (AUTOINSTPARAM)
     which, resolvable, _ = _eai_like_step(lines, "AUTOINSTPARAM", resolved)
