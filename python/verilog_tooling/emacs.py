@@ -192,37 +192,44 @@ def _scan_parens(text: str, upto: int) -> list[int]:
     return stack
 
 
+_MP_TOKEN = re.compile(r'\(|\)|"|//|/\*')
+
+
 def _matching_paren(text: str, open_idx: int) -> int:
     """Offset of the ')' matching the '(' at OPEN_IDX."""
+    # token-driven scan (regex search per token) — the char-by-char loop
+    # cost ~2x the whole scan in profiles (per-instance callers × buffers)
     depth = 0
-    i = open_idx
-    while i < len(text):
-        two = text[i : i + 2]
-        if two == "//":
-            j = text.find("\n", i)
-            i = len(text) if j < 0 else j
-            continue
-        if two == "/*":
-            j = text.find("*/", i + 2)
-            if j < 0:
-                raise ValueError("unterminated /* */ comment")
-            i = j + 2
-            continue
-        c = text[i]
-        if c == '"':
-            j = i + 1
-            while j < len(text) and (text[j] != '"' or text[j - 1] == "\\"):
-                j += 1
-            i = j + 1
-            continue
+    pos = open_idx
+    n = len(text)
+    search = _MP_TOKEN.search
+    while True:
+        m = search(text, pos)
+        if m is None:
+            raise ValueError("unbalanced parentheses in instance")
+        c = m.group(0)
+        i = m.start()
         if c == "(":
             depth += 1
+            pos = i + 1
         elif c == ")":
             depth -= 1
             if depth == 0:
                 return i
-        i += 1
-    raise ValueError("unbalanced parentheses in instance")
+            pos = i + 1
+        elif c == '"':
+            j = i + 1
+            while j < n and (text[j] != '"' or text[j - 1] == "\\"):
+                j += 1
+            pos = j + 1
+        elif c == "//":
+            j = text.find("\n", i)
+            pos = n if j < 0 else j
+        else:  # /*
+            j = text.find("*/", i + 2)
+            if j < 0:
+                raise ValueError("unterminated /* */ comment")
+            pos = j + 2
 
 
 def _scan_parens_at(text: str, offsets: Iterable[int]) -> dict[int, list[int]]:

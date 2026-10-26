@@ -1885,6 +1885,9 @@ def _eval_bound(expr: str, consts: Mapping[str, int], symbolic: bool = False):
     expr = re.sub(r"`(\w+)", r"\1", expr)  # `define -> name
     for name, val in consts.items():
         expr = re.sub(r"\b" + re.escape(name) + r"\b", str(val), expr)
+    if re.fullmatch(r"-?\d+", expr):
+        # plain literal — the common case; skip the eval machinery
+        return int(expr)
     if re.fullmatch(r"-?[\d\s+*/%()+-]+", expr):
         try:
             return int(eval(expr, {"__builtins__": {}}, {}))  # noqa: S307

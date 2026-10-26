@@ -682,7 +682,7 @@ _SECTION_RE = re.compile(r"//\s*(Interfaced|Interfaces|Outputs|Inouts|Inputs)\b"
 _SECTION_RANK = {"Interfaced": 0, "Interfaces": 1, "Outputs": 2, "Inouts": 3, "Inputs": 4}
 
 
-def _section_order_pins(text: str, open_idx: int, pin_exprs: list) -> list:
+def _section_order_pins(text: str, open_idx: int, pin_exprs: list, close_idx: "int | None" = None) -> list:
     """Reorder an instance's pins into verilog-mode's section-scan order:
     verilog-read-sub-decls sweeps the block once per section comment in
     the order Interfaced, Interfaces, Outputs, Inouts, Inputs, and
@@ -696,10 +696,11 @@ def _section_order_pins(text: str, open_idx: int, pin_exprs: list) -> list:
     unchanged."""
     from . import emacs
 
-    try:
-        close_idx = emacs._matching_paren(text, open_idx)
-    except ValueError:
-        return pin_exprs
+    if close_idx is None:
+        try:
+            close_idx = emacs._matching_paren(text, open_idx)
+        except ValueError:
+            return pin_exprs
     span = text[open_idx + 1 : close_idx]
     sections = [(m.start(), m.group(1)) for m in _SECTION_RE.finditer(span)]
     if not sections:
@@ -873,7 +874,14 @@ def _inst_pin_scan(
                 text, open_idx, mark_shorthand=True, with_positions=True
             )
         )
-        pin_exprs = _section_order_pins(text, open_idx, pin_exprs)
+        # one paren match per instance, shared by the section reorder
+        # (which treats a failure as "no reorder") and the marked filter
+        # below (which reads to end-of-text on failure)
+        try:
+            close_idx = emacs._matching_paren(text, open_idx)
+        except ValueError:
+            close_idx = None
+        pin_exprs = _section_order_pins(text, open_idx, pin_exprs, close_idx)
         if marked:
             # verilog-read-sub-decls sweeps the instance once per
             # section comment and reads only the pins FOLLOWING one:
@@ -885,11 +893,7 @@ def _inst_pin_scan(
             # by the unit tests) keeps the full pin list, as do
             # marker-less instances (our extension beyond
             # verilog-mode, which never reads them this way).
-            try:
-                close_idx = emacs._matching_paren(text, open_idx)
-            except ValueError:
-                close_idx = len(text)
-            span = text[open_idx + 1 : close_idx]
+            span = text[open_idx + 1 : (len(text) if close_idx is None else close_idx)]
             sec_starts = [
                 open_idx + 1 + m.start()
                 for m in _SECTION_RE.finditer(span)
