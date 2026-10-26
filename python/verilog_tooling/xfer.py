@@ -1386,11 +1386,12 @@ def auto_reginput(lines: Sequence[str], modules: Mapping[str, ModuleDef]) -> lis
     ports of /*autoinst*/ instances that are neither declared nor assigned
     in this module.  Each carries ``// To {inst} of {module}.v``.  MODULES
     maps instance module names to parsed definitions."""
-    from .wire import parse_ignore_concat, parse_param_value, set_ignore_concat
-    from .autodef import set_param_value
+    from .wire import parse_ignore_concat, parse_param_value, parse_param_value_type, set_ignore_concat
+    from .autodef import set_param_value, set_param_value_type
 
     set_ignore_concat(parse_ignore_concat(lines))
     set_param_value(parse_param_value(lines))
+    set_param_value_type(parse_param_value_type(lines))
     lines = kill_auto_reginput(lines)
     full = list(lines)
     from .inst import map_module_spans

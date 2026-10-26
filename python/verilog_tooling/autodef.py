@@ -168,6 +168,18 @@ def _param_value_on() -> bool:
     return _PARAM_VALUE
 
 
+_PARAM_VALUE_TYPE = False
+
+
+def set_param_value_type(enabled: bool) -> None:
+    global _PARAM_VALUE_TYPE
+    _PARAM_VALUE_TYPE = enabled
+
+
+def _param_value_type_on() -> bool:
+    return _PARAM_VALUE_TYPE
+
+
 # verilog-auto-simplify-expressions gate (default t): combine-bus and
 # dim cleanup fold constant arithmetic in bus strings.  File-local, so
 # pipeline entry points set it from the full buffer (spans do not
@@ -3893,10 +3905,11 @@ def auto_def_t(lines: Sequence[str], modules: Mapping[str, ModuleDef] | None = N
     modules = modules or {}
     from .inst import set_typedef_regexp
     from .libdirs import parse_typedef_regexp
-    from .wire import parse_param_value
+    from .wire import parse_param_value, parse_param_value_type
 
     set_typedef_regexp(parse_typedef_regexp(lines))
     set_param_value(parse_param_value(lines))
+    set_param_value_type(parse_param_value_type(lines))
     from .wire import parse_user_boundary
 
     set_user_boundary(parse_user_boundary(lines))

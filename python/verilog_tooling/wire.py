@@ -137,6 +137,14 @@ def parse_param_value(lines: Sequence[str]) -> bool:
     return _local_bool(lines, "verilog-auto-inst-param-value", False)
 
 
+def parse_param_value_type(lines: Sequence[str]) -> bool:
+    """verilog-auto-inst-param-value-type file-local (default nil):
+    gates TYPE-parameter override substitution into port data_types
+    (autoinst_param_type.v sets it; ExampParamVal1.v does not, so its
+    .OUT_t(upper_t) must NOT rename the AUTOOUTPUT type)."""
+    return _local_bool(lines, "verilog-auto-inst-param-value-type", False)
+
+
 def parse_user_boundary(lines: Sequence[str]) -> bool:
     """verilog-autodef-user-boundary file-local (default t): non-nil treats
     declarations outside the /*autodef*/ region as user-owned — a
@@ -771,14 +779,23 @@ def _inst_pin_scan(
             if _pv
             else {}
         )
-        # Type-parameter overrides substitute into port data_types
-        # regardless of the param-value flag (autoinst_param_type.v:
-        # #(.TYPE_T(logic [7:0])) renames the port's type even with no
-        # verilog-auto-inst-param-value local). Width substitution stays
-        # gated on the flag above.
-        _all_overrides = emacs.read_inst_param_values(text, open_idx, text_masked)
-        _type_names = {p.name for p in moddef.params if getattr(p, "is_type", False)}
-        type_values = {k: v for k, v in _all_overrides.items() if k in _type_names}
+        # Type-parameter overrides substitute into port data_types only
+        # under verilog-auto-inst-param-value-type (autoinst_param_type.v
+        # sets it; ExampParamVal1.v does not, so its .OUT_t(upper_t)
+        # must NOT rename the AUTOOUTPUT type). Per-instance AUTO_LISP
+        # setq overrides the file-level flag, mirroring _pv above.
+        from .autodef import _param_value_type_on
+
+        if "verilog-auto-inst-param-value-type" in _pv_env:
+            _pvt = bool(_pv_env["verilog-auto-inst-param-value-type"])
+        else:
+            _pvt = _param_value_type_on()
+        if _pvt:
+            _all_overrides = emacs.read_inst_param_values(text, open_idx, text_masked)
+            _type_names = {p.name for p in moddef.params if getattr(p, "is_type", False)}
+            type_values = {k: v for k, v in _all_overrides.items() if k in _type_names}
+        else:
+            type_values = {}
         instances.append(("named", module, inst, moddef, (pin_exprs, param_values, type_values)))
 
     markers = emacs.find_auto_markers(lines, "autoinst")
@@ -1370,11 +1387,12 @@ def _auto_wire_single(
     typedef_re = parse_typedef_regexp(full)
     set_typedef_regexp(typedef_re)
     set_ignore_concat(parse_ignore_concat(full))
-    from .autodef import set_param_value
+    from .autodef import set_param_value, set_param_value_type
 
     set_param_value(
         param_value if param_value is not None else parse_param_value(full)
     )
+    set_param_value_type(parse_param_value_type(full))
     from . import emacs as _emacs
 
     set_simplify(_emacs._local_simplify_expressions(full))
@@ -1514,9 +1532,10 @@ def _auto_reg_single(
 ) -> list[str]:
     """AUTOREG for ONE module span (FULL for the compilation-unit `define set)."""
     set_ignore_concat(parse_ignore_concat(full))
-    from .autodef import set_param_value
+    from .autodef import set_param_value, set_param_value_type
 
     set_param_value(parse_param_value(full))
+    set_param_value_type(parse_param_value_type(full))
     ports, usrdef, assigns = _module_tables(lines)
     driven = set(
         _inst_driven_nets(

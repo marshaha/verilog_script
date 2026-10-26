@@ -603,12 +603,14 @@ def _wire_like_single(
         get_all_defs,
         get_all_paras,
         set_param_value,
+        set_param_value_type,
     )
 
     typedef_re = parse_typedef_regexp(full)
     set_typedef_regexp(typedef_re)
     _wire.set_ignore_concat(_wire.parse_ignore_concat(full))
     set_param_value(_wire.parse_param_value(full))
+    set_param_value_type(_wire.parse_param_value_type(full))
     driven = _wire._inst_driven_nets(
         lines, modules,
         _pin_scan=_wire._cached_pin_scan(pin_scan_cache, lines, modules),

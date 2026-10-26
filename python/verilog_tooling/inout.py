@@ -594,13 +594,14 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     from a submodule port, falling back to the implicit net.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
-    from .autodef import set_param_value
-    from .wire import parse_param_value
+    from .autodef import set_param_value, set_param_value_type
+    from .wire import parse_param_value, parse_param_value_type
 
     set_ignore_concat(parse_ignore_concat(lines))
     set_param_value(
         param_value if param_value is not None else parse_param_value(lines)
     )
+    set_param_value_type(parse_param_value_type(lines))
     from . import emacs as _emacs
     from .wire import set_simplify
 
@@ -629,13 +630,14 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv
     feed an instance input/inout.  ALLOW_SV_TYPES as in auto_input.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
-    from .autodef import set_param_value
-    from .wire import parse_param_value
+    from .autodef import set_param_value, set_param_value_type
+    from .wire import parse_param_value, parse_param_value_type
 
     set_ignore_concat(parse_ignore_concat(lines))
     set_param_value(
         param_value if param_value is not None else parse_param_value(lines)
     )
+    set_param_value_type(parse_param_value_type(lines))
     from . import emacs as _emacs
     from .wire import set_simplify
 
@@ -664,13 +666,14 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     on an instance input/output port.  ALLOW_SV_TYPES as in auto_input.
     """
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
-    from .autodef import set_param_value
-    from .wire import parse_param_value
+    from .autodef import set_param_value, set_param_value_type
+    from .wire import parse_param_value, parse_param_value_type
 
     set_ignore_concat(parse_ignore_concat(lines))
     set_param_value(
         param_value if param_value is not None else parse_param_value(lines)
     )
+    set_param_value_type(parse_param_value_type(lines))
     from . import emacs as _emacs
     from .wire import set_simplify
 

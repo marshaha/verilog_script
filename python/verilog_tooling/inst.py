@@ -2767,7 +2767,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     # the AUTOWIRE phase must agree with the pins, which read the
     # same flag — previously this only saw the file-local comment,
     # so --param-value never reached AUTOWIRE.
-    from .autodef import set_param_value, set_simplify
+    from .autodef import set_param_value, set_param_value_type, set_simplify
     from . import emacs as _emacs
 
     set_simplify(_emacs._local_simplify_expressions(lines))
@@ -2775,6 +2775,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     set_param_value(
         bool(_pv) if _pv is not None else wire.parse_param_value(lines)
     )
+    set_param_value_type(wire.parse_param_value_type(lines))
     from .wire import set_ignore_concat, parse_ignore_concat
     set_ignore_concat(parse_ignore_concat(lines))
     # Pure Verilog (.v) input: generated port/wire declarations must not

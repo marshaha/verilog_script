@@ -915,7 +915,7 @@ def _param_from_entry(entry: str) -> Param | None:
         return None
     entry = re.sub(r"^parameter\b", "", entry).strip()
     # `parameter type NAME`: a type parameter (its override substitutes
-    # into port data_types regardless of verilog-auto-inst-param-value).
+    # into port data_types under verilog-auto-inst-param-value-type).
     is_type = False
     _tm = re.match(r"^type\s+(?=\w)", entry)
     if _tm:
