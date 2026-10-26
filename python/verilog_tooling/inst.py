@@ -237,6 +237,7 @@ class Param:
     name: str
     value: str | None = None
     packed: tuple = ()
+    is_type: bool = False  # `parameter type NAME` (autoinst_param_type.v)
 
 
 @dataclass(frozen=True)

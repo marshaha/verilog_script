@@ -771,7 +771,15 @@ def _inst_pin_scan(
             if _pv
             else {}
         )
-        instances.append(("named", module, inst, moddef, (pin_exprs, param_values)))
+        # Type-parameter overrides substitute into port data_types
+        # regardless of the param-value flag (autoinst_param_type.v:
+        # #(.TYPE_T(logic [7:0])) renames the port's type even with no
+        # verilog-auto-inst-param-value local). Width substitution stays
+        # gated on the flag above.
+        _all_overrides = emacs.read_inst_param_values(text, open_idx, text_masked)
+        _type_names = {p.name for p in moddef.params if getattr(p, "is_type", False)}
+        type_values = {k: v for k, v in _all_overrides.items() if k in _type_names}
+        instances.append(("named", module, inst, moddef, (pin_exprs, param_values, type_values)))
 
     markers = emacs.find_auto_markers(lines, "autoinst")
     stacks = emacs._scan_parens_at(text, [m.offset for m in markers])
@@ -844,6 +852,7 @@ def _process_named_instance(
     const_map: dict[str, str],
     ignore_concat: bool,
     driver: object = None,
+    type_values: "dict | None" = None,
 ) -> None:
     """Phase 2 of _inst_driven_nets for one named-port instance: the
     direction/simple/concat filtering and width computation over cached
@@ -1014,6 +1023,20 @@ def _process_named_instance(
                 _clean_dim(emacs._apply_param_values(d, const_map))
                 for d in pdims
             )
+        # Unpacked dims get the same instance substitution as packed
+        # (parameter_in_array_test.sv: [TEST+2] -> [10] with .TEST(8)
+        # under verilog-auto-inst-param-value:t; previously passed raw).
+        udims = port.unpacked
+        if udims and param_values:
+            udims = tuple(
+                _clean_dim(emacs._apply_param_values(d, param_values))
+                for d in udims
+            )
+        if udims and const_map:
+            udims = tuple(
+                _clean_dim(emacs._apply_param_values(d, const_map))
+                for d in udims
+            )
         from ._trace import trace_sig, tracing
 
         if tracing(net):
@@ -1023,8 +1046,26 @@ def _process_named_instance(
                 f"inst={inst} module={module}",
             )
         # Apply param substitution to data_type (e.g. OUT_t -> upper_t
-        # via #(.OUT_t(upper_t)) when verilog-auto-inst-param-value is on)
+        # via #(.OUT_t(upper_t)) when verilog-auto-inst-param-value is on;
+        # TYPE-parameter overrides apply regardless of the flag)
         data_type = port.data_type
+        if data_type and type_values:
+            # Plain whole-word replacement, NO paren wrapping and NO
+            # numeric folding: a type override is not an arithmetic
+            # expression — _apply_param_values would wrap `logic [7:0]`
+            # as `(logic[7:0])`, which APF then strips entirely.
+            for _ in range(8):
+                _prev = data_type
+                for _tname, _tval in type_values.items():
+                    data_type = re.sub(
+                        r"\b" + re.escape(_tname) + r"\b", _tval, data_type
+                    )
+                if data_type == _prev:
+                    break
+            # read_inst_param_values strips all whitespace, so a type
+            # override arrives as `logic[7:0]`; APF drops the type word
+            # from a spaceless `word[` form, so re-space it.
+            data_type = re.sub(r"(\w)\[", r"\1 [", data_type)
         if data_type and param_values:
             data_type = emacs._apply_param_values(data_type, param_values)
         if data_type and const_map:
@@ -1032,7 +1073,7 @@ def _process_named_instance(
         _note_net(
             nets,
             InstNet(
-                net, width, inst, module, pdims, port.unpacked,
+                net, width, inst, module, pdims, udims,
                 port.direction, port.signed, port.net_type, data_type,
                 driver=driver,
             ),
@@ -1046,7 +1087,14 @@ def _process_named_instance(
         mdim = ""
         um = re.search(r"\.\s*\[([^\]:]+)\]\s*\*/", expr)
         if um:
-            uidx = um.group(1).strip()
+            # A note dot-part equal to the port's own unpacked dim is
+            # the array's SIZE, not an element index: parameter_in_array
+            # .TEST(8) turns port [TEST] into note /*.[8]*/ — feeding
+            # "8" to the index merge would widen it to a bogus [8:8]
+            # range, while Emacs declares [8].
+            _dot = um.group(1).strip()
+            if _dot not in [d.strip() for d in udims]:
+                uidx = _dot
         elif port.unpacked:
             em = _ELEM_NET.match(stripped)
             if em:
@@ -1171,11 +1219,12 @@ def _inst_driven_nets(
                 payload, module, inst, moddef_or_dirs, nets, directions, simple_only
             )
         else:
-            pin_exprs, param_values = payload
+            pin_exprs, param_values, *rest = payload
+            type_values = rest[0] if rest else {}
             _process_named_instance(
                 nets, module, inst, moddef_or_dirs, pin_exprs, param_values,
                 directions, simple_only, concat_ok, const_map, ignore_concat,
-                driver=_di,
+                driver=_di, type_values=type_values,
             )
     return nets
 

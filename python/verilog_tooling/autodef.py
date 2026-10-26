@@ -2878,7 +2878,9 @@ def _sig_decl_len(sig: Signal, *, emacs_dims: bool = False) -> int:
     return base
 
 
-_CONN_DIM_COMMENT = re.compile(r"/\*\s*((?:\[[^\]]+\])+)\s*\*/")
+_CONN_DIM_COMMENT = re.compile(
+    r"/\*\s*((?:\[[^\]]+\])+)(?:\.\s*(?:\[[^\]]+\])+)?\s*\*/"
+)
 _REDUNDANT_PARENS = re.compile(r"\((\w+)\)")
 
 

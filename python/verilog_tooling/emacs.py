@@ -97,11 +97,13 @@ _TYPE_WORDS = {
 class Param:
     """One module parameter; ``value`` is the raw default-value text.
     ``packed`` holds the declared packed ranges (``logic [5:0] BLUP``),
-    which AUTOINSTPARAM renders as a subscript (``.BLUP (BLUP[5:0])``)."""
+    which AUTOINSTPARAM renders as a subscript (``.BLUP (BLUP[5:0])``).
+    ``is_type`` marks ``parameter type NAME``."""
 
     name: str
     value: str | None = None
     packed: tuple = ()
+    is_type: bool = False
 
 
 @dataclass(frozen=True)
@@ -912,6 +914,13 @@ def _param_from_entry(entry: str) -> Param | None:
     if re.match(r"^localparam\b", entry):
         return None
     entry = re.sub(r"^parameter\b", "", entry).strip()
+    # `parameter type NAME`: a type parameter (its override substitutes
+    # into port data_types regardless of verilog-auto-inst-param-value).
+    is_type = False
+    _tm = re.match(r"^type\s+(?=\w)", entry)
+    if _tm:
+        is_type = True
+        entry = entry[_tm.end() :].lstrip()
     packed: list[str] = []
     while True:
         m = re.match(r"(\w+)\s+", entry)
@@ -942,7 +951,7 @@ def _param_from_entry(entry: str) -> Param | None:
     if not vm:
         return None
     value = vm.group(1)
-    return Param(name, value.strip() if value else None, tuple(packed))
+    return Param(name, value.strip() if value else None, tuple(packed), is_type)
 
 
 def parse_module_params(lines: Sequence[str]) -> tuple[Param, ...]:
@@ -982,6 +991,7 @@ def _params_from_entries(entries) -> list[Param]:
     declaration and resets the inherited dims."""
     out: list[Param] = []
     cur_packed: tuple = ()
+    cur_is_type = False
     for entry in entries:
         stripped = entry.strip()
         is_new = stripped.startswith("parameter") or stripped.startswith("localparam")
@@ -989,11 +999,16 @@ def _params_from_entries(entries) -> list[Param]:
         if param is None:
             if stripped.startswith("localparam"):
                 cur_packed = ()
+                cur_is_type = False
             continue
         if is_new:
             cur_packed = param.packed
-        elif not param.packed:
-            param = _dc_replace(param, packed=cur_packed)
+            cur_is_type = param.is_type
+        else:
+            if not param.packed:
+                param = _dc_replace(param, packed=cur_packed)
+            if not param.is_type and cur_is_type:
+                param = _dc_replace(param, is_type=True)
         out.append(param)
     return out
 
@@ -1517,7 +1532,10 @@ def _connect(
             dims = tuple(_apply_param_values(d, param_values) for d in dims)
         inner = "".join(f"[{_clean_dim(d)}]" for d in dims)
         if port.unpacked:
-            inner += "." + "".join(f"[{u}]" for u in port.unpacked)
+            udims = port.unpacked
+            if param_values:
+                udims = tuple(_apply_param_values(u, param_values) for u in udims)
+            inner += "." + "".join(f"[{_clean_dim(u)}]" for u in udims)
         packed_note = f"/*{inner}*/"
         # verilog-mode vl-bits: the LAST packed dimension — what a single
         # [] in a template expands to (autoinst_array_braket.v)
