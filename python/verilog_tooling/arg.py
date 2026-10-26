@@ -199,6 +199,104 @@ def _filter_lines(lines: Sequence[str]) -> list[str]:
     return out
 
 
+# AUTO regions whose ports verilog-auto-arg lists REVERSED: the
+# AUTOINPUT/AUTOOUTPUT/AUTOINOUT family inserts its region lines sorted
+# but cache-adds the unsorted list, so the header shows the region
+# order backwards (Emacs-verified: region a,b -> header b,a).  The
+# AUTOINOUTCOMP family copies source-module decls forward instead
+# (region p,q -> header p,q), so it keeps region order.
+_AIO_REVERSED_COMMANDS = {"AUTOINPUT", "AUTOOUTPUT", "AUTOINOUT", "AUTOOUTPUTEVERY"}
+# Commands that emit a Beginning-of-automatic/End-of-automatics region.
+# AUTOARG and AUTOINST(PARAM) markers are deliberately excluded: they
+# have no End closer, so entering region mode on them would swallow
+# hand-written declarations up to the next region's End line.
+_REGION_COMMANDS = _AIO_REVERSED_COMMANDS | {
+    "AUTOINOUTCOMP",
+    "AUTOINOUTIN",
+    "AUTOINOUTMODPORT",
+    "AUTOINOUTMODULE",
+    "AUTOWIRE",
+    "AUTOREG",
+    "AUTOREGINPUT",
+    "AUTOLOGIC",
+    "AUTOASCIIENUM",
+}
+_AUTO_MARKER = re.compile(r"/\*\s*(AUTO[A-Z]+)", re.IGNORECASE)
+
+
+def _region_port_names(body: Sequence[str]) -> tuple[dict, dict]:
+    """Port names declared inside AUTO regions, by command family.
+
+    Returns (aio, other): each maps direction -> bare names in region
+    order.  AIO is the AUTOINPUT/AUTOOUTPUT/AUTOINOUT family (header
+    order reversed); OTHER is every other port-emitting region
+    (AUTOINOUTCOMP/MODULE/MODPORT/IN — header order forward).
+    Marker/Beginning/End lines are skipped; interior lines go through
+    the same _collect_ports parser as the body scan."""
+    aio: dict[str, list[str]] = {"input": [], "output": [], "inout": []}
+    other: dict[str, list[str]] = {"input": [], "output": [], "inout": []}
+    cur: list[str] | None = None
+    cur_reversed = False
+    for line in body:
+        m = _AUTO_MARKER.search(line)
+        if m and m.group(1).upper() in _REGION_COMMANDS:
+            # A new region marker closes any previous region that never
+            # saw its End line (an empty region emits no Beginning/End
+            # block at all, e.g. AUTOOUTPUT with no unused outputs);
+            # the unclosed region contributes no names.
+            cur = []
+            cur_reversed = m.group(1).upper() in _AIO_REVERSED_COMMANDS
+            continue
+        if cur is None:
+            continue
+        if "End of automatics" in line:
+            inputs, outputs, inouts = _collect_ports(cur)
+            target = aio if cur_reversed else other
+            for direction, entries in (
+                ("input", inputs),
+                ("output", outputs),
+                ("inout", inouts),
+            ):
+                for entry in entries:
+                    target[direction].extend(_bare_port_names(entry))
+            cur = None
+            continue
+        if "Beginning of automatic" in line or _AUTO_MARKER.search(line):
+            continue
+        cur.append(line)
+    return aio, other
+
+
+def _first_bare(entry: str) -> str | None:
+    bare = _bare_port_names(entry)
+    return bare[0] if bare else None
+
+
+def _reorder_arg_bucket(
+    bucket: list[str], aio_names: list[str], other_names: list[str]
+) -> list[str]:
+    """Emacs AUTOARG order within one direction section: AIO-region
+    ports reversed, then other-region ports in region order, then
+    hand-written ports in declaration order (Emacs-verified on
+    hand-before-region, hand-after-region, ANSI-submodule and
+    body-submodule shapes).  Entries with no parseable bare name
+    (e.g. escaped identifiers) stay in the hand group, forward."""
+    aio_set = set(aio_names)
+    other_set = set(other_names)
+    auto_aio = [e for e in bucket if _first_bare(e) in aio_set]
+    auto_other = [
+        e
+        for e in bucket
+        if _first_bare(e) not in aio_set and _first_bare(e) in other_set
+    ]
+    hand = [
+        e
+        for e in bucket
+        if _first_bare(e) not in aio_set and _first_bare(e) not in other_set
+    ]
+    return list(reversed(auto_aio)) + auto_other + hand
+
+
 def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str]]:
     """(inputs, outputs, inouts) signal texts, in buffer order.
 
@@ -774,6 +872,17 @@ def auto_arg(lines: Sequence[str], modules: "Mapping[str, ModuleDef] | None" = N
         # order reduces churn when declarations move around
         if _local_arg_sort(lines):
             inputs, outputs, inouts = sorted(inputs), sorted(outputs), sorted(inouts)
+        else:
+            # Emacs AUTOARG order (verilog-mode.el: region lines are
+            # inserted sorted but the unsorted list is cache-added, so
+            # the AIO family shows reversed in the header, ahead of
+            # hand-written ports; the INOUTCOMP family stays forward).
+            # Idempotent: region order is stable across runs, so the
+            # reordered header regenerates byte-identically.
+            aio_names, other_names = _region_port_names(body)
+            inputs = _reorder_arg_bucket(inputs, aio_names["input"], other_names["input"])
+            outputs = _reorder_arg_bucket(outputs, aio_names["output"], other_names["output"])
+            inouts = _reorder_arg_bucket(inouts, aio_names["inout"], other_names["inout"])
         declared = set(inputs) | set(outputs) | set(inouts)
         # A signal explicitly declared as wire/reg/logic in the body is
         # internal by user intent — do not infer it as an inout port even

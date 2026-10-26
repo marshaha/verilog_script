@@ -870,3 +870,95 @@ def test_auto_arg_dt_protected_ports_not_dropped():
     assert "custom_port" in text
     assert "clk" in text
 
+
+
+# ---------------------------------------------------------------------------
+# auto_arg header order: AUTO-region ports vs hand-written ports
+# (Emacs-verified against verilog-mode.el, see arg.py notes)
+
+
+def _header_text(lines):
+    return "\n".join(auto_arg(lines))
+
+
+def test_auto_arg_aio_region_ports_reversed_ahead_of_hand():
+    """AUTOOUTPUT region (c,d) lists reversed (d,c) in the header,
+    ahead of hand-written ports that sit AFTER the region."""
+    text = _header_text(
+        [
+            "module top (/*AUTOARG*/);",
+            "   /*AUTOOUTPUT*/",
+            "   // Beginning of automatic outputs (from unused autoinst outputs)",
+            "   output c;",
+            "   output d;",
+            "   // End of automatics",
+            "   output hand1;",
+            "   output hand2;",
+            "endmodule",
+        ]
+    )
+    assert "d, c, hand1, hand2" in text
+
+
+def test_auto_arg_aio_region_ports_reversed_even_when_hand_first():
+    """Hand-written ports BEFORE the region still sort after the
+    reversed region ports (example.v shape: hand o, region lower_out)."""
+    text = _header_text(
+        [
+            "module top (/*AUTOARG*/);",
+            "   output o;",
+            "   /*AUTOOUTPUT*/",
+            "   // Beginning of automatic outputs (from unused autoinst outputs)",
+            "   output c;",
+            "   output d;",
+            "   // End of automatics",
+            "endmodule",
+        ]
+    )
+    assert "d, c, o" in text
+
+
+def test_auto_arg_comp_region_ports_forward_not_swallowed_by_empty_region():
+    """AUTOINOUTCOMP region (p,q)/(c,d) stays forward, even when an
+    empty /*AUTOOUTPUT*/ marker (no Beginning/End block) precedes it:
+    the empty region must not swallow the COMP region into the AIO
+    group (which would reverse it to q,p)."""
+    lines = [
+        "module top (/*AUTOARG*/);",
+        "   /*AUTOOUTPUT*/",
+        '   /*AUTOINOUTCOMP("sub")*/',
+        "   // Beginning of automatic in/out/inouts (from specific module)",
+        "   output p;",
+        "   output q;",
+        "   input c;",
+        "   input d;",
+        "   // End of automatics",
+        "endmodule",
+    ]
+    text = _header_text(lines)
+    assert "p, q" in text
+    assert "c, d" in text
+
+
+def test_auto_arg_aio_order_idempotent():
+    """The reordered header regenerates byte-identically: region order
+    is stable across runs, so the reversal is a fixed point."""
+    lines = [
+        "module top (/*AUTOARG*/);",
+        "   /*AUTOOUTPUT*/",
+        "   // Beginning of automatic outputs (from unused autoinst outputs)",
+        "   output c;",
+        "   output d;",
+        "   // End of automatics",
+        "   /*AUTOINPUT*/",
+        "   // Beginning of automatic inputs (from unused autoinst inputs)",
+        "   input a;",
+        "   input b;",
+        "   // End of automatics",
+        "endmodule",
+    ]
+    once = auto_arg(lines)
+    twice = auto_arg(kill_auto_arg(once))
+    assert once == twice
+    text = "\n".join(once)
+    assert "d, c" in text and "b, a" in text
