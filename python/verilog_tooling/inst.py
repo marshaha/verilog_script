@@ -889,6 +889,12 @@ def _expand_ansi_header(lines: list[str], interfaces: Iterable[str] | None = Non
     # The old inner.strip() test stripped those surrounding newlines away.
     if "\n" in text[open_paren : close_paren + 1]:
         return lines  # already a multi-line header
+    # A header carrying an AUTO marker owns its own regeneration: expanding
+    # it splits the marker onto its own line, and APF then mangles
+    # `output j/*AUTOARG*/);` into `output j); /*AUTOARG*/` (ExampInject).
+    # The marker line parses as a port declaration as-is.
+    if re.search(r"/\*\s*AUTO", text[open_paren : close_paren + 1], re.IGNORECASE):
+        return lines
     ports = _split_ansi_ports(inner, interfaces)
     if not ports:
         return lines
