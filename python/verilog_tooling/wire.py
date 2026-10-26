@@ -225,6 +225,10 @@ class InstNet:
     # connection (verilog-mode multidim): unpacked dims rendered BEFORE the
     # packed dims, first driver's wins
     multi: bool = False  # driven/used by several instances (", ..." comment)
+    merge_warn: bool = False  # non-numeric bus conflict (", Couldn't Merge")
+    driver: object = None  # scan-tuple occurrence index: two records
+    # from the same instance never merge, but two same-named
+    # instances ARE different drivers (autoinst_rogoff.v)
 
 
 # ---------------------------------------------------------------------------
@@ -292,10 +296,20 @@ def _expr_nets(expr: str) -> "list[tuple[str, str]]":
     return out
 
 
+def _same_driver(a: "InstNet", b: "InstNet") -> bool:
+    """Same instance occurrence?  With occurrence indexes known, two
+    same-named instances are different drivers; without them (legacy
+    callers) fall back to the (inst, module) name pair."""
+    if a.driver is not None and b.driver is not None:
+        return a.driver == b.driver
+    return (a.inst, a.module) == (b.inst, b.module)
+
+
 def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
     """Add REC to NETS; a second driver from a DIFFERENT instance marks the
     net multi (its comment gets ", ...", like verilog-mode's sig comment
-    for a repeated signal) and keeps the maximum width."""
+    for a repeated signal) and merges the width per
+    verilog-signals-combine-bus."""
     prev = nets.get(rec.name)
     if prev is None:
         nets[rec.name] = rec
@@ -307,18 +321,12 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
                 f"first-driven inst={rec.inst} module={rec.module} "
                 f"width={rec.width} pdims={list(rec.packed_dims)}",
             )
-    elif (prev.inst, prev.module) != (rec.inst, rec.module):
+    elif not _same_driver(prev, rec):
         from dataclasses import replace
         from .autodef import _eval_bound
 
         # Multiple drivers: keep the maximum width (max MSB, min LSB).
         # Evaluate MSB expressions (e.g. "224*1-1" -> 223) and take max.
-        def _msb_val(w: str):
-            if w == "c0":
-                return 0
-            v = _eval_bound(w, {})
-            return v if isinstance(v, int) else None
-
         def _parse_range(r: str):
             # "223:128" -> (223, 128), "10:10" -> (10, 10)
             parts = r.split(":")
@@ -330,24 +338,55 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
                 return (msb, lsb)
             return None
 
-        prev_v = _msb_val(prev.width)
-        rec_v = _msb_val(rec.width)
-        # Use the wider one's width text; if either is non-numeric, keep prev.
+        # verilog-signals-combine-bus (Emacs): numeric buses merge by
+        # max highbit / min lowbit, but a non-numeric bus string wins
+        # over any numeric merge (last bus string wins); a bus string
+        # already set that differs from the next driver's bits adds
+        # ", Couldn't Merge" — except numeric-then-string, which is
+        # silent (autoinst_rogoff.v: [15:0] then [WIDTH-1:0] stays
+        # [WIDTH-1:0] with no warning)
+        def _bus_range(bus):
+            if bus is None:
+                return None
+            if ":" in bus:
+                return _parse_range(bus)
+            v = _eval_bound(bus.strip(), {})
+            return (v, v) if isinstance(v, int) else None
+
+        prev_bus = prev.packed_dims[0] if prev.packed_dims else None
+        rec_bus = rec.packed_dims[0] if rec.packed_dims else None
+        prev_num = _bus_range(prev_bus)
+        rec_num = _bus_range(rec_bus)
+        prev_is_string = prev_bus is not None and prev_num is None
+        rec_is_string = rec_bus is not None and rec_num is None
         new_width = prev.width
         new_pdims = prev.packed_dims
-        if prev_v is not None and rec_v is not None:
-            if rec_v > prev_v:
-                new_width = rec.width
-            # Merge packed dims: max MSB, min LSB
-            # e.g. [223:128]+[127:0] -> [223:0]; [10:10]+[11:11] -> [11:10]
-            if prev.packed_dims and rec.packed_dims:
-                pr = _parse_range(prev.packed_dims[0])
-                rr = _parse_range(rec.packed_dims[0])
-                if pr and rr:
-                    max_msb = max(pr[0], rr[0])
-                    min_lsb = min(pr[1], rr[1])
-                    new_pdims = (f"{max_msb}:{min_lsb}",)
-        nets[rec.name] = replace(prev, multi=True, width=new_width, packed_dims=new_pdims)
+        buswarn = prev.merge_warn
+        if rec_is_string:
+            if prev_is_string and prev_bus != rec_bus:
+                buswarn = True
+            new_width = rec_bus.split(":")[0].strip()
+            new_pdims = (rec_bus,) + tuple(prev.packed_dims[1:])
+        elif rec_num is not None:
+            if prev_is_string and prev_bus != rec_bus:
+                buswarn = True
+            elif prev_num is not None:
+                hi = max(prev_num[0], rec_num[0])
+                lo = min(prev_num[1], rec_num[1])
+                new_width = str(hi)
+                new_pdims = (f"{hi}:{lo}",) + tuple(prev.packed_dims[1:])
+            elif prev_bus is None:
+                new_width = str(rec_num[0])
+                new_pdims = (
+                    (f"{rec_num[0]}:{rec_num[1]}",) + tuple(prev.packed_dims[1:])
+                )
+            # prev is a bus string: it stays, the numeric merge is invisible
+        elif prev_is_string:
+            buswarn = True  # scalar driver after a bus string
+        nets[rec.name] = replace(
+            prev, multi=True, width=new_width, packed_dims=new_pdims,
+            merge_warn=buswarn,
+        )
         from ._trace import trace_sig
 
         trace_sig(prev.name, f"multi-driver inst={rec.inst} module={rec.module}")
@@ -577,8 +616,22 @@ def _inst_pin_scan(
             return
         seen.add(open_idx)
         pin_exprs = list(emacs.inst_pin_connections(text, open_idx))
-        param_values = emacs.effective_param_values(
-            moddef, emacs.read_inst_param_values(text, open_idx, text_masked)
+        # verilog-auto-inst-param-value gates ALL substitution in the
+        # sub-decl widths (Emacs default nil): when on, only the
+        # instance's own #(...) overrides replace — submodule defaults
+        # stay symbolic (d.v experiment: flag t, no override, width
+        # stays [WIDTH-1:0]); when off, nothing is substituted.
+        # Per-instance, an AUTO_LISP setq before this instance
+        # overrides the file-level flag (autoinst_rogoff.v).
+        _pv_env = emacs.read_auto_lisp(text, open_idx)
+        if "verilog-auto-inst-param-value" in _pv_env:
+            _pv = bool(_pv_env["verilog-auto-inst-param-value"])
+        else:
+            _pv = _param_value_on()
+        param_values = (
+            emacs.read_inst_param_values(text, open_idx, text_masked)
+            if _pv
+            else {}
         )
         instances.append(("named", module, inst, moddef, (pin_exprs, param_values)))
 
@@ -646,6 +699,7 @@ def _process_named_instance(
     concat_ok: bool,
     const_map: dict[str, str],
     ignore_concat: bool,
+    driver: object = None,
 ) -> None:
     """Phase 2 of _inst_driven_nets for one named-port instance: the
     direction/simple/concat filtering and width computation over cached
@@ -702,7 +756,7 @@ def _process_named_instance(
                         ewidth = emacs._apply_param_values(ewidth, param_values)
                     if const_map:
                         ewidth = emacs._apply_param_values(ewidth, const_map)
-                    _note_net(nets, InstNet(net, ewidth, inst, module))
+                    _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver))
             continue
         if stripped.startswith("("):
             # Parenthesized expression: not a concat, always extract.
@@ -712,7 +766,7 @@ def _process_named_instance(
                     ewidth = emacs._apply_param_values(ewidth, param_values)
                 if const_map:
                     ewidth = emacs._apply_param_values(ewidth, const_map)
-                _note_net(nets, InstNet(net, ewidth, inst, module))
+                _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver))
             continue
         # Issue #1526: SV cast type'(expr) — extract inner expr for the
         # simple-net check, so t'(x) counts as signal x for AIO candidacy.
@@ -782,6 +836,7 @@ def _process_named_instance(
             InstNet(
                 net, width, inst, module, pdims, port.unpacked,
                 port.direction, port.signed, port.net_type, data_type,
+                driver=driver,
             ),
         )
         # unpacked-array element index: the note's ``.[idx]`` part or the
@@ -901,7 +956,7 @@ def _inst_driven_nets(
     const_map = scan["const_map"]
     ignore_concat = scan["ignore_concat"]
     nets: dict[str, InstNet] = {}
-    for kind, module, inst, moddef_or_dirs, payload in scan["instances"]:
+    for _di, (kind, module, inst, moddef_or_dirs, payload) in enumerate(scan["instances"]):
         if kind == "primitive":
             _primitive_nets_from_exprs(
                 payload, module, inst, moddef_or_dirs, nets, directions, simple_only
@@ -911,6 +966,7 @@ def _inst_driven_nets(
             _process_named_instance(
                 nets, module, inst, moddef_or_dirs, pin_exprs, param_values,
                 directions, simple_only, concat_ok, const_map, ignore_concat,
+                driver=_di,
             )
     return nets
 
@@ -1014,6 +1070,7 @@ def auto_wire(
     modules: Mapping[str, ModuleDef],
     pin_scan_cache: "dict | None" = None,
     allow_sv_types: bool = True,
+    param_value: "bool | None" = None,
 ) -> list[str]:
     """Regenerate the /*AUTOWIRE*/ wire declarations of a module.
 
@@ -1033,7 +1090,9 @@ def auto_wire(
     return map_module_spans(
         lines,
         _AUTOWIRE_MARK_FULL,
-        lambda span: _auto_wire_single(span, modules, full, pin_scan_cache, allow_sv_types),
+        lambda span: _auto_wire_single(
+            span, modules, full, pin_scan_cache, allow_sv_types, param_value
+        ),
     )
 
 
@@ -1043,6 +1102,7 @@ def _auto_wire_single(
     full: Sequence[str],
     pin_scan_cache: "dict | None" = None,
     allow_sv_types: bool = True,
+    param_value: "bool | None" = None,
 ) -> list[str]:
     """AUTOWIRE for ONE module span (FULL is the whole buffer, for the
     compilation-unit `define set)."""
@@ -1054,7 +1114,9 @@ def _auto_wire_single(
     set_ignore_concat(parse_ignore_concat(full))
     from .autodef import set_param_value
 
-    set_param_value(parse_param_value(full))
+    set_param_value(
+        param_value if param_value is not None else parse_param_value(full)
+    )
     driven = _inst_driven_nets(
         lines, modules, concat_ok=True,
         _pin_scan=_cached_pin_scan(pin_scan_cache, lines, modules),
@@ -1147,7 +1209,7 @@ def _auto_wire_single(
         comments[name] = (
             f"// {direction} {net.inst} of {net.module}{mod_suffix}"
             + (", ..." if net.multi else "")
-            + (", Couldn't Merge" if merge_conflict else "")
+            + (", Couldn't Merge" if (merge_conflict or net.merge_warn) else "")
         )
     if not _wire_comment_enabled(full):
         comments = {}
@@ -1318,7 +1380,7 @@ def main(argv=None) -> None:
                     modules[name] = parse_module_ports(
                         src, with_params=True, typedef_regexp=td_re, interfaces=interfaces
                     )
-        out = auto_wire(lines, modules, allow_sv_types=allow_sv_types) if args.command == "aw" else auto_reg(lines, modules)
+        out = auto_wire(lines, modules, allow_sv_types=allow_sv_types, param_value=getattr(args, "param_value", None)) if args.command == "aw" else auto_reg(lines, modules)
     Path(args.out_file).write_text("\n".join(out) + "\n")
 
 

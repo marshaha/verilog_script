@@ -361,6 +361,27 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         else:
             nm2 = re.search(r"\w+\s*$", body_ns)
             port_name = nm2.group(0).strip() if nm2 else ""
+        # Mid-line /* ... */ comments are NOT trailing: the body strip
+        # above deletes them.  Capture them from the original line and
+        # re-emit before the name when they sat after the width (the
+        # /* synopsys enum ... */ shape in autoinst_rogoff.v, where
+        # verilog-mode keeps the comment between width and name), or
+        # after the terminator otherwise, so nothing is ever lost.
+        _no_linec = re.sub(r"//.*", "", line)
+        _trail = re.search(r"/\*.*?\*/\s*$", _no_linec)
+        _rest = _no_linec[: _trail.start()] if _trail else _no_linec
+        pre_comments: list[str] = []
+        post_comments: list[str] = []
+        for _mm in re.finditer(r"/\*.*?\*/", _rest):
+            _before = line[: _mm.start()].rstrip()
+            if port_name and re.search(
+                r"\b" + re.escape(port_name) + r"$", _before
+            ):
+                post_comments.append(_mm.group(0))
+            elif "]" in _before:
+                pre_comments.append(_mm.group(0))
+            else:
+                post_comments.append(_mm.group(0))
         space_max = 20 + max_len + (1 if m.group(1) == "output" else 2)
         out.append(
             m.group(1)
@@ -368,9 +389,11 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
             + kw
             + width
             + _cal_margin(space_max, len(kw) + len(width) + (1 if kw else 0))
+            + (" ".join(pre_comments) + " " if pre_comments else "")
             + port_name
             + terminator
             + comment
+            + (" " + " ".join(post_comments) if post_comments else "")
         )
     return VerilogBuffer(out)
 

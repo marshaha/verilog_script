@@ -432,7 +432,15 @@ subp #(.W(4)) u_s (/*autoinst*/
 );
 endmodule
 """
+    # verilog-auto-inst-param-value is nil by default (Emacs): even a
+    # #(.W(4)) override is NOT substituted — the widths stay symbolic.
+    # (Verified against Emacs batch-auto on this exact shape.)
     out = auto_io(top.splitlines(), m)
+    assert decl("input", "W-1", "din", "// To u_s of subp.v") in out
+    assert decl("output", "W-1", "dout", "// From u_s of subp.v") in out
+    # With the flag on, the override substitutes (defaults still do
+    # not: only #(...) entries replace).
+    out = auto_io(top.splitlines(), m, param_value=True)
     assert decl("input", "3", "din", "// To u_s of subp.v") in out
     assert decl("output", "3", "dout", "// From u_s of subp.v") in out
 
@@ -713,10 +721,11 @@ endmodule
 """
     out = auto_output(top.splitlines(), m)
     text = "\n".join(out)
-    # D folds to 4, K stays symbolic: the net is promoted at the
-    # driver's dimension instead of being silently skipped
+    # verilog-auto-inst-param-value nil (default): W = D*K is not
+    # folded at all — the net is promoted at the symbolic dimension
+    # instead of being silently skipped
     (line,) = [ln for ln in out if ln.startswith("output") and "mid" in ln]
-    assert "K" in line
+    assert "[W-1:0]" in line
 # ---------------------------------------------------------------------------
 # a net inside a {...} connection is connected internally (AIO exclusions)
 

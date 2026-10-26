@@ -575,7 +575,7 @@ def _regen(
 # AUTOINPUT / AUTOOUTPUT (verilog-auto-input / verilog-auto-output)
 
 
-def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True) -> list[str]:
+def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None) -> list[str]:
     """Regenerate the /*AUTOINPUT*/ input declarations of a module.
 
     Declares an input port for every net feeding an input port of an
@@ -590,7 +590,9 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     from .wire import parse_param_value
 
     set_ignore_concat(parse_ignore_concat(lines))
-    set_param_value(parse_param_value(lines))
+    set_param_value(
+        param_value if param_value is not None else parse_param_value(lines)
+    )
     lines = kill_auto_input(lines)
     full = list(lines)
     from .inst import map_module_spans
@@ -607,7 +609,7 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     return map_module_spans(lines, _AUTOINPUT_MARK, _single)
 
 
-def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True) -> list[str]:
+def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None) -> list[str]:
     """Regenerate the /*AUTOOUTPUT*/ output declarations of a module.
 
     Declares an output port for every net driven by an output port of an
@@ -619,7 +621,9 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv
     from .wire import parse_param_value
 
     set_ignore_concat(parse_ignore_concat(lines))
-    set_param_value(parse_param_value(lines))
+    set_param_value(
+        param_value if param_value is not None else parse_param_value(lines)
+    )
     lines = kill_auto_output(lines)
     full = list(lines)
     from .inst import map_module_spans
@@ -636,7 +640,7 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv
     return map_module_spans(lines, _AUTOOUTPUT_MARK, _single)
 
 
-def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True) -> list[str]:
+def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None) -> list[str]:
     """Regenerate the /*AUTOINOUT*/ inout declarations of a module.
 
     Declares an inout port for every net connected to an inout port of an
@@ -648,7 +652,9 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     from .wire import parse_param_value
 
     set_ignore_concat(parse_ignore_concat(lines))
-    set_param_value(parse_param_value(lines))
+    set_param_value(
+        param_value if param_value is not None else parse_param_value(lines)
+    )
     lines = kill_auto_inout(lines)
     full = list(lines)
     from .inst import map_module_spans
@@ -664,12 +670,15 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     return map_module_spans(lines, _AUTOINOUT_MARK, _single)
 
 
-def auto_io(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True) -> list[str]:
+def auto_io(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None) -> list[str]:
     """AUTOOUTPUT then AUTOINPUT then AUTOINOUT — the verilog-auto order
-    (the AIO command).  ALLOW_SV_TYPES as in auto_input."""
-    lines = auto_output(lines, modules, allow_sv_types)
-    lines = auto_input(lines, modules, allow_sv_types)
-    return auto_inout(lines, modules, allow_sv_types)
+    (the AIO command).  ALLOW_SV_TYPES as in auto_input.  PARAM_VALUE
+    threads verilog-auto-inst-param-value through (None = the buffer's
+    file-local setting); without it the CLI flag never reached these
+    entry points — each reset the global from file-local only."""
+    lines = auto_output(lines, modules, allow_sv_types, param_value)
+    lines = auto_input(lines, modules, allow_sv_types, param_value)
+    return auto_inout(lines, modules, allow_sv_types, param_value)
 
 
 # ---------------------------------------------------------------------------
@@ -771,11 +780,11 @@ def main(argv=None) -> None:
                     )
         out = lines
         if args.command in ("aio", "aout"):
-            out = auto_output(out, modules, allow_sv_types)
+            out = auto_output(out, modules, allow_sv_types, getattr(args, "param_value", None))
         if args.command in ("aio", "ain"):
-            out = auto_input(out, modules, allow_sv_types)
+            out = auto_input(out, modules, allow_sv_types, getattr(args, "param_value", None))
         if args.command in ("aio", "ainout"):
-            out = auto_inout(out, modules, allow_sv_types)
+            out = auto_inout(out, modules, allow_sv_types, getattr(args, "param_value", None))
     Path(args.out_file).write_text("\n".join(out) + "\n")
 
 

@@ -1611,6 +1611,11 @@ def _auto_inst_one(
     at_value = template_at_value(tpl, inst) if tpl else ""
     if m_full is None:
         m_full = mask_comments(text)
+    # AUTO_LISP may setq verilog-auto-inst-param-value mid-file
+    # (autoinst_rogoff.v): it overrides the file/CLI value for the
+    # instances that follow, until another setq changes it.
+    if "verilog-auto-inst-param-value" in lisp_env:
+        param_value = bool(lisp_env["verilog-auto-inst-param-value"])
     param_values = (
         read_inst_param_values(text, open_idx, m_full) if param_value else {}
     )

@@ -724,15 +724,31 @@ endmodule
 """
 
 
-def test_auto_wire_uses_submodule_param_default():
+def test_auto_wire_symbolic_width_without_param_value():
     mods = {"moda": parse_module_ports(_PMODA.splitlines(), with_params=True)}
     out = auto_wire(_PTOP.splitlines(), mods)
     region = out[out.index(HEADER_W) : out.index(CLOSER)]
-    # no #(...) override: width from moda's own default (W=8 -> [7:0]),
-    # not the unresolved symbolic 'W-1'
+    # verilog-auto-inst-param-value nil (Emacs default): no override
+    # and no default substitution — the width stays symbolic [W-1:0],
+    # not the submodule default [7:0] (verified against Emacs
+    # batch-auto: flag t with no override also stays symbolic)
     assert region == [
         HEADER_W,
-        decl("wire ", "7", "mid", "// From u_a of moda.v"),
+        decl("wire ", "W-1", "mid", "// From u_a of moda.v"),
+    ]
+
+
+def test_auto_wire_override_substituted_with_param_value():
+    mods = {"moda": parse_module_ports(_PMODA.splitlines(), with_params=True)}
+    top = _PTOP.replace(
+        "moda u_a (/*autoinst*/", "moda #(.W(4)) u_a (/*autoinst*/"
+    )
+    out = auto_wire(top.splitlines(), mods, param_value=True)
+    region = out[out.index(HEADER_W) : out.index(CLOSER)]
+    # flag on + #(...) override: only the override substitutes
+    assert region == [
+        HEADER_W,
+        decl("wire ", "3", "mid", "// From u_a of moda.v"),
     ]
 
 
@@ -761,10 +777,11 @@ def test_auto_wire_symbolic_driver_dimension_declared():
     mods = {"modc": parse_module_ports(_PMODC.splitlines(), with_params=True)}
     out = auto_wire(_PTOP_C.splitlines(), mods)
     region = out[out.index(HEADER_W) : out.index(CLOSER)]
-    # D folds to 4 but K stays symbolic: declare at the driver's
-    # dimension instead of dropping the net entirely
+    # verilog-auto-inst-param-value nil (default): W = D*K is not
+    # folded at all — declare at the symbolic dimension instead of
+    # dropping the net entirely
     assert len(region) == 2
-    assert "mid;" in region[1] and "K" in region[1]
+    assert "mid;" in region[1] and "[W-1:0]" in region[1]
 
 
 def test_autowire_markerless_instance_output_concat():

@@ -107,15 +107,18 @@ EXCLUDE_PREFIXES = (
 # vm-repo report).  xfail (non-strict): a fix turning one green shows up as
 # XPASS without breaking the gate; move it out of the set to lock it in.
 KNOWN_FAILURES = frozenset(
-    # autowire_topv.v: golden predates current emacs (drops 'logic' from
-    # logic-typed ports); remaining diff is alignment/version drift
     # autoinst_ifdef_fredrickson_200503_top.v: intentional emacs divergence:
     # `ifdef guards preserved in expansions (emacs drops them)
     # autoinst_name_bug245.v: APF/inst-vector parts fixed (94f2f64); remaining
     # diff is AUTOINPUT escaped-name extraction + type-column alignment
     # autoinstparam_local.v: crash fixed (897fb57 empty-INST ');'); remaining
     # diff is `( DATA_WIDTH )' paren padding vs our `(DATA_WIDTH)' house style
-    ['autowire_topv.v', 'autoinst_ifdef_fredrickson_200503_top.v', 'autoinout_lovell.v', 'autoinput_array_bug294.v', 'autoinput_concat_ignore.v', 'autoinput_concat_lau.v', 'autoinput_concat_lau2.v', 'autoinput_nohookup.v', 'autoinput_none.v', 'autoinst_array.v', 'autoinst_attr.v', 'autoinst_autonohookup.v', 'autoinst_belkind_concat.v', 'autoinst_cmtparen_tennant.sv', 'autoinst_ding.v', 'autoinst_for_myers.v', 'autoinst_func.v', 'autoinst_iface_noparam.v', 'autoinst_import2012.v', 'autoinst_interface.v', 'autoinst_interface_star.v', 'autoinst_modport_param.v', 'autoinst_mplist.sv', 'autoinst_mul.v', 'autoinst_name_bug245.v', 'autoinst_param_2d.v', 'autoinst_param_cmt.v', 'autoinst_param_type.v', 'autoinst_param_value.v', 'autoinst_paramvalue.v', 'autoinst_regexp_match.v', 'autoinst_rogoff.v', 'autoinst_star.v', 'autoinst_sv_kulkarni.v', 'autoinst_sv_kulkarni_wire.v', 'autoinst_swapped_vec.v', 'autoinst_tieoff_vec.v', 'autoinst_unsigned_bug302.v', 'autoinst_vertrees.v', 'autoinst_wildcard.v', 'autoinst_wildcell.v', 'autoinstparam_iface_bruce.v', 'autoinstparam_local.v', 'autolisp_order_bug356.v', 'autooutput_simplify.v', 'autoreg_smith_multiassign.v', 'autotemplate_lisp_eq.v', 'autowire_apostrophe.sv', 'autowire_merge_bug303.v', 'autowire_merge_pm.v', 'autowire_paramvec_bug302.v', 'autowire_red_bracket.v', 'autowire_shifts_bug1346.v', 'autowire_thon_selects.v']
+    # .v-downgrade expected diffs (9d4036e option b, deliberate: .v files
+    # demote inherited reg/logic to implicit wire; the harness used to
+    # mask this by omitting the flag): autoinst_array_braket.v,
+    # autooutputevery_wire.v, autowire_pkg_bug195.v — all other tokens
+    # identical, only the logic/reg keyword differs
+    ['autoinst_ifdef_fredrickson_200503_top.v', 'autoinout_lovell.v', 'autoinput_array_bug294.v', 'autoinput_concat_ignore.v', 'autoinput_concat_lau.v', 'autoinput_concat_lau2.v', 'autoinput_nohookup.v', 'autoinput_none.v', 'autoinst_array.v', 'autoinst_array_braket.v', 'autoinst_attr.v', 'autoinst_autonohookup.v', 'autoinst_belkind_concat.v', 'autoinst_cmtparen_tennant.sv', 'autoinst_for_myers.v', 'autoinst_func.v', 'autoinst_iface_noparam.v', 'autoinst_import2012.v', 'autoinst_interface.v', 'autoinst_interface_star.v', 'autoinst_modport_param.v', 'autoinst_mplist.sv', 'autoinst_mul.v', 'autoinst_name_bug245.v', 'autoinst_param_2d.v', 'autoinst_param_cmt.v', 'autoinst_param_type.v', 'autoinst_param_value.v', 'autoinst_regexp_match.v', 'autoinst_star.v', 'autoinst_sv_kulkarni.v', 'autoinst_sv_kulkarni_wire.v', 'autoinst_swapped_vec.v', 'autoinst_tieoff_vec.v', 'autoinst_unsigned_bug302.v', 'autoinst_vertrees.v', 'autoinst_wildcard.v', 'autoinst_wildcell.v', 'autoinstparam_iface_bruce.v', 'autoinstparam_local.v', 'autolisp_order_bug356.v', 'autooutput_simplify.v', 'autooutputevery_wire.v', 'autoreg_smith_multiassign.v', 'autotemplate_lisp_eq.v', 'autowire_apostrophe.sv', 'autowire_merge_bug303.v', 'autowire_merge_pm.v', 'autowire_paramvec_bug302.v', 'autowire_pkg_bug195.v', 'autowire_red_bracket.v', 'autowire_shifts_bug1346.v']
 )
 
 SKIP_TABLE = {
@@ -317,14 +320,21 @@ def run_pipeline(text: str, ref_file: str) -> list[str]:
     # 9. AIO; 10. AUTOTIEOFF; 11. AUTOUNDEF; 12. AUTOASSIGNMODPORT;
     # 13. AUTOLOGIC; 14. AW; 15. AREG; 16. AUTOREGINPUT;
     # 17. AUTOOUTPUTEVERY; 18. AUTOSENSE; 19. AUTORESET; 20. AUTOUNUSED
-    lines = inout.auto_output(lines, modules_w)
-    lines = inout.auto_input(lines, modules_w)
-    lines = inout.auto_inout(lines, modules_w)
+    # mirror _main_aall (9d4036e option b): .v inputs demote inherited
+    # reg/logic to implicit wire in AIO port declarations and the
+    # AUTOWIRE head; the harness used to omit this flag, which masked
+    # the deliberate .v deviation as false parity (autoinst_rogoff.v)
+    from pathlib import Path as _Path
+
+    _allow_sv = _Path(ref_file).suffix.lower() != ".v"
+    lines = inout.auto_output(lines, modules_w, _allow_sv)
+    lines = inout.auto_input(lines, modules_w, _allow_sv)
+    lines = inout.auto_inout(lines, modules_w, _allow_sv)
     lines = misc.auto_tieoff(lines, modules_w)
     lines = misc.auto_undef(lines)
     lines = xfer.auto_assign_modport(lines, ifaces)
     lines = misc.auto_logic(lines, modules_w)
-    lines = wire.auto_wire(lines, modules_w)
+    lines = wire.auto_wire(lines, modules_w, allow_sv_types=_allow_sv)
     lines = wire.auto_reg(lines, modules_w)
     lines = xfer.auto_reginput(lines, modules_w)
     lines = xfer.auto_outputevery(lines)

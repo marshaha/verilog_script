@@ -2638,8 +2638,16 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     from .libdirs import parse_typedef_regexp
 
     # Set file-local settings (verilog-auto-inst-param-value etc.)
+    # The instance-effective flag is the CLI/file-local value (main()
+    # already resolved the file-local comment into args.param_value);
+    # the AUTOWIRE phase must agree with the pins, which read the
+    # same flag — previously this only saw the file-local comment,
+    # so --param-value never reached AUTOWIRE.
     from .autodef import set_param_value
-    set_param_value(wire.parse_param_value(lines))
+    _pv = getattr(args, "param_value", None)
+    set_param_value(
+        bool(_pv) if _pv is not None else wire.parse_param_value(lines)
+    )
     from .wire import set_ignore_concat, parse_ignore_concat
     set_ignore_concat(parse_ignore_concat(lines))
     # Pure Verilog (.v) input: generated port/wire declarations must not
@@ -2648,6 +2656,10 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     # Threaded as an explicit parameter (never a module global: it would
     # leak into later in-process calls and into AUTOREG).
     _allow_sv_types = Path(args.ref_file or args.in_file).suffix.lower() != ".v"
+    # threaded into AIO/AUTOWIRE (None = each entry point's file-local
+    # fallback); the 2642 global-setting above covers the other steps
+    # (AUTOLOGIC/AUTOREG/autodef) that read the flag from the global
+    _pv_arg = getattr(args, "param_value", None)
 
     # emacs verilog-delete-auto-buffer ("Clear existing autos else we'll be
     # screwed by existing ones"): drop last round's regions up front — left
@@ -2810,9 +2822,9 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
         modules_p = modules_w
     lines = xfer.auto_inoutparam(lines, modules_p)
     _log("aall: AUTOINOUTPARAM done")
-    lines = inout.auto_output(lines, modules_w, _allow_sv_types)
-    lines = inout.auto_input(lines, modules_w, _allow_sv_types)
-    lines = inout.auto_inout(lines, modules_w, _allow_sv_types)
+    lines = inout.auto_output(lines, modules_w, _allow_sv_types, _pv_arg)
+    lines = inout.auto_input(lines, modules_w, _allow_sv_types, _pv_arg)
+    lines = inout.auto_inout(lines, modules_w, _allow_sv_types, _pv_arg)
     _log("aall: AUTOOUTPUT/AUTOINPUT/AUTOINOUT done")
     # 10. AUTOTIEOFF; 11. AUTOUNDEF; 12. AUTOASSIGNMODPORT
     lines = misc.auto_tieoff(lines, modules_w)
@@ -2839,7 +2851,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
         pin_scan_cache = None
     lines = misc.auto_logic(lines, modules_w, pin_scan_cache)
     _log("aall: AUTOLOGIC done")
-    lines = wire.auto_wire(lines, modules_w, pin_scan_cache, _allow_sv_types)
+    lines = wire.auto_wire(lines, modules_w, pin_scan_cache, _allow_sv_types, _pv_arg)
     lines = wire.auto_reg(lines, modules_w, pin_scan_cache)
     lines = autodef.auto_def_t(lines, modules_w)
     _log("aall: AUTOWIRE/AUTOREG/autodef done")
