@@ -1893,6 +1893,7 @@ def auto_inst(
                 m_full=m_full,
                 templated_comment=templated_comment,
                 py_base_env=py_base_env,
+                defines=defines,
             )
         except ValueError as exc:
             # AUTO_LISP / @"..." template evaluation outside the Python
@@ -1910,7 +1911,7 @@ def _auto_inst_one(
     text, marker, open_idx, close_idx, moddef, module, inst,
     templates, sort, dot_name, column, param_value, is_star, star_save,
     template_required=False, inst_vector="t", simplify=True,
-    m_full=None, templated_comment=True, py_base_env=None,
+    m_full=None, templated_comment=True, py_base_env=None, defines=None,
 ):
     # m_full: precomputed mask_comments(text) from the caller. The auto_inst
     # loop rewrites bottom-up, so text before open_idx is unchanged and the
@@ -1924,7 +1925,11 @@ def _auto_inst_one(
     for _k, _v in read_local_eval_defuns(text).items():
         lisp_env.setdefault(_k, _v)
     # `define table for verilog-symbol-detick-text in @"..." expressions.
-    lisp_env.setdefault("__defines__", _buffer_defines(text))
+    # defines: precomputed by auto_inst (define lines sit outside instance
+    # regions, which are all the loop rewrites — one scan suffices).
+    lisp_env.setdefault(
+        "__defines__", defines if defines is not None else _buffer_defines(text)
+    )
     # AUTO_PYTHON user functions merge into the template expression scope
     # (Python-native alternative to elisp defun)
     lisp_env.update(_read_auto_python_inline(text, marker.offset, py_base_env))
@@ -2130,7 +2135,7 @@ def auto_param(
         try:
             text = _auto_param_one(
                 text, marker, open_idx, close_idx, params, module, inst,
-                templates, sort, column,
+                templates, sort, column, defines=defines,
             )
         except ValueError as exc:
             # AUTO_LISP / @"..." template evaluation outside the Python
@@ -2145,7 +2150,7 @@ def auto_param(
 
 def _auto_param_one(
     text, marker, open_idx, close_idx, params, module, inst,
-    templates, sort, column,
+    templates, sort, column, defines=None,
 ):
     tpl = (
         template_for_module(
@@ -2158,7 +2163,9 @@ def _auto_param_one(
     lisp_env = read_auto_lisp(text, marker.offset)
     for _k, _v in read_local_eval_defuns(text).items():
         lisp_env.setdefault(_k, _v)
-    lisp_env.setdefault("__defines__", _buffer_defines(text))
+    lisp_env.setdefault(
+        "__defines__", defines if defines is not None else _buffer_defines(text)
+    )
     lisp_env.update(read_auto_python(text, marker.offset))
     # commented-out pins before the marker are NOT connected: mask
     # comments (positions preserved) before collecting names

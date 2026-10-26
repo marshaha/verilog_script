@@ -826,6 +826,10 @@ def _inst_pin_scan(
         const_map = {k: str(v) for k, v in _const_symbols(lines).items()}
     text = "\n".join(lines)
     text_masked = emacs.mask_comments(text)
+    # `define table for detick_name: scanned once per scan — instance pin
+    # extraction never rewrites text, and generated regions carry no
+    # `define directives (perf: per-instance this masked the whole text).
+    buf_defines = emacs._buffer_defines(text)
     instances: list = []
     seen: set[int] = set()
 
@@ -951,7 +955,7 @@ def _inst_pin_scan(
             # for the // From comment (verilog-mode writes `SUBNAME_B of
             # `SUBMOD_A.v, ticks included — autoinst_moddefine.v)
             moddef = modules.get(
-                emacs.detick_name(module, emacs._buffer_defines(text))
+                emacs.detick_name(module, buf_defines)
             )
         except ValueError:
             continue
