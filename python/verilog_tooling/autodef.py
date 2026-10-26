@@ -3491,7 +3491,11 @@ def _scan_inst_body(
     sym_hi = sym_hi or {}
     i = start
     while i < len(lines):
-        j = _skip_comment_line(lines, i)
+        line = lines[i]
+        if "//" not in line and "/*" not in line:
+            j = i  # plain line: the comment skipper returns it unchanged
+        else:
+            j = _skip_comment_line(lines, i)
         if j == -1:
             return len(lines)
         i = j
@@ -3501,7 +3505,9 @@ def _scan_inst_body(
             signals.extend_inst_wire_from_line(
                 m.group(1) + " " + m.group(2), inst_io, loop_bounds, sym_hi, param_values
             )
-        if re.search(r"\);\s*$", line) or ");" in line:
+        # ``re.search(r"\);\s*$") or ");" in line`` — the regex implies the
+        # substring, so the substring alone decides
+        if ");" in line:
             i += 1
             break
         i += 1
@@ -3998,23 +4004,26 @@ def _auto_def_t_single(
     _vb = VerilogBuffer(lines)
     _markers = _emacs.find_auto_markers(lines, "autoinst")
     _stacks = _emacs._scan_parens_at(_text, [m.offset for m in _markers])
+    _line_off = [0]
+    for _l in lines:
+        _line_off.append(_line_off[-1] + len(_l) + 1)
+
+    import bisect as _bisect
+
     param_by_line: dict[int, dict[str, str]] = {}
     for _mk in _markers:
         _st = _stacks[_mk.offset]
         if _st:
-            param_by_line[_text.count("\n", 0, _mk.offset)] = _emacs.read_inst_param_values(
+            param_by_line[_bisect.bisect_right(_line_off, _mk.offset) - 1] = _emacs.read_inst_param_values(
                 _text, _st[-1], _masked
             )
     # pin-list '(' offset per /*autoinst*/ marker line (whole-instance scan:
     # hand-written connections BEFORE the marker drive nets too)
     open_by_marker_line: dict[int, int] = {
-        _text.count("\n", 0, _mk.offset): _stacks[_mk.offset][-1]
+        _bisect.bisect_right(_line_off, _mk.offset) - 1: _stacks[_mk.offset][-1]
         for _mk in _markers
         if _stacks[_mk.offset]
     }
-    _line_off = [0]
-    for _l in lines:
-        _line_off.append(_line_off[-1] + len(_l) + 1)
 
     signals = SignalTable()
     signals.known = frozenset(set(allparas) | set(_const_symbols(full)))
@@ -4222,7 +4231,7 @@ def _auto_def_t_single(
                                 inst_io, loop_bounds, sym_hi, pvals,
                             )
                         close_idx = _emacs._matching_paren(_text, open_idx)
-                        i = _text.count("\n", 0, close_idx) + 1
+                        i = _bisect.bisect_right(_line_off, close_idx)
                         done = True
                     except ValueError:
                         done = False
