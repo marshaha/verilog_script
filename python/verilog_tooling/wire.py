@@ -948,7 +948,10 @@ def _inst_pin_scan(
             type_values = {k: v for k, v in _all_overrides.items() if k in _type_names}
         else:
             type_values = {}
-        instances.append(("named", module, inst, moddef, (pin_exprs, param_values, type_values)))
+        # parse each connection once (pin records): every later pass
+        # reuses them for its direction/simple/concat filtering
+        records = _pin_records(moddef, pin_exprs, param_values, const_map, type_values)
+        instances.append(("named", module, inst, moddef, records))
 
     markers = emacs.find_auto_markers(lines, "autoinst")
     stacks = emacs._scan_parens_at(text, [m.offset for m in markers])
@@ -1007,330 +1010,418 @@ def _inst_pin_scan(
     }
 
 
+# ---------------------------------------------------------------------------
+# pin records: the phase-1 parse of one instance connection, shared by
+# every phase-2 pass (the aall pin-scan cache reruns phase 2 per pass —
+# AIO alone filters the same pins 8 times)
+
+# Every record is (kind, port, pin, payload).  PORT is the submodule Port
+# the pin names, or None — a pin naming no port is skipped by every pass,
+# like the old ``pin not in inst_io`` filter.  PIN is kept for tracing.
+_PK_SKIP = 0  # literal/`define/number/empty connection: never a net
+_PK_CONCAT = 1  # {...} / '{...} / paren-wrapped {...}: payload is
+# [(net, width), ...], recorded only when the LIVE ignore-concat setting
+# allows (the verilog-auto-ignore-concat candidacy exemption)
+_PK_PAREN = 2  # any other (...) expression: payload [(net, width), ...],
+# always recorded (a parenthesized expression is not a concat)
+_PK_PLAIN = 3  # plain net: payload is a _PinNet
+
+
+@dataclass(frozen=True)
+class _PinNet:
+    """Phase-1 parse of a plain-net connection: every pass-independent
+    field phase 2 used to recompute per pass (width/dims/data_type already
+    carry the instance's parameter/const/type substitutions).  WRAPPED
+    marks a fully paren-wrapped plain net ((sig)) — exempt from AIO
+    candidacy under the live verilog-auto-ignore-concat setting, recorded
+    with the port's width for fact callers; SIMPLE_OK is the
+    (cast-stripped) simple-net match the SIMPLE_ONLY passes gate on."""
+
+    net: "str | None"  # conn_net_name result; None: not a declarable net
+    simple_ok: bool
+    wrapped: bool
+    width: str
+    pdims: tuple = ()
+    udims: tuple = ()
+    data_type: str = ""
+    uidx: str = ""
+    unpacked_ranges: tuple = ()
+    mdim: str = ""
+
+
+def _apply_width_maps(
+    pairs: list, param_values: dict, const_map: dict[str, str]
+) -> list:
+    """(net, width) pairs with the instance's parameter overrides and the
+    module's const symbols folded into the widths — phase 1, so once per
+    pin instead of once per pin per pass."""
+    if not param_values and not const_map:
+        return list(pairs)
+    from . import emacs
+
+    out = []
+    for net, ewidth in pairs:
+        if param_values:
+            ewidth = emacs._apply_param_values(ewidth, param_values)
+        if const_map:
+            ewidth = emacs._apply_param_values(ewidth, const_map)
+        out.append((net, ewidth))
+    return out
+
+
+def _pin_record(
+    pin: str,
+    expr: str,
+    templated: bool,
+    port,
+    param_values: dict,
+    const_map: dict[str, str],
+    type_values: dict,
+) -> tuple:
+    """The phase-1 record for one connection expression (see _PK_*)."""
+    from . import emacs
+
+    if port is None:
+        return (_PK_SKIP, None, pin, None)
+    stripped = emacs._strip_comments(expr).strip()
+    if stripped.startswith("'") and re.match(r"^'\s*\{", stripped):
+        # SV assignment-pattern literal '{a, b, ...}: its members ARE
+        # driven nets (autowire_apostrophe.sv: the templated
+        # '{d_1[31:0],d_2[31:0]} drives d_1 and d_2, not the port's
+        # unpacked shape).  Same ignore-concat rule as a bare {...}.
+        inner = stripped[stripped.index("{"):]
+        return (
+            _PK_CONCAT, port, pin,
+            _apply_width_maps(_expr_nets(inner), param_values, const_map),
+        )
+    # only a `define/literal NET carries no declaration; a backtick
+    # inside a bit-select (net[`MACRO-1:0]) is fine
+    if (
+        not stripped
+        or stripped.startswith(("'", "`"))
+        or stripped[0].isdigit()
+    ):
+        return (_PK_SKIP, port, pin, None)
+    # A fully paren-wrapped plain net — (sig), ((sig[3])) — is the net
+    # itself: verilog-read-sub-decls-expr strips redundant parens before
+    # classifying the connection, and the {} exemption treats (...)
+    # alike.  Unwrap so the plain-net path (port width, suffix dims)
+    # applies; whether it is SKIPPED under verilog-auto-ignore-concat is
+    # a live phase-2 decision (the WRAPPED flag on _PinNet).
+    unwrapped = stripped
+    while unwrapped.startswith("("):
+        inner = _unwrap_parens(unwrapped)
+        if inner is None or not _elem_net(inner):
+            break
+        unwrapped = inner
+    wrapped = unwrapped != stripped
+    if wrapped:
+        stripped = unwrapped
+    if stripped.startswith("{"):
+        # {...}: gated by the live ignore-concat setting in phase 2.
+        return (
+            _PK_CONCAT, port, pin,
+            _apply_width_maps(_expr_nets(stripped), param_values, const_map),
+        )
+    if stripped.startswith("("):
+        # Parenthesized expression: unwrap fully first — a concat inside
+        # parens (({2'b11, signal_e2}) in autoinput_concat_ignore.v)
+        # follows the same rule as a bare {...}; a non-concat
+        # parenthesized expression always extracts.
+        inner = stripped
+        while True:
+            _u = _unwrap_parens(inner)
+            if _u is None:
+                break
+            inner = _u
+        if inner.startswith("{"):
+            return (
+                _PK_CONCAT, port, pin,
+                _apply_width_maps(_expr_nets(inner), param_values, const_map),
+            )
+        return (
+            _PK_PAREN, port, pin,
+            _apply_width_maps(_expr_nets(stripped), param_values, const_map),
+        )
+    # Issue #1526: SV cast type'(expr) — extract inner expr for the
+    # simple-net check, so t'(x) counts as signal x for AIO candidacy.
+    # Fast path: only run the cast regex when there's a quote (casts
+    # and literals are rare; the regex backtracks on every pin).
+    if "'" in stripped:
+        cast_m = re.match(r"^[a-zA-Z_]\w*'\s*\((.*)\)$", stripped)
+        check_expr = cast_m.group(1).strip() if cast_m else stripped
+    else:
+        check_expr = stripped
+    simple_ok = bool(_elem_net(check_expr))
+    net = conn_net_name(check_expr)
+    if net is None:
+        return (_PK_SKIP, port, pin, None)
+    raw = port.width  # 'msb:lsb', None for scalar
+    width = "c0" if raw is None else raw.split(":")[0].strip()
+    if param_values:
+        width = emacs._apply_param_values(width, param_values)
+    if const_map:
+        width = emacs._apply_param_values(width, const_map)
+    # multi-dim packed port: prefer the dims in the EAI connection
+    # note (already param-value substituted), else the port's own
+    # packed ranges — including a single packed range: width is
+    # msb-only, so a non-zero lsb ([1:-1], [8:1]) would be lost
+    # if the single dim were left to the width fallback ([1:0]).
+    # A plain net connection's own bracket suffixes are stronger
+    # evidence still (verilog-read-sub-decls-expr): a template []
+    # already consumed the port's leading dims, so the suffixes
+    # ARE the net's dims (autoinst_array_braket.v).  But when the
+    # connection carries a /*...*/ dims note, the note wins: for
+    # the [].[@] / []. [range] forms the executable suffix is an
+    # element select, and the note holds the real packed dims.
+    # Port-width inheritance: verilog-read-sub-decls-sig takes (if
+    # dotname port-bits vec), so a bracketless explicit .pin (net)
+    # carries NO width in Emacs — but non-template /*AUTOINST*/ pins
+    # gain brackets from EAI before AW/AIO run, so port inheritance
+    # is the correct stand-in for them (and for shorthand and
+    # /*...*/ note connections, whose packed dims _conn_packed_dims
+    # cannot parse in the .[unpacked] suffix form).  ONLY a template
+    # pin (// Templated, left verbatim by EAI) without brackets or
+    # a note stays widthless (autoinst_star.v: `wire templated`
+    # next to `wire [w-1:0] pin`).
+    conn_pdims = (
+        (() if "/*" in expr else _expr_suffix_dims(stripped, net, len(port.packed), len(port.unpacked)))
+        or _conn_packed_dims(expr)
+    )
+    if conn_pdims:
+        pdims = conn_pdims
+    elif templated and "[" not in stripped:
+        # Bare template net, no brackets, no note: widthless. (A
+        # template pin WITH brackets keeps the port fallback: for
+        # multidim element connections like out_momo[0][127:0] in
+        # autoinput_2d_gaspar.v, _expr_suffix_dims yields no packed
+        # dims and the port's [127:0] is the golden answer.)
+        width = "c0"
+        pdims = ()
+    else:
+        pdims = tuple(_clean_dim(d) for d in port.packed)
+    if pdims and param_values:
+        pdims = tuple(
+            _clean_dim(emacs._apply_param_values(d, param_values))
+            for d in pdims
+        )
+    if pdims and const_map:
+        pdims = tuple(
+            _clean_dim(emacs._apply_param_values(d, const_map))
+            for d in pdims
+        )
+    # Unpacked dims get the same instance substitution as packed
+    # (parameter_in_array_test.sv: [TEST+2] -> [10] with .TEST(8)
+    # under verilog-auto-inst-param-value:t; previously passed raw).
+    udims = port.unpacked
+    if udims and param_values:
+        udims = tuple(
+            _clean_dim(emacs._apply_param_values(d, param_values))
+            for d in udims
+        )
+    if udims and const_map:
+        udims = tuple(
+            _clean_dim(emacs._apply_param_values(d, const_map))
+            for d in udims
+        )
+    # Apply param substitution to data_type (e.g. OUT_t -> upper_t
+    # via #(.OUT_t(upper_t)) when verilog-auto-inst-param-value is on;
+    # TYPE-parameter overrides apply regardless of the flag)
+    data_type = port.data_type
+    if data_type and type_values:
+        # Plain whole-word replacement, NO paren wrapping and NO
+        # numeric folding: a type override is not an arithmetic
+        # expression — _apply_param_values would wrap `logic [7:0]`
+        # as `(logic[7:0])`, which APF then strips entirely.
+        for _ in range(8):
+            _prev = data_type
+            for _tname, _tval in type_values.items():
+                data_type = re.sub(
+                    r"\b" + re.escape(_tname) + r"\b", _tval, data_type
+                )
+            if data_type == _prev:
+                break
+        # read_inst_param_values strips all whitespace, so a type
+        # override arrives as `logic[7:0]`; APF drops the type word
+        # from a spaceless `word[` form, so re-space it.
+        data_type = re.sub(r"(\w)\[", r"\1 [", data_type)
+    if data_type and param_values:
+        data_type = emacs._apply_param_values(data_type, param_values)
+    if data_type and const_map:
+        data_type = emacs._apply_param_values(data_type, const_map)
+    # unpacked-array element index: the note's ``.[idx]`` part or the
+    # connection's own select when the port is unpacked (both render
+    # after the name, verilog-mode memory); a packed-only port whose
+    # connection carries a leading select (name[U][packed...]) takes
+    # it as an unpacked multidim, rendered before the packed dims.
+    uidx = ""
+    mdim = ""
+    um = re.search(r"\.\s*\[([^\]:]+)\]\s*\*/", expr)
+    if um:
+        # A note dot-part equal to the port's own unpacked dim is
+        # the array's SIZE, not an element index: parameter_in_array
+        # .TEST(8) turns port [TEST] into note /*.[8]*/ — feeding
+        # "8" to the index merge would widen it to a bogus [8:8]
+        # range, while Emacs declares [8].
+        _dot = um.group(1).strip()
+        if _dot not in [d.strip() for d in udims]:
+            uidx = _dot
+    elif port.unpacked:
+        parsed = _elem_net(stripped)
+        if parsed:
+            ranges = parsed[1]
+            # a select equal to the PACKED range is a packed
+            # bit-select of the whole array, not an element index
+            packed_txt = re.sub(r"\s+", "", port.packed[-1] if port.packed else "")
+            if ranges and re.sub(r"\s+", "", ranges[-1]) != packed_txt:
+                uidx = ranges[-1].strip()
+    else:
+        parsed = _elem_net(stripped)
+        if parsed:
+            ranges = parsed[1]
+            npacked = len(port.packed)
+            if npacked and len(ranges) == npacked + 1:
+                # name[U][packed...]: the leading select is an
+                # unpacked dimension.  The first driver's wins, as
+                # in verilog-signals-combine-bus (verified:
+                # autoinput_2d_gaspar.v -> input [0] [127:0]).
+                mdim = ranges[0].strip()
+            elif (
+                not npacked
+                and len(ranges) == 2
+                and _clean_dim(ranges[0]).isdigit()
+                and _clean_dim(ranges[1]).isdigit()
+            ):
+                # Scalar port, element-select connection name[U][bit]
+                # (autoinst_regexp_match.v): same reading — the
+                # leading select is the unpacked dimension, the bit
+                # merges into the packed range via _note_net.
+                mdim = ranges[0].strip()
+    # explicit unpacked RANGES from the connection note
+    # (/*[15:0].[-2:-1]*/ from a `net[].[-2:-1]` template): the
+    # dot-part brackets carrying a colon are range evidence for
+    # the declaration merge (tpl_arr_edge.v)
+    from .autodef import _CONN_DIM_NOTE
+
+    unpacked_ranges: tuple = ()
+    nm = _CONN_DIM_NOTE.search(expr)
+    if nm:
+        unpacked_ranges = tuple(
+            d.strip()
+            for d in re.findall(r"\[([^\]]+)\]", nm.group(2))
+            if ":" in d
+        )
+    return (
+        _PK_PLAIN,
+        port,
+        pin,
+        _PinNet(
+            net=net,
+            simple_ok=simple_ok,
+            wrapped=wrapped,
+            width=width,
+            pdims=pdims,
+            udims=udims,
+            data_type=data_type,
+            uidx=uidx,
+            unpacked_ranges=unpacked_ranges,
+            mdim=mdim,
+        ),
+    )
+
+
+def _pin_records(
+    moddef: ModuleDef,
+    pin_exprs: list,
+    param_values: dict,
+    const_map: dict[str, str],
+    type_values: dict,
+) -> list:
+    """Parse each pin connection of one instance ONCE into its phase-1
+    record (see _pin_record).  Everything here is independent of the
+    caller's direction/simple/concat filtering, so one cached scan serves
+    every aall pass."""
+    ports = {p.name: p for p in moddef.ports}
+    return [
+        _pin_record(pin, expr, templated, ports.get(pin),
+                    param_values, const_map, type_values)
+        for pin, expr, _shorthand, templated in pin_exprs
+    ]
+
+
 def _process_named_instance(
     nets: dict[str, InstNet],
     module: str,
     inst: str,
-    moddef: ModuleDef,
-    pin_exprs: list[tuple[str, str]],
-    param_values: dict,
+    records: list,
     directions: "tuple[str, ...] | None",
     simple_only: bool,
     concat_ok: bool,
-    const_map: dict[str, str],
     ignore_concat: bool,
     driver: object = None,
-    type_values: "dict | None" = None,
 ) -> None:
-    """Phase 2 of _inst_driven_nets for one named-port instance: the
-    direction/simple/concat filtering and width computation over cached
-    pin data (cheap — rerunnable per pass)."""
-    from . import emacs
+    """Phase 2 of _inst_driven_nets for one named-port instance: pure
+    direction/simple/concat filtering over the phase-1 pin records (see
+    _pin_records) — cheap, rerunnable per pass."""
+    from dataclasses import replace
+    from ._trace import trace_sig, tracing
 
     if directions is None:
         # the AUTOWIRE driver set: outputs and inouts — an interface
         # port connection is an interface instance, never a wire driver
-        inst_io = {
-            p.name: p for p in moddef.ports if p.direction in ("output", "inout")
-        }
+        want_dirs = ("output", "inout")
     else:
-        inst_io = {p.name: p for p in moddef.ports if p.direction in directions}
-    for pin, expr, shorthand, templated in pin_exprs:
-        if pin not in inst_io:
+        want_dirs = directions
+    for kind, port, pin, payload in records:
+        if port is None or port.direction not in want_dirs:
             continue
-        stripped = emacs._strip_comments(expr).strip()
-        if stripped.startswith("'") and re.match(r"^'\s*\{", stripped):
-            # SV assignment-pattern literal '{a, b, ...}: its members ARE
-            # driven nets (autowire_apostrophe.sv: the templated
-            # '{d_1[31:0],d_2[31:0]} drives d_1 and d_2, not the port's
-            # unpacked shape). Same ignore-concat rule as a bare {...}.
-            if not ignore_concat or concat_ok:
-                inner = stripped[stripped.index("{") :]
-                for net, ewidth in _expr_nets(inner):
-                    if param_values:
-                        ewidth = emacs._apply_param_values(ewidth, param_values)
-                    if const_map:
-                        ewidth = emacs._apply_param_values(ewidth, const_map)
-                    _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver))
+        if kind == _PK_SKIP:
             continue
-        # only a `define/literal NET carries no declaration; a backtick
-        # inside a bit-select (net[`MACRO-1:0]) is fine
-        if (
-            not stripped
-            or stripped.startswith(("'", "`"))
-            or stripped[0].isdigit()
-        ):
-            continue
-        # A fully paren-wrapped plain net — (sig), ((sig[3])) — is
-        # the net itself: verilog-read-sub-decls-expr strips
-        # redundant parens before classifying the connection, and
-        # the {} exemption treats (...) alike.  Unwrap so the
-        # plain-net path (port width, suffix dims) applies; under
-        # verilog-auto-ignore-concat the candidacy scan skips it
-        # exactly like a {...} connection, while fact callers
-        # (concat_ok) still record the net — with the port's width.
-        unwrapped = stripped
-        while unwrapped.startswith("("):
-            inner = _unwrap_parens(unwrapped)
-            if inner is None or not _elem_net(inner):
-                break
-            unwrapped = inner
-        if unwrapped != stripped:
-            if ignore_concat and not concat_ok:
+        if kind != _PK_PLAIN:
+            # {...} (and {...}-in-parens) nets are facts for CONCAT_OK
+            # callers, candidacy-exempt under the live ignore-concat
+            # setting; other (...) records always count.
+            if kind == _PK_CONCAT and ignore_concat and not concat_ok:
                 continue
-            stripped = unwrapped
-        if stripped.startswith("{"):
-            # verilog-auto-ignore-concat: skip {…} (default) or extract.
-            # CONCAT_OK is fact recording (AW/AREG "driven" sets, AIO
-            # "is this net wired internally anywhere"): there the
-            # identifiers in a {...} expression always count as
-            # connected, regardless of the candidacy exemption.
-            if not ignore_concat or concat_ok:
-                for net, ewidth in _expr_nets(stripped):
-                    if param_values:
-                        ewidth = emacs._apply_param_values(ewidth, param_values)
-                    if const_map:
-                        ewidth = emacs._apply_param_values(ewidth, const_map)
-                    _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver))
-            continue
-        if stripped.startswith("("):
-            # Parenthesized expression: unwrap fully first — a concat
-            # inside parens (({2'b11, signal_e2}) in
-            # autoinput_concat_ignore.v) follows the same rule as a bare
-            # {...}: skipped under verilog-auto-ignore-concat for
-            # candidacy, extracted for fact callers (concat_ok).
-            # A non-concat parenthesized expression always extracts.
-            inner = stripped
-            while True:
-                _u = _unwrap_parens(inner)
-                if _u is None:
-                    break
-                inner = _u
-            if inner.startswith("{"):
-                if not ignore_concat or concat_ok:
-                    for net, ewidth in _expr_nets(inner):
-                        if param_values:
-                            ewidth = emacs._apply_param_values(ewidth, param_values)
-                        if const_map:
-                            ewidth = emacs._apply_param_values(ewidth, const_map)
-                        _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver))
-                continue
-            for net, ewidth in _expr_nets(stripped):
-                if param_values:
-                    ewidth = emacs._apply_param_values(ewidth, param_values)
-                if const_map:
-                    ewidth = emacs._apply_param_values(ewidth, const_map)
+            for net, ewidth in payload:
                 _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver))
             continue
-        # Issue #1526: SV cast type'(expr) — extract inner expr for the
-        # simple-net check, so t'(x) counts as signal x for AIO candidacy.
-        # Fast path: only run the cast regex when there's a quote (casts
-        # and literals are rare; the regex backtracks on every pin).
-        if "'" in stripped:
-            cast_m = re.match(r"^[a-zA-Z_]\w*'\s*\((.*)\)$", stripped)
-            check_expr = cast_m.group(1).strip() if cast_m else stripped
-        else:
-            check_expr = stripped
-        if simple_only and not _elem_net(check_expr):
+        pp = payload
+        if pp.wrapped and ignore_concat and not concat_ok:
             continue
-        net = conn_net_name(check_expr)
-        if net is None:
+        if simple_only and not pp.simple_ok:
             continue
-        port = inst_io[pin]
-        raw = port.width  # 'msb:lsb', None for scalar
-        width = "c0" if raw is None else raw.split(":")[0].strip()
-        if param_values:
-            width = emacs._apply_param_values(width, param_values)
-        if const_map:
-            width = emacs._apply_param_values(width, const_map)
-        # multi-dim packed port: prefer the dims in the EAI connection
-        # note (already param-value substituted), else the port's own
-        # packed ranges — including a single packed range: width is
-        # msb-only, so a non-zero lsb ([1:-1], [8:1]) would be lost
-        # if the single dim were left to the width fallback ([1:0]).
-        # A plain net connection's own bracket suffixes are stronger
-        # evidence still (verilog-read-sub-decls-expr): a template []
-        # already consumed the port's leading dims, so the suffixes
-        # ARE the net's dims (autoinst_array_braket.v).  But when the
-        # connection carries a /*...*/ dims note, the note wins: for
-        # the [].[@] / []. [range] forms the executable suffix is an
-        # element select, and the note holds the real packed dims.
-        # Port-width inheritance: verilog-read-sub-decls-sig takes (if
-        # dotname port-bits vec), so a bracketless explicit .pin (net)
-        # carries NO width in Emacs — but non-template /*AUTOINST*/ pins
-        # gain brackets from EAI before AW/AIO run, so port inheritance
-        # is the correct stand-in for them (and for shorthand and
-        # /*...*/ note connections, whose packed dims _conn_packed_dims
-        # cannot parse in the .[unpacked] suffix form).  ONLY a template
-        # pin (// Templated, left verbatim by EAI) without brackets or
-        # a note stays widthless (autoinst_star.v: `wire templated`
-        # next to `wire [w-1:0] pin`).
-        conn_pdims = (
-            (() if "/*" in expr else _expr_suffix_dims(stripped, net, len(port.packed), len(port.unpacked)))
-            or _conn_packed_dims(expr)
-        )
-        if conn_pdims:
-            pdims = conn_pdims
-        elif templated and "[" not in stripped:
-            # Bare template net, no brackets, no note: widthless. (A
-            # template pin WITH brackets keeps the port fallback: for
-            # multidim element connections like out_momo[0][127:0] in
-            # autoinput_2d_gaspar.v, _expr_suffix_dims yields no packed
-            # dims and the port's [127:0] is the golden answer.)
-            width = "c0"
-            pdims = ()
-        else:
-            pdims = tuple(_clean_dim(d) for d in port.packed)
-        if pdims and param_values:
-            pdims = tuple(
-                _clean_dim(emacs._apply_param_values(d, param_values))
-                for d in pdims
-            )
-        if pdims and const_map:
-            pdims = tuple(
-                _clean_dim(emacs._apply_param_values(d, const_map))
-                for d in pdims
-            )
-        # Unpacked dims get the same instance substitution as packed
-        # (parameter_in_array_test.sv: [TEST+2] -> [10] with .TEST(8)
-        # under verilog-auto-inst-param-value:t; previously passed raw).
-        udims = port.unpacked
-        if udims and param_values:
-            udims = tuple(
-                _clean_dim(emacs._apply_param_values(d, param_values))
-                for d in udims
-            )
-        if udims and const_map:
-            udims = tuple(
-                _clean_dim(emacs._apply_param_values(d, const_map))
-                for d in udims
-            )
-        from ._trace import trace_sig, tracing
-
-        if tracing(net):
+        if tracing(pp.net):
             trace_sig(
-                net,
-                f"conn-dims pin={pin} pdims={list(pdims)} width={width} "
+                pp.net,
+                f"conn-dims pin={pin} pdims={list(pp.pdims)} width={pp.width} "
                 f"inst={inst} module={module}",
             )
-        # Apply param substitution to data_type (e.g. OUT_t -> upper_t
-        # via #(.OUT_t(upper_t)) when verilog-auto-inst-param-value is on;
-        # TYPE-parameter overrides apply regardless of the flag)
-        data_type = port.data_type
-        if data_type and type_values:
-            # Plain whole-word replacement, NO paren wrapping and NO
-            # numeric folding: a type override is not an arithmetic
-            # expression — _apply_param_values would wrap `logic [7:0]`
-            # as `(logic[7:0])`, which APF then strips entirely.
-            for _ in range(8):
-                _prev = data_type
-                for _tname, _tval in type_values.items():
-                    data_type = re.sub(
-                        r"\b" + re.escape(_tname) + r"\b", _tval, data_type
-                    )
-                if data_type == _prev:
-                    break
-            # read_inst_param_values strips all whitespace, so a type
-            # override arrives as `logic[7:0]`; APF drops the type word
-            # from a spaceless `word[` form, so re-space it.
-            data_type = re.sub(r"(\w)\[", r"\1 [", data_type)
-        if data_type and param_values:
-            data_type = emacs._apply_param_values(data_type, param_values)
-        if data_type and const_map:
-            data_type = emacs._apply_param_values(data_type, const_map)
         _note_net(
             nets,
             InstNet(
-                net, width, inst, module, pdims, udims,
-                port.direction, port.signed, port.net_type, data_type,
+                pp.net, pp.width, inst, module, pp.pdims, pp.udims,
+                port.direction, port.signed, port.net_type, pp.data_type,
                 driver=driver,
             ),
         )
-        # unpacked-array element index: the note's ``.[idx]`` part or the
-        # connection's own select when the port is unpacked (both render
-        # after the name, verilog-mode memory); a packed-only port whose
-        # connection carries a leading select (name[U][packed...]) takes
-        # it as an unpacked multidim, rendered before the packed dims.
-        uidx = ""
-        mdim = ""
-        um = re.search(r"\.\s*\[([^\]:]+)\]\s*\*/", expr)
-        if um:
-            # A note dot-part equal to the port's own unpacked dim is
-            # the array's SIZE, not an element index: parameter_in_array
-            # .TEST(8) turns port [TEST] into note /*.[8]*/ — feeding
-            # "8" to the index merge would widen it to a bogus [8:8]
-            # range, while Emacs declares [8].
-            _dot = um.group(1).strip()
-            if _dot not in [d.strip() for d in udims]:
-                uidx = _dot
-        elif port.unpacked:
-            parsed = _elem_net(stripped)
-            if parsed:
-                ranges = parsed[1]
-                # a select equal to the PACKED range is a packed
-                # bit-select of the whole array, not an element index
-                packed_txt = re.sub(r"\s+", "", port.packed[-1] if port.packed else "")
-                if ranges and re.sub(r"\s+", "", ranges[-1]) != packed_txt:
-                    uidx = ranges[-1].strip()
-        else:
-            parsed = _elem_net(stripped)
-            if parsed:
-                ranges = parsed[1]
-                npacked = len(port.packed)
-                if npacked and len(ranges) == npacked + 1:
-                    # name[U][packed...]: the leading select is an
-                    # unpacked dimension.  The first driver's wins, as
-                    # in verilog-signals-combine-bus (verified:
-                    # autoinput_2d_gaspar.v -> input [0] [127:0]).
-                    mdim = ranges[0].strip()
-                elif (
-                    not npacked
-                    and len(ranges) == 2
-                    and _clean_dim(ranges[0]).isdigit()
-                    and _clean_dim(ranges[1]).isdigit()
-                ):
-                    # Scalar port, element-select connection name[U][bit]
-                    # (autoinst_regexp_match.v): same reading — the
-                    # leading select is the unpacked dimension, the bit
-                    # merges into the packed range via _note_net.
-                    mdim = ranges[0].strip()
-        if uidx:
-            rec = nets[net]
-            if uidx not in rec.unpacked_idx:
-                from dataclasses import replace
-
-                nets[net] = replace(
-                    rec, unpacked_idx=tuple(rec.unpacked_idx) + (uidx,)
+        if pp.uidx:
+            rec = nets[pp.net]
+            if pp.uidx not in rec.unpacked_idx:
+                nets[pp.net] = replace(
+                    rec, unpacked_idx=tuple(rec.unpacked_idx) + (pp.uidx,)
                 )
-        # explicit unpacked RANGES from the connection note
-        # (/*[15:0].[-2:-1]*/ from a `net[].[-2:-1]` template): the
-        # dot-part brackets carrying a colon are range evidence for
-        # the declaration merge (tpl_arr_edge.v)
-        from .autodef import _CONN_DIM_NOTE
-
-        nm = _CONN_DIM_NOTE.search(expr)
-        if nm:
-            rev = tuple(
-                d.strip()
-                for d in re.findall(r"\[([^\]]+)\]", nm.group(2))
-                if ":" in d
-            )
-            if rev:
-                rec = nets[net]
-                new = tuple(x for x in rev if x not in rec.unpacked_ranges)
-                if new:
-                    from dataclasses import replace
-
-                    nets[net] = replace(
-                        rec, unpacked_ranges=tuple(rec.unpacked_ranges) + new
-                    )
-        if mdim:
-            rec = nets[net]
+        if pp.unpacked_ranges:
+            rec = nets[pp.net]
+            new = tuple(x for x in pp.unpacked_ranges if x not in rec.unpacked_ranges)
+            if new:
+                nets[pp.net] = replace(
+                    rec, unpacked_ranges=tuple(rec.unpacked_ranges) + new
+                )
+        if pp.mdim:
+            rec = nets[pp.net]
             if not rec.multidim:
-                from dataclasses import replace
-
-                nets[net] = replace(rec, multidim=(mdim,))
-
+                nets[pp.net] = replace(rec, multidim=(pp.mdim,))
 
 def _inst_driven_nets(
     lines: Sequence[str],
@@ -1375,10 +1466,10 @@ def _inst_driven_nets(
     (the AUTOLOGIC/AUTOWIRE/AUTOREG trio in aall shares one scan per
     module span via :func:`_cached_pin_scan`)."""
     # _PIN_SCAN: a cached _inst_pin_scan() result for this span (see
-    # _cached_pin_scan).  The expensive per-instance pin extraction is then
-    # skipped; only the cheap direction/simple/concat filtering reruns.
+    # _cached_pin_scan).  The expensive per-instance pin extraction AND
+    # per-pin parse are then skipped; only the cheap direction/simple/
+    # concat filtering over the pin records reruns.
     scan = _pin_scan if _pin_scan is not None else _inst_pin_scan(lines, modules)
-    const_map = scan["const_map"]
     # the live setting, not a fill-time snapshot: AUTOUNUSED forces
     # extraction (set_ignore_concat(False)) around its call, and a cached
     # scan must behave exactly like the inline scan it replaces
@@ -1390,12 +1481,10 @@ def _inst_driven_nets(
                 payload, module, inst, moddef_or_dirs, nets, directions, simple_only
             )
         else:
-            pin_exprs, param_values, *rest = payload
-            type_values = rest[0] if rest else {}
             _process_named_instance(
-                nets, module, inst, moddef_or_dirs, pin_exprs, param_values,
-                directions, simple_only, concat_ok, const_map, ignore_concat,
-                driver=_di, type_values=type_values,
+                nets, module, inst, payload,
+                directions, simple_only, concat_ok, ignore_concat,
+                driver=_di,
             )
     return nets
 

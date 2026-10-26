@@ -182,28 +182,37 @@ def _parse_active_low(lines: Sequence[str]) -> str | None:
 # structural text (comments and strings blanked, same length)
 
 
+_CS_TOKEN = re.compile(r'//|/\*|"')
+
+
 def _comment_string_spans(text: str) -> list[tuple[int, int, str]]:
     """(start, end, kind) spans of ``//`` / ``/* */`` comments and ``"..."``
     string literals in TEXT."""
+    # token-driven scan: the char loop cost ~0.03s per whole-buffer call
     spans: list[tuple[int, int, str]] = []
-    i, n = 0, len(text)
-    while i < n:
-        if text.startswith("//", i):
+    n = len(text)
+    pos = 0
+    search = _CS_TOKEN.search
+    while True:
+        m = search(text, pos)
+        if m is None:
+            break
+        c = m.group(0)
+        i = m.start()
+        if c == "//":
             j = text.find("\n", i)
             j = n if j < 0 else j
             spans.append((i, j, "line"))
-            i = j
-        elif text.startswith("/*", i):
+            pos = j
+        elif c == "/*":
             j = text.find("*/", i + 2)
             j = n if j < 0 else j + 2
             spans.append((i, j, "block"))
-            i = j
-        elif text[i] == '"':
+            pos = j
+        else:  # '"'
             j = _skip_dquote(text, i)
             spans.append((i, j, "string"))
-            i = j
-        else:
-            i += 1
+            pos = j
     return spans
 
 
@@ -214,6 +223,8 @@ def _find_markers(text: str, regex: "re.Pattern[str]") -> list[tuple[int, int]]:
     some other comment/string span strictly contains it (mirrors
     ``verilog-re-search-forward-quick`` skipping commented matches).
     """
+    if not regex.search(text):
+        return []  # no marker: skip the comment/string span scan entirely
     spans = _comment_string_spans(text)
     out: list[tuple[int, int]] = []
     for m in regex.finditer(text):

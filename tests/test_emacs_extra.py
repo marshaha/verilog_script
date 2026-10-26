@@ -731,8 +731,8 @@ def test_inst_pin_scan_skips_presection_pins_for_marked_instances():
         "endmodule",
     ]
     scan = wire._inst_pin_scan(lines, {"Sub": sub})
-    pins = scan["instances"][0][4][0]
-    assert [p[0] for p in pins] == ["second_out"]
+    records = scan["instances"][0][4]
+    assert [r[2] for r in records] == ["second_out"]
 
     # Marker-less: same pins, no section filter.
     lines2 = [
@@ -743,8 +743,8 @@ def test_inst_pin_scan_skips_presection_pins_for_marked_instances():
         "endmodule",
     ]
     scan2 = wire._inst_pin_scan(lines2, {"Sub": sub})
-    pins2 = scan2["instances"][0][4][0]
-    assert [p[0] for p in pins2] == ["first_out", "second_out"]
+    records2 = scan2["instances"][0][4]
+    assert [r[2] for r in records2] == ["first_out", "second_out"]
 
     # Marked but section-less (standalone AW/AIO on unexpanded text):
     # no section comments, so no filter — the full pin list stays.
@@ -757,8 +757,8 @@ def test_inst_pin_scan_skips_presection_pins_for_marked_instances():
         "endmodule",
     ]
     scan3 = wire._inst_pin_scan(lines3, {"Sub": sub})
-    pins3 = scan3["instances"][0][4][0]
-    assert [p[0] for p in pins3] == ["first_out", "second_out"]
+    records3 = scan3["instances"][0][4]
+    assert [r[2] for r in records3] == ["first_out", "second_out"]
 
 
 def test_kill_region_marker_owns_one_region_only():

@@ -237,39 +237,48 @@ def _scan_parens_at(text: str, offsets: Iterable[int]) -> dict[int, list[int]]:
 
     Equivalent to ``{o: _scan_parens(text, o) for o in offsets}`` but O(n)
     instead of O(n * len(offsets))."""
+    # token-driven scan (same tokenizer as _matching_paren): the char loop
+    # cost ~0.02s per whole-buffer call on big tops
     want = sorted(set(offsets))
     out: dict[int, list[int]] = {}
     stack: list[int] = []
     wi = 0
-    i = 0
     n = len(text)
-    while wi < len(want) and i < n:
-        while wi < len(want) and want[wi] <= i:
+    pos = 0
+    search = _MP_TOKEN.search
+    while wi < len(want):
+        m = search(text, pos)
+        tok = n if m is None else m.start()
+        # offsets before the next token see the stack as-is (comments and
+        # strings never change it); an offset ON a token records BEFORE
+        # the token is processed, matching the char-loop ordering
+        while wi < len(want) and want[wi] <= tok:
             out[want[wi]] = list(stack)
             wi += 1
-        two = text[i : i + 2]
-        if two == "//":
-            j = text.find("\n", i)
-            i = n if j < 0 else j
-            continue
-        if two == "/*":
-            j = text.find("*/", i + 2)
-            if j < 0:
-                break
-            i = j + 2
-            continue
-        c = text[i]
-        if c == '"':
+        if m is None:
+            break
+        c = m.group(0)
+        i = m.start()
+        if c == "(":
+            stack.append(i)
+            pos = i + 1
+        elif c == ")":
+            if stack:
+                stack.pop()
+            pos = i + 1
+        elif c == '"':
             j = i + 1
             while j < n and (text[j] != '"' or text[j - 1] == "\\"):
                 j += 1
-            i = j + 1
-            continue
-        if c == "(":
-            stack.append(i)
-        elif c == ")" and stack:
-            stack.pop()
-        i += 1
+            pos = j + 1
+        elif c == "//":
+            j = text.find("\n", i)
+            pos = n if j < 0 else j
+        else:  # /*
+            j = text.find("*/", i + 2)
+            if j < 0:
+                break
+            pos = j + 2
     while wi < len(want):
         out[want[wi]] = list(stack)
         wi += 1
