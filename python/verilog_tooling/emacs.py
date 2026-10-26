@@ -1463,9 +1463,10 @@ def _connect(
     width = port.width
     if width and param_values:
         width = _apply_param_values(width, param_values)
-    if width and simplify:
-        # verilog-auto-simplify-expressions (default t): fold constants
-        width = _fold_numeric_expr(width)
+    # Pin widths stay verbatim: verilog-mode simplifies only the signal
+    # width in the declaration/combine path, never an AUTOINST pin
+    # (autowire_merge_bug303.v keeps [224*1-1:128*1] on the pin).  The
+    # SIMPLIFY parameter is kept for call compatibility.
     # a multidim port's shape rides as a verilog-mode /*[D1][D2]*/ note —
     # in default connections AND as the []/[][] expansion in templates.
     # Dims get the instance's #(...) substitutions, redundant-paren

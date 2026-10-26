@@ -2889,15 +2889,23 @@ def _normalize_dim(dim: str) -> str:
 
 
 def _clean_dim(dim: str) -> str:
-    """Full dim cleanup: strip redundant parens, then fold pure-numeric
-    expressions (``12-1`` -> ``11``, ``2*16-1`` -> ``31``) the way
-    verilog-mode writes notes/declarations; anything with an identifier
-    stays symbolic.  The numeric fold honours the simplify gate
-    (verilog-auto-simplify-expressions:nil keeps ``2*2`` verbatim)."""
+    """Dim cleanup: strip redundant parens only.  verilog-mode reads port
+    ranges verbatim; folding happens in exactly one place — the signal
+    WIDTH (last packed dim) in the declaration/combine path
+    (wire._simplify_rec) — never at parse time, never on pins, never on
+    non-last dims (autoinst_mul.v: AUTOINPUT keeps ``[8+4-1:0]`` on a
+    non-last dim and folds only the last one to ``[11:0]``)."""
+    return _normalize_dim(dim)
+
+
+def _dim_equal(a: str, b: str) -> bool:
+    """Same range under different spellings (``512-1:0`` vs ``511:0``):
+    compare numerically-folded normal forms.  Used only where the
+    question is "same range?" (note-vs-port matching, orphan absorb) —
+    emission itself always keeps the verbatim spelling."""
     from .emacs import _fold_numeric_expr
 
-    cleaned = _normalize_dim(dim)
-    return _fold_numeric_expr(cleaned) if simplify_on() else cleaned
+    return _fold_numeric_expr(_normalize_dim(a)) == _fold_numeric_expr(_normalize_dim(b))
 
 
 def _conn_packed_dims(text: str) -> tuple[str, ...]:
@@ -2967,7 +2975,7 @@ def _port_dim_evidence(
     if pdims and port.packed and len(pdims) == len(port.packed) and not udims:
         new_p = list(pdims)
         for i in range(len(pdims)):
-            if _clean_dim(port.packed[i]) == _clean_dim(pdims[i]):
+            if _dim_equal(port.packed[i], pdims[i]):
                 new_p[i] = port.packed[i]
         pdims = tuple(new_p)
     return pdims, udims
@@ -3030,9 +3038,9 @@ def _absorb_waived_usrdef(
         return False
     dims = _usrdef_packed_dims(sig.line)
     ud = _usrdef_unpacked_dims(sig.line)
-    if dims is None or tuple(_clean_dim(d) for d in pdims) != dims:
+    if dims is None or len(pdims) != len(dims) or not all(_dim_equal(a, b) for a, b in zip(pdims, dims)):
         return False
-    if tuple(_clean_dim(d) for d in udims) != (ud or ()):
+    if len(udims) != len(ud or ()) or not all(_dim_equal(a, b) for a, b in zip(udims, ud or ())):
         return False
     from ._trace import trace_sig
 

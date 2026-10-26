@@ -315,18 +315,19 @@ def set_simplify(value: bool) -> None:
 
 
 def _simplify_rec(rec: InstNet) -> InstNet:
-    """REC with its bus strings simplified (verilog-simplify-range-
-    expression): each packed range folds, and width follows the first
-    range's msb (a width-only record folds its msb alone)."""
+    """REC with its bus string simplified (verilog-simplify-range-
+    expression): only the LAST packed range folds — that is the signal
+    width in verilog-mode's model; earlier dims stay verbatim
+    (autoinst_mul.v).  Width follows the last range's msb (a
+    width-only record folds its msb alone)."""
     from dataclasses import replace
 
     from . import emacs
 
     if rec.packed_dims:
-        new_pdims = tuple(
-            emacs.simplify_range_expression(f"[{d}]")[1:-1] for d in rec.packed_dims
-        )
-        new_width = new_pdims[0].split(":")[0].strip()
+        new_last = emacs.simplify_range_expression(f"[{rec.packed_dims[-1]}]")[1:-1]
+        new_pdims = tuple(rec.packed_dims[:-1]) + (new_last,)
+        new_width = new_last.split(":")[0].strip()
         return replace(rec, width=new_width, packed_dims=new_pdims)
     if rec.width and rec.width != "c0":
         new_width = emacs.simplify_range_expression(f"[{rec.width}]")[1:-1]
