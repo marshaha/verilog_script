@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import argparse
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -69,13 +69,16 @@ from .autodef import (
     _emit_signal,
     conn_net_name,
     _clean_dim,
+    _eval_bound,
     _sig_decl_len,
     _skip_comment_line,
     _strip_line,
     get_all_defs,
     get_all_paras,
+    simplify_on,
 )
 from .inst import ModuleDef, VerilogBuffer, parse_module_ports
+from ._trace import trace_sig, tracing
 
 _AUTOWIRE_MARK_FULL = re.compile(r"^\s*/\*\s*\b(autowire|AUTOWIRE)\b\*/")
 _AUTOREG_MARK_FULL = re.compile(r"^\s*/\*\s*\b(autoreg|AUTOREG)\b\*/")
@@ -384,20 +387,17 @@ def _simplify_rec(rec: InstNet) -> InstNet:
     return rec
 
 
-def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
+def _note_net(nets: "dict[str, InstNet]", rec: InstNet, _presimplified: bool = False) -> None:
     """Add REC to NETS; a second driver from a DIFFERENT instance marks the
     net multi (its comment gets ", ...", like verilog-mode's sig comment
     for a repeated signal) and merges the width per
-    verilog-signals-combine-bus."""
-    from .autodef import simplify_on
-
-    if simplify_on():
+    verilog-signals-combine-bus.  _PRESIMPLIFIED: REC already went through
+    _simplify_rec (pin records pre-simplify once at build time)."""
+    if not _presimplified and simplify_on():
         rec = _simplify_rec(rec)
     prev = nets.get(rec.name)
     if prev is None:
         nets[rec.name] = rec
-        from ._trace import trace_sig, tracing
-
         if tracing(rec.name):
             trace_sig(
                 rec.name,
@@ -417,8 +417,6 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
         # that actually combined differing widths — element selects
         # (autoinst_regexp_match.v) and part-select-vs-range
         # (autoinst_for_myers.v) both mark; identical repeats do not.
-        from dataclasses import replace
-        from .autodef import _eval_bound
 
         _same = _same_driver(prev, rec)
 
@@ -488,8 +486,6 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet) -> None:
             merge_warn=buswarn,
         )
         if not _same:
-            from ._trace import trace_sig
-
             trace_sig(prev.name, f"multi-driver inst={rec.inst} module={rec.module}")
 
 
@@ -829,6 +825,10 @@ def _inst_pin_scan(
     const_map: dict[str, str] = {}
     if _param_value_on():
         const_map = {k: str(v) for k, v in _const_symbols(lines).items()}
+    # verilog-auto-simplify-expressions is file-local (constant across a
+    # pipeline run): pin records pre-simplify their widths/dims once, and
+    # phase 2 passes the flag to _note_net to skip the per-note fold
+    simplified = simplify_on()
     text = "\n".join(lines)
     text_masked = emacs.mask_comments(text)
     # `define table for detick_name: scanned once per scan — instance pin
@@ -950,7 +950,7 @@ def _inst_pin_scan(
             type_values = {}
         # parse each connection once (pin records): every later pass
         # reuses them for its direction/simple/concat filtering
-        records = _pin_records(moddef, pin_exprs, param_values, const_map, type_values)
+        records = _pin_records(moddef, pin_exprs, param_values, const_map, type_values, simplified)
         instances.append(("named", module, inst, moddef, records))
 
     markers = emacs.find_auto_markers(lines, "autoinst")
@@ -1006,6 +1006,7 @@ def _inst_pin_scan(
         _add_named(module, inst, modules[module], line_off[hl] + rel)
     return {
         "const_map": const_map,
+        "simplified": simplified,
         "instances": instances,
     }
 
@@ -1050,13 +1051,12 @@ class _PinNet:
 
 
 def _apply_width_maps(
-    pairs: list, param_values: dict, const_map: dict[str, str]
+    pairs: list, param_values: dict, const_map: dict[str, str], simplify: bool
 ) -> list:
     """(net, width) pairs with the instance's parameter overrides and the
     module's const symbols folded into the widths — phase 1, so once per
-    pin instead of once per pin per pass."""
-    if not param_values and not const_map:
-        return list(pairs)
+    pin instead of once per pin per pass.  SIMPLIFY pre-applies the
+    verilog-simplify-range-expression fold (_note_net then skips it)."""
     from . import emacs
 
     out = []
@@ -1065,8 +1065,25 @@ def _apply_width_maps(
             ewidth = emacs._apply_param_values(ewidth, param_values)
         if const_map:
             ewidth = emacs._apply_param_values(ewidth, const_map)
+        if simplify and ewidth and ewidth != "c0":
+            # width-only record: _simplify_rec folds the msb alone
+            ewidth = emacs.simplify_range_expression(f"[{ewidth}]")[1:-1]
         out.append((net, ewidth))
     return out
+
+
+def _simplify_width_pdims(width: str, pdims: tuple) -> "tuple[str, tuple]":
+    """_simplify_rec's width/packed-dims transform on bare fields, applied
+    to pin records once at build time (verilog-simplify-range-expression:
+    only the LAST packed range folds; a width-only record folds its msb)."""
+    from . import emacs
+
+    if pdims:
+        new_last = emacs.simplify_range_expression(f"[{pdims[-1]}]")[1:-1]
+        return new_last.split(":")[0].strip(), tuple(pdims[:-1]) + (new_last,)
+    if width and width != "c0":
+        return emacs.simplify_range_expression(f"[{width}]")[1:-1], pdims
+    return width, pdims
 
 
 def _pin_record(
@@ -1077,6 +1094,7 @@ def _pin_record(
     param_values: dict,
     const_map: dict[str, str],
     type_values: dict,
+    simplify: bool,
 ) -> tuple:
     """The phase-1 record for one connection expression (see _PK_*)."""
     from . import emacs
@@ -1092,7 +1110,7 @@ def _pin_record(
         inner = stripped[stripped.index("{"):]
         return (
             _PK_CONCAT, port, pin,
-            _apply_width_maps(_expr_nets(inner), param_values, const_map),
+            _apply_width_maps(_expr_nets(inner), param_values, const_map, simplify),
         )
     # only a `define/literal NET carries no declaration; a backtick
     # inside a bit-select (net[`MACRO-1:0]) is fine
@@ -1121,7 +1139,7 @@ def _pin_record(
         # {...}: gated by the live ignore-concat setting in phase 2.
         return (
             _PK_CONCAT, port, pin,
-            _apply_width_maps(_expr_nets(stripped), param_values, const_map),
+            _apply_width_maps(_expr_nets(stripped), param_values, const_map, simplify),
         )
     if stripped.startswith("("):
         # Parenthesized expression: unwrap fully first — a concat inside
@@ -1137,11 +1155,11 @@ def _pin_record(
         if inner.startswith("{"):
             return (
                 _PK_CONCAT, port, pin,
-                _apply_width_maps(_expr_nets(inner), param_values, const_map),
+                _apply_width_maps(_expr_nets(inner), param_values, const_map, simplify),
             )
         return (
             _PK_PAREN, port, pin,
-            _apply_width_maps(_expr_nets(stripped), param_values, const_map),
+            _apply_width_maps(_expr_nets(stripped), param_values, const_map, simplify),
         )
     # Issue #1526: SV cast type'(expr) — extract inner expr for the
     # simple-net check, so t'(x) counts as signal x for AIO candidacy.
@@ -1210,6 +1228,9 @@ def _pin_record(
             _clean_dim(emacs._apply_param_values(d, const_map))
             for d in pdims
         )
+    if simplify:
+        # pre-apply _note_net's verilog-simplify-range-expression fold
+        width, pdims = _simplify_width_pdims(width, pdims)
     # Unpacked dims get the same instance substitution as packed
     # (parameter_in_array_test.sv: [TEST+2] -> [10] with .TEST(8)
     # under verilog-auto-inst-param-value:t; previously passed raw).
@@ -1336,6 +1357,7 @@ def _pin_records(
     param_values: dict,
     const_map: dict[str, str],
     type_values: dict,
+    simplify: bool,
 ) -> list:
     """Parse each pin connection of one instance ONCE into its phase-1
     record (see _pin_record).  Everything here is independent of the
@@ -1344,7 +1366,7 @@ def _pin_records(
     ports = {p.name: p for p in moddef.ports}
     return [
         _pin_record(pin, expr, templated, ports.get(pin),
-                    param_values, const_map, type_values)
+                    param_values, const_map, type_values, simplify)
         for pin, expr, _shorthand, templated in pin_exprs
     ]
 
@@ -1359,6 +1381,7 @@ def _process_named_instance(
     concat_ok: bool,
     ignore_concat: bool,
     driver: object = None,
+    presimplified: bool = False,
 ) -> None:
     """Phase 2 of _inst_driven_nets for one named-port instance: pure
     direction/simple/concat filtering over the phase-1 pin records (see
@@ -1384,7 +1407,7 @@ def _process_named_instance(
             if kind == _PK_CONCAT and ignore_concat and not concat_ok:
                 continue
             for net, ewidth in payload:
-                _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver))
+                _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver), _presimplified=presimplified)
             continue
         pp = payload
         if pp.wrapped and ignore_concat and not concat_ok:
@@ -1404,6 +1427,7 @@ def _process_named_instance(
                 port.direction, port.signed, port.net_type, pp.data_type,
                 driver=driver,
             ),
+            _presimplified=presimplified,
         )
         if pp.uidx:
             rec = nets[pp.net]
@@ -1484,7 +1508,7 @@ def _inst_driven_nets(
             _process_named_instance(
                 nets, module, inst, payload,
                 directions, simple_only, concat_ok, ignore_concat,
-                driver=_di,
+                driver=_di, presimplified=scan["simplified"],
             )
     return nets
 
