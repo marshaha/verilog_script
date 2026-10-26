@@ -690,16 +690,16 @@ def _section_order_pins(text: str, open_idx: int, pin_exprs: list) -> list:
     if len(positions) != len(pin_exprs):
         return pin_exprs
     ranked = []
-    for (pin, expr), pos in zip(pin_exprs, positions):
+    for item, pos in zip(pin_exprs, positions):
         sec = None
         for spos, sname in sections:
             if spos <= pos:
                 sec = sname
             else:
                 break
-        ranked.append((_SECTION_RANK.get(sec, -1), pin, expr))
+        ranked.append((_SECTION_RANK.get(sec, -1),) + tuple(item))
     ranked.sort(key=lambda t: t[0])  # stable: source order within a section
-    return [(pin, expr) for _, pin, expr in ranked]
+    return [tuple(item[1:]) for item in ranked]
 
 
 def _inst_pin_scan(
@@ -752,7 +752,7 @@ def _inst_pin_scan(
         if open_idx in seen:
             return
         seen.add(open_idx)
-        pin_exprs = list(emacs.inst_pin_connections(text, open_idx))
+        pin_exprs = list(emacs.inst_pin_connections(text, open_idx, mark_shorthand=True))
         pin_exprs = _section_order_pins(text, open_idx, pin_exprs)
         # verilog-auto-inst-param-value gates ALL substitution in the
         # sub-decl widths (Emacs default nil): when on, only the
@@ -813,6 +813,12 @@ def _inst_pin_scan(
         hl = i if hdr_end < 0 else hdr_end
         pos = lines[hl].find(inst)
         if pos < 0:
+            # Split header (see _instance_headers): the `(` line carries
+            # no instance name — the open paren is the first `(` on it.
+            rel = lines[hl].find("(")
+            if rel < 0:
+                continue
+            _add_named(module, inst, modules[module], line_off[hl] + rel)
             continue
         rel = lines[hl].find("(", pos + len(inst))
         if rel < 0:
@@ -852,7 +858,7 @@ def _process_named_instance(
         }
     else:
         inst_io = {p.name: p for p in moddef.ports if p.direction in directions}
-    for pin, expr in pin_exprs:
+    for pin, expr, shorthand, templated in pin_exprs:
         if pin not in inst_io:
             continue
         stripped = emacs._strip_comments(expr).strip()
@@ -958,11 +964,32 @@ def _process_named_instance(
         # connection carries a /*...*/ dims note, the note wins: for
         # the [].[@] / []. [range] forms the executable suffix is an
         # element select, and the note holds the real packed dims.
-        pdims = (
+        # Port-width inheritance: verilog-read-sub-decls-sig takes (if
+        # dotname port-bits vec), so a bracketless explicit .pin (net)
+        # carries NO width in Emacs — but non-template /*AUTOINST*/ pins
+        # gain brackets from EAI before AW/AIO run, so port inheritance
+        # is the correct stand-in for them (and for shorthand and
+        # /*...*/ note connections, whose packed dims _conn_packed_dims
+        # cannot parse in the .[unpacked] suffix form).  ONLY a template
+        # pin (// Templated, left verbatim by EAI) without brackets or
+        # a note stays widthless (autoinst_star.v: `wire templated`
+        # next to `wire [w-1:0] pin`).
+        conn_pdims = (
             (() if "/*" in expr else _expr_suffix_dims(stripped, net, len(port.packed), len(port.unpacked)))
             or _conn_packed_dims(expr)
-            or tuple(_clean_dim(d) for d in port.packed)
         )
+        if conn_pdims:
+            pdims = conn_pdims
+        elif templated and "[" not in stripped:
+            # Bare template net, no brackets, no note: widthless. (A
+            # template pin WITH brackets keeps the port fallback: for
+            # multidim element connections like out_momo[0][127:0] in
+            # autoinput_2d_gaspar.v, _expr_suffix_dims yields no packed
+            # dims and the port's [127:0] is the golden answer.)
+            width = "c0"
+            pdims = ()
+        else:
+            pdims = tuple(_clean_dim(d) for d in port.packed)
         if pdims and param_values:
             pdims = tuple(
                 _clean_dim(emacs._apply_param_values(d, param_values))

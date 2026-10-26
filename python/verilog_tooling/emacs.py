@@ -1113,13 +1113,24 @@ def _resolve_instance_at(
     return module, inst
 
 
-def inst_pin_connections(text: str, open_idx: int) -> "list[tuple[str, str]]":
+def inst_pin_connections(
+    text: str, open_idx: int, mark_shorthand: bool = False
+) -> "list[tuple]":
     """(pin, expression) for every named connection in the pin list opened
     at OPEN_IDX — the whole list, on either side of any AUTO marker:
     multi-pin lines, multi-line expressions and SystemVerilog ``.pin``
     shorthand (expression = pin name) included.  Expressions are returned
     verbatim, comments intact (the /*[D1][D2]*/ packed-dims note rides in
-    one); callers strip as needed."""
+    one); callers strip as needed.  With MARK_SHORTHAND, each item gains
+    two more elements: the ``.pin`` shorthand flag, and True when the
+    pin carries a ``// Templated`` comment (EAI template expansion).
+    The driven-net scan needs both because verilog-mode inherits the
+    port's bits ONLY for shorthand (verilog-read-sub-decls-sig: ``(if
+    dotname (verilog-sig-bits portdata) vec)``) — but non-template
+    /*AUTOINST*/ pins gain brackets from EAI before AW/AIO run, so port
+    inheritance is the correct stand-in for them; only a template pin
+    without brackets or a dims note stays widthless (autoinst_star.v:
+    ``wire templated`` next to ``wire [w-1:0] pin``)."""
     close_idx = _matching_paren(text, open_idx)
     span = text[open_idx + 1 : close_idx]
     masked = mask_comments(span)
@@ -1136,7 +1147,8 @@ def inst_pin_connections(text: str, open_idx: int) -> "list[tuple[str, str]]":
         while k < n and masked[k] in " \t\n":
             k += 1
         if k >= n or masked[k] != "(":
-            out.append((pin, pin))  # .pin shorthand (followed by , or close)
+            # .pin shorthand (followed by , or close)
+            out.append((pin, pin, True, False) if mark_shorthand else (pin, pin))
             i = k
             continue
         depth = 1
@@ -1154,7 +1166,21 @@ def inst_pin_connections(text: str, open_idx: int) -> "list[tuple[str, str]]":
             elif ch == ")":
                 depth -= 1
             j += 1
-        out.append((pin, span[k + 1 : j - 1]))
+        templated = False
+        if mark_shorthand:
+            # EAI marks template-expanded pins with a // Templated
+            # comment after the close paren, same line — with an
+            # optional trailing comma between (aall's star expansion
+            # emits `.pin (templated), // Templated`). Masking
+            # preserves offsets, so the unmasked span reads at j too.
+            templated = (
+                re.match(r"[ \t]*,?[ \t]*//[^\n]*Templated", span[j:]) is not None
+            )
+        out.append(
+            (pin, span[k + 1 : j - 1], False, templated)
+            if mark_shorthand
+            else (pin, span[k + 1 : j - 1])
+        )
         i = j
     return out
 

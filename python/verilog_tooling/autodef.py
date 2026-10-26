@@ -3625,6 +3625,21 @@ def _instance_headers(
             out[i] = (m.group(1), m.group(3), -1)
             i += 1
             continue
+        # Split header: `module inst` on one line, the pin-list `(` on a
+        # following line (autoinst_star.v: EAI's star expansion keeps
+        # `MD31_pad` / `(.*, ...` split, so the expanded .pin
+        # (templated) was invisible to the driven-net scan and AUTOWIRE
+        # dropped `wire templated`). Blank/comment-only lines between
+        # are skipped; the header_end is the `(` line itself.
+        m = re.match(r"^\s*(\w+)\s+(\w+)\s*$", raw)
+        if m and m.group(1) in modules and m.group(2) not in _KEYWORDS:
+            j = i + 1
+            while j < n and not re.sub(r"//.*$", "", lines[j]).strip():
+                j += 1
+            if j < n and re.match(r"^\s*\(", re.sub(r"//.*$", "", lines[j])):
+                out[i] = (m.group(1), m.group(2), j)
+                i += 1
+                continue
         # body opens on the header line itself: `mod inst (.clk(clk), ...);`
         # (header_end -2 marks "scan the header line's own text")
         m = re.match(r"^\s*(\w+)\s+(#\s*\(.*?\)\s*)?(\w+)\s*\((?!\s*$)", raw)
