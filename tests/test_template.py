@@ -281,3 +281,31 @@ def test_expand_connection_bracket_placeholders():
     # single-dim port: port_width path, and [][] falls back to it too
     assert expand_connection("b_oned[]", "", "1:-1") == "b_oned[1:-1]"
     assert expand_connection("d_oned[][]", "", "1:-1") == "d_oned[1:-1]"
+
+
+def test_elisp_defun_and_cond():
+    """User defuns with cond bodies (autoinst_ma_io_prefix.v's
+    vl-prefix-i-o): defun stores the function, calls bind args, cond
+    picks the first true clause, t is the default."""
+    from verilog_tooling.template import _elisp_eval, _elisp_parse, _elisp_tokenize
+
+    scope: dict = {}
+    _elisp_eval(
+        _elisp_parse(
+            _elisp_tokenize(
+                '(defun vl-prefix-i-o (dir) (cond ((equal dir "input") "i_")'
+                ' ((equal dir "output") "o_")'
+                ' ((equal dir "inout") "t_")'
+                ' (t "")))'
+            )
+        ),
+        scope,
+    )
+    for expr, want in [
+        ('(vl-prefix-i-o "input")', "i_"),
+        ('(vl-prefix-i-o "output")', "o_"),
+        ('(vl-prefix-i-o "inout")', "t_"),
+        ('(vl-prefix-i-o "weird")', ""),
+    ]:
+        got = _elisp_eval(_elisp_parse(_elisp_tokenize(expr)), scope)
+        assert got == want, (expr, got)

@@ -386,6 +386,17 @@ def _elisp_num(value) -> int:
         return 0
 
 
+class _ElispFunc:
+    """A user-defined elisp function (``defun``): parameter names, body
+    forms, and the defining scope (kept by reference, so the function
+    itself is visible to its own body for recursion)."""
+
+    def __init__(self, params, body, env):
+        self.params = params
+        self.body = body
+        self.env = env
+
+
 def _elisp_eval(form, scope: dict):
     if isinstance(form, (int, str)):
         return form
@@ -467,6 +478,35 @@ def _elisp_eval(form, scope: dict):
         r = ""
         for a in args[1:]:
             r = _elisp_eval(a, inner)
+        return r
+    if name == "cond":
+        for clause in args:
+            if not isinstance(clause, list) or not clause:
+                continue
+            test = _elisp_eval(clause[0], scope)
+            if test is not False and test != "":
+                if len(clause) == 1:
+                    return test
+                r = ""
+                for form in clause[1:]:
+                    r = _elisp_eval(form, scope)
+                return r
+        return ""
+    if name == "defun":
+        fname = args[0][1] if isinstance(args[0], tuple) else ""
+        params = [
+            p[1] if isinstance(p, tuple) else p
+            for p in (args[1] if isinstance(args[1], list) else [])
+        ]
+        scope[fname] = _ElispFunc(params, args[2:], scope)
+        return fname
+    fn = scope.get(name) if isinstance(scope, dict) else None
+    if isinstance(fn, _ElispFunc):
+        inner = dict(fn.env)
+        inner.update(zip(fn.params, [_elisp_eval(a, scope) for a in args]))
+        r = ""
+        for form in fn.body:
+            r = _elisp_eval(form, inner)
         return r
     raise ValueError(f"unsupported elisp form: {name!r}")
 

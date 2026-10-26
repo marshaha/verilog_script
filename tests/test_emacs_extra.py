@@ -424,3 +424,36 @@ def test_read_auto_lisp_elisp_setq():
     # later blocks win, in buffer order
     text2 = "/*AUTO_LISP(setq num 1)*/\\n/*AUTO_LISP(setq num 2)*/\\nm u (/*AUTOINST*/);"
     assert read_auto_lisp(text2, len(text2))["num"] == 2
+
+
+def test_read_local_eval_defuns():
+    """Local Variables eval defuns are in scope for template @"..."
+    expressions (autoinst_ma_io_prefix.v's trailing block)."""
+    from verilog_tooling.emacs import read_local_eval_defuns
+    from verilog_tooling.template import _elisp_eval, _elisp_parse, _elisp_tokenize
+
+    # trailing block of autoinst_ma_io_prefix.v, inlined (not read from
+    # /tmp — the verilog-mode checkout there is wiped on VM regeneration)
+    text = """\
+/*
+ Local Variables:
+ eval:
+  (defun vl-prefix-i-o (dir)
+        (cond ((equal dir "input")
+               "i_")
+              ((equal dir "output")
+               "o_")
+              ((equal dir "inout")
+               "t_")
+              (t "")))
+ End:
+*/
+"""
+    env = read_local_eval_defuns(text)
+    assert "vl-prefix-i-o" in env
+    for expr, want in [
+        ('(vl-prefix-i-o "input")', "i_"),
+        ('(vl-prefix-i-o "output")', "o_"),
+        ('(vl-prefix-i-o "other")', ""),
+    ]:
+        assert _elisp_eval(_elisp_parse(_elisp_tokenize(expr)), env) == want

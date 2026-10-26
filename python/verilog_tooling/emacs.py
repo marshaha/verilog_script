@@ -516,6 +516,79 @@ def _subst_at_width(conn: str, at_value: str, width: str | None,
 # AUTO_LISP (/*AUTO_LISP(expr)*/ before the AUTO marker, evaluated in order)
 
 
+def read_local_eval_defuns(text: str) -> dict:
+    """User elisp definitions from the file's Local Variables ``eval:``
+    block(s) — Emacs evaluates them when the file is visited, so they
+    are in scope for every ``@"..."`` template expression, e.g. the
+    ``vl-prefix-i-o`` defun in autoinst_ma_io_prefix.v's trailing block::
+
+        Local Variables:
+        eval:
+         (defun vl-prefix-i-o (dir) (cond ...))
+        End:
+
+    Only ``defun`` (and ``setq`` side effects) are kept; a form that
+    fails to parse or evaluate is ignored — a bad eval block must not
+    abort the file.  Returns a name -> value env dict.
+    """
+    from .template import _elisp_eval, _elisp_parse, _elisp_tokenize
+
+    env: dict = {}
+    m = re.search(r"Local Variables:(.*?)^\s*End:", text, re.S | re.M)
+    if not m:
+        return env
+    section = m.group(1)
+    var_line = re.compile(r"^\s*[A-Za-z][\w-]*\s*:")
+    for em in re.finditer(r"eval\s*:", section):
+        lines = section[em.end() :].split("\n")
+        buf: list[str] = []
+        depth = 0
+        started = False
+        for raw in lines:
+            line = raw
+            if not started and not buf:
+                if var_line.match(line):
+                    break
+                if not line.strip():
+                    continue
+            buf.append(line)
+            # paren balance, ignoring strings and ;-to-EOL comments
+            in_str = False
+            i = 0
+            while i < len(line):
+                c = line[i]
+                if in_str:
+                    if c == "\\":
+                        i += 2
+                        continue
+                    if c == '"':
+                        in_str = False
+                elif c == '"':
+                    in_str = True
+                elif c == ";":
+                    break
+                elif c == "(":
+                    depth += 1
+                    started = True
+                elif c == ")":
+                    depth -= 1
+                i += 1
+            if started and depth <= 0:
+                form_text = "\n".join(buf).strip()
+                buf = []
+                started = False
+                try:
+                    _elisp_eval(
+                        _elisp_parse(_elisp_tokenize(form_text)), env
+                    )
+                except Exception:  # noqa: BLE001 - ignore bad eval forms
+                    pass
+                # a following defun (not a variable line) continues;
+                # a variable line ends this eval: entry
+                continue
+    return env
+
+
 def read_auto_lisp(text: str, upto: int) -> dict:
     """Evaluate every ``/*AUTO_LISP(...)*/`` expression before UPTO
     offset, in buffer order. Returns a dict of assigned names.
@@ -1445,6 +1518,11 @@ def _auto_inst_one(
     # py_base_env: precomputed file-local Python env (auto_inst hoists it;
     # per-instance inline AUTO_PYTHON blocks are still scanned here).
     lisp_env = read_auto_lisp(text, marker.offset)
+    # Local Variables eval defuns are file-global (they sit after the
+    # instance, so read_auto_lisp's before-marker scan cannot see them);
+    # AUTO_LISP wins over them.
+    for _k, _v in read_local_eval_defuns(text).items():
+        lisp_env.setdefault(_k, _v)
     # AUTO_PYTHON user functions merge into the template expression scope
     # (Python-native alternative to elisp defun)
     lisp_env.update(_read_auto_python_inline(text, marker.offset, py_base_env))
@@ -1641,6 +1719,8 @@ def _auto_param_one(
     )
     at_value = template_at_value(tpl, inst) if tpl else ""
     lisp_env = read_auto_lisp(text, marker.offset)
+    for _k, _v in read_local_eval_defuns(text).items():
+        lisp_env.setdefault(_k, _v)
     lisp_env.update(read_auto_python(text, marker.offset))
     # commented-out pins before the marker are NOT connected: mask
     # comments (positions preserved) before collecting names
