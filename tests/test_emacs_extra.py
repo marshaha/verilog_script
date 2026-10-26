@@ -413,3 +413,14 @@ endmodule
     before_oc = text[:oc_at]
     assert before_oc.count("`ifndef MODE_A") >= 1
     assert "`ifndef MODE_B" in before_oc
+
+
+def test_read_auto_lisp_elisp_setq():
+    """The elisp form Emacs itself documents: /*AUTO_LISP(setq num 1)*/
+    feeds @"num" templates (autoinst_lopaz.v). It used to fail Python
+    compilation, so the whole instance was skipped with a warning."""
+    text = "/*AUTO_LISP(setq num 1)*/\\nm u (/*AUTOINST*/);"
+    assert read_auto_lisp(text, len(text))["num"] == 1
+    # later blocks win, in buffer order
+    text2 = "/*AUTO_LISP(setq num 1)*/\\n/*AUTO_LISP(setq num 2)*/\\nm u (/*AUTOINST*/);"
+    assert read_auto_lisp(text2, len(text2))["num"] == 2

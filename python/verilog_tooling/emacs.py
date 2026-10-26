@@ -517,13 +517,19 @@ def _subst_at_width(conn: str, at_value: str, width: str | None,
 
 
 def read_auto_lisp(text: str, upto: int) -> dict:
-    """Evaluate every ``/*AUTO_LISP(...)*/`` Python expression before UPTO
+    """Evaluate every ``/*AUTO_LISP(...)*/`` expression before UPTO
     offset, in buffer order. Returns a dict of assigned names.
 
-    verilog-mode evaluates elisp; here the sandboxed subset is Python with a
-    few verilog-flavoured helpers (vl_* are not yet in scope at parse time;
-    AUTO_LISP mainly prepares constants for @"..." templates).
+    Two tracks, in order: the Python subset first (existing behavior —
+    ``/*AUTO_LISP(base = 10)*/``), then the elisp s-expression the
+    marker's own parentheses imply (``/*AUTO_LISP(setq num 1)*/`` feeds
+    ``@"num"`` templates — autoinst_lopaz.v).  The elisp track wraps a
+    bare form in parens (the marker already consumed them); an already
+    parenthesised form parses as-is.  Failing both tracks still raises
+    ValueError, and a failing instance is left untouched by the caller.
     """
+    from .template import _elisp_eval, _elisp_parse, _elisp_tokenize
+
     env: dict = {}
     import warnings
 
@@ -534,7 +540,15 @@ def read_auto_lisp(text: str, upto: int) -> dict:
                 warnings.simplefilter("ignore", SyntaxWarning)
                 code = compile(expr, "<AUTO_LISP>", "exec")
             exec(code, {"__builtins__": {}}, env)
-        except Exception as exc:  # noqa: BLE001 - report and continue
+            continue
+        except Exception:  # noqa: BLE001 - fall through to the elisp track
+            pass
+        try:
+            src = expr.strip()
+            if not src.startswith("("):
+                src = f"({src})"
+            _elisp_eval(_elisp_parse(_elisp_tokenize(src)), env)
+        except Exception as exc:  # noqa: BLE001 - report, as before
             raise ValueError(f"AUTO_LISP evaluation failed: {expr!r}: {exc}") from exc
     return env
 
