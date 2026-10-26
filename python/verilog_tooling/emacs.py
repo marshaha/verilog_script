@@ -1498,6 +1498,62 @@ def _build_gen(sections, indent_pt: int, col_eff: int, closer: str) -> str:
     return "\n" + "\n".join(out)
 
 
+def _region_edit(
+    text: str,
+    marker: AutoMarker,
+    open_idx: int,
+    close_idx: int,
+    gen: str,
+    consume_semi: bool,
+) -> "tuple[int, int, str]":
+    """The (start, end, replacement) edit for splicing GEN between the
+    marker and the pin-list close paren, adding a comma after a manually
+    connected pin that lacks one. For a star (.*) instance the marker is
+    kept and a comma appended after it.  Edits of different instances are
+    disjoint, so a pass can accumulate and apply them in one rebuild."""
+    head_end = marker.end
+    tail_start = close_idx + 1
+    if consume_semi:
+        sm = re.match(r"\s*;[ \t]*", text[tail_start:])
+        if sm:
+            tail_start += sm.end()
+    star = text[marker.offset : marker.end] == ".*"
+    pin_region = text[open_idx + 1 : marker.offset]
+    # Trailing comment lines between the last pin and the marker (e.g.
+    # ZipCPU's ``// }}}`` fold markers) hide the pin's closing paren from
+    # the endswith check; peel them off so the comma is still added --
+    # otherwise the generated pins fuse with the last kept pin into
+    # invalid syntax (emacs exhibits the same gap, but an invalid result
+    # is not worth replicating).
+    code_tail = re.sub(r"(\s*(//[^\n]*|/\*[\s\S]*?\*/)\s*)+$", "", pin_region).rstrip()
+    if star:
+        # keep .*, expand after it
+        return marker.end, tail_start, "," + gen
+    if code_tail.endswith(".*"):
+        # a kept star line (VeeR-EL2 style: `.clk(clk), .* /*AUTOINST*/`)
+        # needs the same separator comma before the generated pins —
+        # verilog-mode emits `.*,`; without it the splice is a syntax
+        # error (`.*` followed directly by `.port(...)`).
+        insert_at = open_idx + 1 + len(code_tail)
+        return insert_at, tail_start, "," + text[insert_at:marker.end] + gen
+    if re.search(r"\.\s*\w+\s*\(", pin_region) and code_tail.endswith(")"):
+        insert_at = open_idx + 1 + len(code_tail)
+        return insert_at, tail_start, "," + text[insert_at:marker.end] + gen
+    return head_end, tail_start, gen
+
+
+def _apply_text_edits(text: str, edits: "list[tuple[int, int, str]]") -> str:
+    """Apply non-overlapping (start, end, replacement) EDITS in one pass."""
+    out = []
+    pos = 0
+    for s, e, rep in sorted(edits):
+        out.append(text[pos:s])
+        out.append(rep)
+        pos = e
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _replace_region(
     text: str,
     marker: AutoMarker,
@@ -1506,37 +1562,9 @@ def _replace_region(
     gen: str,
     consume_semi: bool,
 ) -> str:
-    """Splice GEN between the marker and the pin-list close paren, adding a
-    comma after a manually connected pin that lacks one. For a star (.*)
-    instance the marker is kept and a comma appended after it."""
-    head = text[: marker.end]
-    tail = text[close_idx + 1 :]
-    if consume_semi:
-        sm = re.match(r"\s*;[ \t]*", tail)
-        if sm:
-            tail = tail[sm.end() :]
-    if text[marker.offset : marker.end] == ".*":
-        head = text[: marker.end] + ","  # keep .*, expand after it
-    pin_region = text[open_idx + 1 : marker.offset]
-    stripped = pin_region.rstrip()
-    # Trailing comment lines between the last pin and the marker (e.g.
-    # ZipCPU's ``// }}}`` fold markers) hide the pin's closing paren from
-    # the endswith check; peel them off so the comma is still added --
-    # otherwise the generated pins fuse with the last kept pin into
-    # invalid syntax (emacs exhibits the same gap, but an invalid result
-    # is not worth replicating).
-    code_tail = re.sub(r"(\s*(//[^\n]*|/\*[\s\S]*?\*/)\s*)+$", "", pin_region).rstrip()
-    if code_tail.endswith(".*"):
-        # a kept star line (VeeR-EL2 style: `.clk(clk), .* /*AUTOINST*/`)
-        # needs the same separator comma before the generated pins —
-        # verilog-mode emits `.*,`; without it the splice is a syntax
-        # error (`.*` followed directly by `.port(...)`).
-        insert_at = open_idx + 1 + len(code_tail)
-        head = head[:insert_at] + "," + head[insert_at:]
-    elif re.search(r"\.\s*\w+\s*\(", pin_region) and code_tail.endswith(")"):
-        insert_at = open_idx + 1 + len(code_tail)
-        head = head[:insert_at] + "," + head[insert_at:]
-    return head + gen + tail
+    """Splice GEN between the marker and the pin-list close paren (single
+    edit, see :func:`_region_edit`)."""
+    return _apply_text_edits(text, [_region_edit(text, marker, open_idx, close_idx, gen, consume_semi)])
 
 
 def _select_markers(
@@ -1874,6 +1902,7 @@ def auto_inst(
                 raise ValueError(
                     f"AUTO_PYTHON file {py_file!r} load failed: {exc}"
                 ) from exc
+    edits: list = []
     for marker in reversed(markers):
         stack = stacks[marker.offset]
         if not stack:
@@ -1905,7 +1934,7 @@ def auto_inst(
         except KeyError:
             raise KeyError(f"module {module!r} not found for AUTOINST instance {inst!r}") from None
         try:
-            text = _auto_inst_one(
+            edit = _auto_inst_one(
                 text, marker, open_idx, close_idx, moddef, module, inst,
                 templates, sort, dot_name, column, param_value, is_star, star_save,
                 template_required=template_required,
@@ -1926,7 +1955,12 @@ def auto_inst(
                 file=sys.stderr,
             )
             continue
-    return text.split("\n")
+        if edit is not None:
+            edits.append(edit)
+    # one rebuild for all instances: disjoint regions, bottom-up order —
+    # every read in _auto_inst_one is at-or-before the instance being
+    # expanded, so the original text serves every iteration
+    return _apply_text_edits(text, edits).split("\n")
 
 
 def _parent_module_facts(
@@ -2136,11 +2170,15 @@ def _auto_inst_one(
         if entries:
             sections.append((header, entries))
     if not sections:
-        return text
+        return None
     indent_pt = _indent_pt(text, open_idx)
     col_eff = max(column, 16 + 8 * ((indent_pt + 7) // 8))
     gen = _build_gen(sections, indent_pt, col_eff, ");")
-    return _replace_region(text, marker, open_idx, close_idx, gen, consume_semi=True)
+    # an edit, not a splice: the caller (auto_inst's bottom-up loop)
+    # accumulates them and rebuilds the buffer once — every read above is
+    # at-or-before this instance's close paren, where the accumulated
+    # edits of lower instances never reach
+    return _region_edit(text, marker, open_idx, close_idx, gen, consume_semi=True)
 
 
 # ---------------------------------------------------------------------------
