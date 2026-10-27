@@ -1116,12 +1116,17 @@ def find_auto_markers(
 ) -> list[AutoMarker]:
     """All /*KEYWORD*/ markers (optionally with a ("regex") argument),
     skipping ones inside // comments. With require_comment=False, keyword is
-    matched as a bare token (used for SystemVerilog .* expansion)."""
+    matched as a bare token (used for SystemVerilog .* expansion) and block
+    comments are masked too: a real .* is code, never comment text — an
+    AUTO_TEMPLATE regexp like ``.foo_\\(.*\\)_n (bar_\\1)`` must not be
+    collected as a star marker (it used to spam "marker outside an
+    instance pin list" on template-heavy files)."""
     text = "\n".join(lines)
-    # line comments blanked (block comments kept — markers ARE block
-    # comments), so a match whose first char was masked sits inside a //
-    # comment, including a trailing one (``code; // /*autoinst*/``)
-    masked = mask_comments(text, block=False)
+    # line comments blanked, so a match whose first char was masked sits
+    # inside a // comment, including a trailing one (``code; // /*autoinst*/``)
+    # Block comments kept for real markers (markers ARE block comments),
+    # masked for the bare .* token (it must live in actual code).
+    masked = mask_comments(text, block=not require_comment)
     out = []
     for m in _marker_regex(keyword, require_comment).finditer(text):
         if masked[m.start()] == " ":
