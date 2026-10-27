@@ -836,6 +836,8 @@ def read_auto_lisp(text: str, upto: int) -> dict:
     from .template import _elisp_eval, _elisp_parse, _elisp_tokenize
 
     env: dict = {}
+    if "AUTO_LISP" not in text:
+        return env  # no marker can match the regex below (substring gate)
     import warnings
 
     for m in re.finditer(r"/\*\s*AUTO_LISP\s*\(", text[:upto]):
@@ -968,6 +970,8 @@ def _read_auto_python_inline(text: str, upto: int, base_env: dict | None = None)
     from a precomputed BASE_ENV (file-local Python files, hoisted by the
     caller). This avoids re-scanning file-local vars per instance (perf)."""
     env: dict = dict(base_env) if base_env else {}
+    if "AUTO_PYTHON" not in text:
+        return env  # no marker can match the regex below (substring gate)
     for m in re.finditer(r"/\*\s*AUTO_PYTHON\s*\(", text[:upto]):
         expr, _ = _balanced(text[:upto], m.end() - 1)
         try:
