@@ -19,7 +19,63 @@ attributes are not comments (``(*`` never matches ``/*``).
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
+
+_MC_TOKEN = re.compile(r'//|/\*|"')
+
+
+def _mask_comments_impl(text: str, line: bool, block: bool, cut_line: bool) -> str:
+    # token-driven scan: only comment/string openers are visited, code
+    # between them is copied through untouched — the char-by-char state
+    # machine cost ~8ms per full-buffer call on big tops.
+    n = len(text)
+    edits: "list[tuple[int, int, bool]]" = []  # (start, end, cut?)
+    i = 0
+    search = _MC_TOKEN.search
+    while i < n:
+        m = search(text, i)
+        if m is None:
+            break
+        c = m.group(0)
+        s = m.start()
+        if c == '"':
+            # string literal: kept verbatim; \\ and \" escapes stay inside
+            j = s + 1
+            while j < n:
+                if text[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            i = j
+            continue
+        if c == "//":
+            j = text.find("\n", s)
+            j = n if j < 0 else j  # the newline is not part of the comment
+            if line:
+                edits.append((s, j, cut_line))
+            i = j
+            continue
+        # /* */ block comment (unterminated runs to end of text)
+        j = text.find("*/", s + 2)
+        j = n if j < 0 else j + 2
+        if block:
+            edits.append((s, j, False))
+        i = j
+    if not edits:
+        return text
+    out = []
+    pos = 0
+    for s, e, cut in edits:
+        out.append(text[pos:s])
+        if not cut:
+            out.append(re.sub(r"[^\n]", " ", text[s:e]))
+        pos = e
+    out.append(text[pos:])
+    return "".join(out)
 
 
 @lru_cache(maxsize=512)
@@ -39,66 +95,7 @@ def mask_comments(
     ``re.sub(r"//.*$", "", line)`` idiom, which some output-formatting
     callers depend on byte-for-byte.  The result is no longer same-length.
     """
-    out = list(text)
-    n = len(text)
-    i = 0
-    state = 0  # 0 normal, 1 line comment, 2 block comment, 3 string
-    while i < n:
-        two = text[i : i + 2]
-        if state == 0:
-            if two == "//":
-                state = 1
-                if line:
-                    if cut_line:
-                        j = text.find("\n", i)
-                        end = n if j < 0 else j
-                        out[i:end] = []
-                        n -= end - i
-                        text = text[:i] + text[end:]
-                        state = 0
-                        continue
-                    out[i] = " "
-                    if i + 1 < n:
-                        out[i + 1] = " "
-                i += 2
-                continue
-            if two == "/*":
-                state = 2
-                if block:
-                    out[i] = " "
-                    if i + 1 < n:
-                        out[i + 1] = " "
-                i += 2
-                continue
-            if text[i] == '"':
-                state = 3
-            i += 1
-        elif state == 1:  # line comment
-            if text[i] == "\n":
-                state = 0
-            elif line:
-                out[i] = " "
-            i += 1
-        elif state == 2:  # block comment
-            if two == "*/":
-                if block:
-                    out[i] = " "
-                    if i + 1 < n:
-                        out[i + 1] = " "
-                i += 2
-                state = 0
-                continue
-            if block and text[i] != "\n":
-                out[i] = " "
-            i += 1
-        else:  # string literal
-            if text[i] == "\\" and i + 1 < n:
-                i += 2  # escaped char (\" or \\) stays inside the string
-                continue
-            if text[i] == '"':
-                state = 0
-            i += 1
-    return "".join(out)
+    return _mask_comments_impl(text, line, block, cut_line)
 
 
 def strip_comments(text: str) -> str:
