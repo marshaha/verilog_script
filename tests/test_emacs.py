@@ -316,6 +316,25 @@ def test_find_auto_markers_does_not_confuse_autoinstparam():
     assert len(find_auto_markers(lines, "AUTOINSTPARAM")) == 1
 
 
+def test_star_markers_skip_template_regex_comments():
+    # AUTO_TEMPLATE regexps contain \(.*\) — a `.*` inside a block comment
+    # is NOT an SV wildcard instance.  These bogus star markers used to
+    # fire dozens of "AUTOINST marker outside an instance pin list"
+    # warnings on template-heavy files (field report: isp_top_wrap.sv).
+    lines = [
+        "/* sub AUTO_TEMPLATE (",
+        "    .a_\\(.*\\)_n  (a_\\1_n[]),",
+        "    .b_\\(.*\\)     (b_\\1[][]),",
+        "); */",
+        "sub u0 (.*);",
+    ]
+    text = "\n".join(lines)
+    ms = find_auto_markers(lines, r"\.\*", require_comment=False)
+    assert len(ms) == 1
+    assert text[ms[0].offset : ms[0].offset + 2] == ".*"
+    assert ms[0].offset > text.index("u0")
+
+
 # ---------------------------------------------------------------------------
 # multidimensional ports (validated against real verilog-mode)
 
