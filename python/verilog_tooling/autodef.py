@@ -4064,31 +4064,43 @@ def _auto_def_t_single(
     # below (_stacks/_line_off/pin_off) refers to it; read_inst_param_values
     # re-masks per call without it (O(instances × buffer) — perf)
     _masked = _emacs.mask_comments(_text)
-    # shared buffer for resolve_instance below: its caches (stripped lines,
-    # full-text mask) turn the per-marker prefix scans into one pass
-    _vb = VerilogBuffer(lines)
-    _markers = _emacs.find_auto_markers(lines, "autoinst")
-    _stacks = _emacs._scan_parens_at(_text, [m.offset for m in _markers])
+    # the marked-instance machinery (resolve, paren stacks, per-marker
+    # param values) feeds ONLY the `_AUTOINST_MARK.search(line)` branch,
+    # which requires a lowercase /*autoinst*/ marker — EAI expansions keep
+    # the user's /*AUTOINST*/ case, so on most buffers this is all dead
+    # work; skip it when no lowercase marker can exist.
+    if "autoinst" in _text:
+        # shared buffer for resolve_instance below: its caches (stripped
+        # lines, full-text mask) turn the per-marker prefix scans into one
+        # pass
+        _vb = VerilogBuffer(lines)
+        _markers = _emacs.find_auto_markers(lines, "autoinst")
+        _stacks = _emacs._scan_parens_at(_text, [m.offset for m in _markers])
+    else:
+        _vb = None
+        param_by_line = {}
+        open_by_marker_line = {}
     _line_off = [0]
     for _l in lines:
         _line_off.append(_line_off[-1] + len(_l) + 1)
 
     import bisect as _bisect
 
-    param_by_line: dict[int, dict[str, str]] = {}
-    for _mk in _markers:
-        _st = _stacks[_mk.offset]
-        if _st:
-            param_by_line[_bisect.bisect_right(_line_off, _mk.offset) - 1] = _emacs.read_inst_param_values(
-                _text, _st[-1], _masked
-            )
-    # pin-list '(' offset per /*autoinst*/ marker line (whole-instance scan:
-    # hand-written connections BEFORE the marker drive nets too)
-    open_by_marker_line: dict[int, int] = {
-        _bisect.bisect_right(_line_off, _mk.offset) - 1: _stacks[_mk.offset][-1]
-        for _mk in _markers
-        if _stacks[_mk.offset]
-    }
+    if "autoinst" in _text:
+        param_by_line: dict[int, dict[str, str]] = {}
+        for _mk in _markers:
+            _st = _stacks[_mk.offset]
+            if _st:
+                param_by_line[_bisect.bisect_right(_line_off, _mk.offset) - 1] = _emacs.read_inst_param_values(
+                    _text, _st[-1], _masked
+                )
+        # pin-list '(' offset per /*autoinst*/ marker line (whole-instance
+        # scan: hand-written connections BEFORE the marker drive nets too)
+        open_by_marker_line: dict[int, int] = {
+            _bisect.bisect_right(_line_off, _mk.offset) - 1: _stacks[_mk.offset][-1]
+            for _mk in _markers
+            if _stacks[_mk.offset]
+        }
 
     signals = SignalTable()
     signals.known = frozenset(set(allparas) | set(_const_symbols(full)))
