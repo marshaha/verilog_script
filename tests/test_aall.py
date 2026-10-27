@@ -1130,3 +1130,52 @@ def test_analysis_table_memo_invalidation(monkeypatch):
     autodef._const_symbols(lines + ['`include "x.vh"'])
     autodef._const_symbols(lines + ["import foo::*;"])
     assert len(puts) == n + 3  # computed every time
+
+STAR_COMMENT_TOP = """\
+module sub (
+    input  wire clk,
+    input  wire din,
+    output reg  dout
+);
+endmodule
+
+module top;
+/* note: the .* star form, and data.* patterns, are described here */
+sub u_star (.*);
+sub u_auto (/*AUTOINST*/);
+endmodule
+"""
+
+
+def test_aall_star_in_block_comment_is_not_a_marker(tmp_path, capsys):
+    """A bare ``.*`` inside a /* */ comment is not a star instance.
+
+    The star search matches ``.*`` as a bare token, so without block
+    masking it also matched the ``.*`` fragments inside AUTO_TEMPLATE
+    regexps (autoinst_cavanaugh_pull.v warned 5 times over template
+    ``.*`` while expanding nothing there).  Those warnings were
+    pre-existing noise, not a perf regression (old and new trees
+    warned identically on the whole corpus), but they are false
+    positives: the comment must stay verbatim and warn nothing, while
+    the real star and AUTOINST instances still expand."""
+    libdir = tmp_path / "lib"
+    libdir.mkdir()
+    top = tmp_path / "top.v"
+    top.write_text(STAR_COMMENT_TOP)
+    out = _run_aall(top, libdir, tmp_path)
+    err = capsys.readouterr().err
+    assert "outside an instance pin list" not in err
+    assert "/* note: the .* star form, and data.* patterns, are described here */" in out
+    # AUTOINST expansion is present (APF pads before the closing paren).
+    assert re.search(r"\.clk\s*\(clk\s*\)", out)
+    assert re.search(r"\.dout\s*\(dout\s*\)", out)
+    # The real star instance still expands too: default aall output
+    # restores bare (.*) (verilog-mode on-save behaviour), so check it
+    # under --star-save, where the Implicit .* pins are kept.
+    out_star = tmp_path / "star.v"
+    inst.main(
+        ["eai", "-i", str(top), "-o", str(out_star), "-y", str(libdir), "--star-save"]
+    )
+    star_text = out_star.read_text()
+    assert re.search(r"u_star \(\.\*,\s+// Outputs", star_text)
+    assert re.search(r"\.clk\s*\(clk\s*\),\s+// Implicit \.\*", star_text)
