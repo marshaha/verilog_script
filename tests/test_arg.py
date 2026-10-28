@@ -1049,3 +1049,47 @@ def test_auto_arg_empty_region_markers_do_not_swallow_hand_decls():
         ]
     )
     assert "clk, rst, addr" in text
+
+
+def test_auto_arg_reuses_pin_scan_cache(monkeypatch):
+    """AUTOARG's inout inference must use the shared aall pin-scan cache
+    instead of rescanning: with a pre-filled cache, _inst_pin_scan is
+    never called; without a cache it still scans inline (old behavior,
+    and the control proving the ban is effective)."""
+    from verilog_tooling import wire
+    from verilog_tooling.inst import parse_module_ports
+
+    sub = [
+        "module sub (",
+        "    input  wire clk,",
+        "    inout  wire pad",
+        ");",
+        "endmodule",
+    ]
+    lines = [
+        "module top (/*autoarg*/",
+        "    //Inouts",
+        "    pad,",
+        ");",
+        "    sub u_sub (.clk (clk), .pad (pad));",
+        "endmodule",
+    ]
+    modules = {"sub": parse_module_ports(sub)}
+    cache: dict = {}
+    out_cached = auto_arg(lines, modules, pin_scan_cache=cache)
+    assert cache, "first call should fill the cache"
+    header = "\n".join(out_cached[: out_cached.index(");")])
+    assert "//Inouts" in header and "pad" in header
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("_inst_pin_scan must not run on a cache hit")
+
+    monkeypatch.setattr(wire, "_inst_pin_scan", _boom)
+    out_cached2 = auto_arg(lines, modules, pin_scan_cache=cache)
+    assert out_cached2 == out_cached
+    try:
+        auto_arg(lines, modules)
+    except AssertionError as exc:
+        assert "cache hit" in str(exc)
+    else:
+        raise AssertionError("un-cached call should have scanned inline")

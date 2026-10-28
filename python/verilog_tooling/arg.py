@@ -799,6 +799,7 @@ def auto_arg(
     modules: "Mapping[str, ModuleDef] | None" = None,
     *,
     aio_cache_valid: bool = True,
+    pin_scan_cache: "dict | None" = None,
 ) -> list[str]:
     """Regenerate the ``/*autoarg*/`` port list in every module header.
 
@@ -821,9 +822,17 @@ def auto_arg(
     old_names = _auto_arg_region_names(lines)
     inout_nets: dict[str, str] = {}
     if modules:
-        from .wire import _inst_driven_nets
+        from .wire import _cached_pin_scan, _inst_driven_nets
 
-        for name, net in _inst_driven_nets(lines, modules, ("inout",), simple_only=True).items():
+        # The aall pin-scan cache (filled at AIO) serves here too: AUTOARG
+        # runs last and edits no instance bodies, so the cached pin data
+        # is still the final text.  Without a cache (or on duplicate
+        # module names, where _main_aall passes None) this falls back to
+        # the inline scan, exactly as before.
+        for name, net in _inst_driven_nets(
+            lines, modules, ("inout",), simple_only=True,
+            _pin_scan=_cached_pin_scan(pin_scan_cache, lines, modules),
+        ).items():
             inout_nets[name] = net.width
     # Per-module header facts must be read before kill_auto_arg collapses
     # the generated regions; the collapse deletes region lines but never

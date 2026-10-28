@@ -2851,7 +2851,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
 
     # One instance pin scan per module span, shared by every aall pass
     # that reads instance pins (AIO/AUTOTIEOFF/AUTOLOGIC/AUTOWIRE/AUTOREG/
-    # AUTOREGINPUT/AUTOUNUSED): none of them edits instance bodies — they
+    # AUTOREGINPUT/AUTOUNUSED/AUTOARG): none of them edits instance bodies — they
     # only add port/declaration/assign/`undef lines — and EAP/EAI, which
     # DO rewrite instance pin lists, run before the first fill, so the
     # lazy fill (at AIO) sees the final instance text.  The cache keys on
@@ -3065,7 +3065,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
     # 21. AR (autoarg) / 22. AUTOINSERTLAST / 23. AF (all format).  AR uses
     # the module table only for the inout inference on direction-less
     # port-list names.
-    lines = arg.auto_arg(lines, modules_w)
+    lines = arg.auto_arg(lines, modules_w, pin_scan_cache=pin_scan_cache)
     _log("aall: autoarg done")
     lines = misc.auto_insert_last(lines, base_dir=str(Path(args.in_file).parent))
     _log("aall: AUTOINSERTLAST done")
