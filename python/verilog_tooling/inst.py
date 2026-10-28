@@ -117,7 +117,6 @@ from .template import (
 
 _AUTOINST_MARK = re.compile(r"/\*\s*\bautoinst\b", re.IGNORECASE)
 _STUB_LINE = re.compile(r"/\*\s*\bautoinst\b\s*\*/\s*\)\s*;", re.IGNORECASE)
-_LINE_COMMENT = re.compile(r"^\s*//")
 _DIRECTIVE = re.compile(r"^\s*`(?:if|ifdef|ifndef|elsif|else|endif)\b")
 _BLANK = re.compile(r"^\s*$")
 _PORT_KEYWORD = re.compile(r"^\s*(input|output|inout)\b\s*")
@@ -1066,7 +1065,7 @@ def parse_module_ports(
         if re.match(r"^\s*/\*", line) and "*/" not in line:
             in_block_comment = True
             continue
-        if not _LINE_COMMENT.match(line):
+        if not line.lstrip().startswith("//"):
             line = _strip_lc(line)
         line = re.sub(r"^\s*,", "", line)
         # the header's opening '(' may sit at the start of the first port
@@ -1122,7 +1121,7 @@ def parse_module_ports(
             entries.clear()  # drop keep lines collected inside #( ... )
         if (
             _DIRECTIVE.match(line)
-            or (_LINE_COMMENT.match(line) and not re.match(r"^\s*//\s*\{\{\{", line))
+            or (line.lstrip().startswith("//") and not re.match(r"^\s*//\s*\{\{\{", line))
             or _BLANK.match(line)
         ):
             if portlist_closed:
@@ -1522,7 +1521,7 @@ class VerilogBuffer:
         return [
             i
             for i, line in enumerate(self._lines)
-            if mark.search(line) and not _LINE_COMMENT.match(line)
+            if mark.search(line) and not line.lstrip().startswith("//")
         ]
 
     def resolve_instance(self, marker_idx: int) -> tuple[str, str]:
@@ -1715,7 +1714,7 @@ class VerilogBuffer:
 
     @staticmethod
     def _emit_keep(entry: Keep) -> str:
-        return "    " + entry.line if _LINE_COMMENT.match(entry.line) else entry.line
+        return "    " + entry.line if entry.line.lstrip().startswith("//") else entry.line
 
     @staticmethod
     def _fix_comma(raw: str, old_last: bool, new_last: bool) -> str:
@@ -1996,7 +1995,7 @@ class VerilogBuffer:
                     out.append(line)
                     i += 1
                     break
-                if _DIRECTIVE.match(line) or _LINE_COMMENT.match(line) or _BLANK.match(line):
+                if _DIRECTIVE.match(line) or line.lstrip().startswith("//") or _BLANK.match(line):
                     out.append(line)
                 else:
                     frags = [
@@ -2097,7 +2096,7 @@ class VerilogBuffer:
             if spans and not any(lo <= li <= hi for lo, hi in spans):
                 out.append(line)  # outside the targeted instances: verbatim
                 continue
-            if pat.match(line) and not _LINE_COMMENT.match(line):
+            if pat.match(line) and not line.lstrip().startswith("//"):
                 pre = head.match(line).group(0)
                 pre = re.sub(r"\)\s*\)\s*;", ")", pre)
                 m = re.search(r"//.*", line)
@@ -2190,7 +2189,7 @@ class VerilogBuffer:
                 if _INST_END.search(line):
                     i += 1
                     break
-                if _DIRECTIVE.match(line) or _LINE_COMMENT.match(line) or _BLANK.match(line):
+                if _DIRECTIVE.match(line) or line.lstrip().startswith("//") or _BLANK.match(line):
                     i += 1
                     continue
                 # a hand-written line may pack several connections

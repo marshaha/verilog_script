@@ -83,6 +83,44 @@ def test_libdirs_typedef_decoy_lines_ignored():
     assert parse_typedef_regexp(["module m;", "endmodule"]) is None
 
 
+def test_line_comment_startswith_equivalence():
+    # The retired ``^\\s*//`` regex and ``lstrip().startswith("//")``
+    # must agree on every line shape, including exotic whitespace and
+    # a newline inside the line (^ anchors at the string start, and
+    # lstrip strips exactly the \\s set — verified character by
+    # character).  The reference regex is reconstructed here because
+    # the constant itself was deleted with the conversion.
+    import re
+
+    ref = re.compile(r"^\s*//")
+    lines = [
+        "",
+        "//",
+        "//x",
+        " //x",
+        "\t//x",
+        "  \t // x",
+        "x//y",
+        ".a (b), // c",
+        "\x0b//x",
+        "\x0c//x",
+        "\r//x",
+        "\x1c//x",
+        "\x85//x",
+        "\xa0//x",
+        "\u2003//x",
+        "\u3000//x",
+        "  \n//x",
+        "//x\n//y",
+        " / /x",
+        "/ /x",
+        "///",
+        " //",
+    ]
+    for line in lines:
+        assert line.lstrip().startswith("//") == (ref.match(line) is not None), repr(line)
+
+
 def test_split_line_comment():
     assert _split_line_comment("a // b") == ("a ", "// b")
     assert _split_line_comment("a") == ("a", "")
