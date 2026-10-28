@@ -44,6 +44,10 @@ _WIDTH = re.compile(r"\[.*\]\s*[A-Za-z_]")
 
 _DEFINE_BONUS = {"wire": 3, "reg": 4, "integer": 0, "genvar": 1}
 _INIT_ASSIGN_RE = re.compile(r"(?<![<>=!])=(?![=])")
+_SLASH_COMMENT_RE = re.compile(r"//.*")
+_STRING_LIT_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_FMT_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/")
+_PIN_START_RE = re.compile(r"(^\s*\.\w+)\(")
 
 
 def _top_level_comma(text: str) -> bool:
@@ -110,9 +114,9 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str, str] | None:
             return None
         header_tail = tm.group(1)  # `inst (/*autoinst*/...`
         line = line[: j + 1]  # parse the pin part normally below
-    cm = re.search(r"//.*", line)
+    cm = _SLASH_COMMENT_RE.search(line)
     comment = cm.group(0) if cm else ""
-    body = re.sub(r"//.*", "", line)
+    body = _SLASH_COMMENT_RE.sub("", line)
     # A connection value that continues on following lines (net paren
     # depth ends POSITIVE, e.g. a multi-line ?: in a #(...) parameter
     # override) is not a complete pin connection: emitting
@@ -120,8 +124,8 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str, str] | None:
     # lines as syntax errors.  Leave the line untouched.  Negative
     # depth is fine: the line closes an enclosing group, as in the
     # parameter override terminator `.W(16))`.
-    depth_src = re.sub(r'"(?:[^"\\]|\\.)*"', '""', body)
-    depth_src = re.sub(r"/\*.*?\*/", "", depth_src)
+    depth_src = _STRING_LIT_RE.sub('""', body)
+    depth_src = _FMT_BLOCK_COMMENT_RE.sub("", depth_src)
     depth = 0
     for ch in depth_src:
         if ch == "(":
@@ -130,7 +134,7 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str, str] | None:
             depth -= 1
     if depth > 0:
         return None
-    body = re.sub(r"(^\s*\.\w+)\(", r"\1 (", body)
+    body = _PIN_START_RE.sub(r"\1 (", body)
     pm = re.match(r"^\s*\.\S*", body)
     port = re.sub(r"[\s.]", "", pm.group(0))
     conn = re.sub(r"^\s*\.\S*\s*\(", "", body)
@@ -273,7 +277,7 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
             out.append(line)
             continue
         line = re.sub(r"\)\s*;", ");", line)
-        cm = re.search(r"//.*", line)
+        cm = _SLASH_COMMENT_RE.search(line)
         comment = cm.group(0) if cm else ""
         # a trailing /* ... */ comment is comment text too — leaving it in
         # the body makes the name extraction fail (empty port name)
@@ -281,7 +285,7 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
             bcm = re.search(r"/\*.*?\*/\s*$", line)
             if bcm:
                 comment = bcm.group(0).strip()
-        body = re.sub(r"//.*", "", line)
+        body = _SLASH_COMMENT_RE.sub("", line)
         body = re.sub(r"/\*.*?\*/", " ", body)
         if re.search(r"\)\s*;?\s*$", body):
             terminator = ");"
@@ -373,7 +377,7 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         # /* synopsys enum ... */ shape in autoinst_rogoff.v, where
         # verilog-mode keeps the comment between width and name), or
         # after the terminator otherwise, so nothing is ever lost.
-        _no_linec = re.sub(r"//.*", "", line)
+        _no_linec = _SLASH_COMMENT_RE.sub("", line)
         _trail = re.search(r"/\*.*?\*/\s*$", _no_linec)
         _rest = _no_linec[: _trail.start()] if _trail else _no_linec
         pre_comments: list[str] = []

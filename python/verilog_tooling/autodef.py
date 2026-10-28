@@ -65,6 +65,26 @@ from typing import Mapping, Sequence
 
 from .inst import ModuleDef, Port, VerilogBuffer, _cal_margin, parse_module_ports
 from .parser import discover_for_scopes
+_COMMENT_START_RE = re.compile(r"^\s*/\*")
+_BLOCK_COMMENT_LINE_RE = re.compile(r"^\s*/\*.*?\*/")
+_AUTODEF_MARKER_RE = re.compile(r"\s*/\*\s*\b(?:autodef|autoinst)\b\s*\*/\s*$")
+_LEADING_COMMA_RE = re.compile(r"^\s*,")
+_WS_RE = re.compile(r"\s+")
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/")
+_LINE_COMMENT_EOL_RE = re.compile(r"//.*$")
+_FUNC_TASK_KW_RE = re.compile(r"\b(endfunction|endtask|function|task)\b")
+_HIER_REF_RE = re.compile(r"\s*\w+\s*\.")
+_ESCAPED_NAME_RE = re.compile(r"\\[^\s]+")
+_IDENT_RE = re.compile(r"[a-zA-Z_]\w*")
+_BASED_LITERAL_RE = re.compile(r"'[hHdDbBoO]")
+_DIGITS_RE = re.compile(r"\d+")
+_BACKTICK_WORD_RE = re.compile(r"`(\w+)")
+_INT_LITERAL_RE = re.compile(r"-?\d+")
+_NUMERIC_EXPR_RE = re.compile(r"-?[\d\s+*/%()+-]+")
+_INST_HDR_PARAM_ONLY_RE = re.compile(r"^\s*(\w+)\s*(#\s*\()\s*$")
+_INST_HDR_FULL_RE = re.compile(r"^\s*(\w+)\s+(#\s*\(.*\)\s*)?(\w+)\s*\(\s*$")
+_INST_HDR_TWO_WORD_RE = re.compile(r"^\s*(\w+)\s+(\w+)\s*$")
+_INST_HDR_PAREN_RE = re.compile(r"^\s*(\w+)\s+(#\s*\(.*?\)\s*)?(\w+)\s*\((?!\s*$)")
 
 _AUTODEF_MARK = re.compile(r"^\s*/\*\s*\b(autodef|AUTODEF)\b")
 _AUTODEF_MARK_FULL = re.compile(r"^\s*/\*\s*\b(autodef|AUTODEF)\b\*/")
@@ -228,12 +248,12 @@ def _strip_line(line: str) -> str:
     A full-line /*...*/ comment (or a trailing one after code) is removed
     so it cannot interfere with matching; a leading marker comment keeps
     any following text (``/*autopara*/ (A, B)`` must stay visible)."""
-    if re.match(r"^\s*/\*", line):
-        m = re.match(r"^\s*/\*.*?\*/", line)
-        if m is not None and not re.match(r"\s*/\*\s*\b(?:autodef|autoinst)\b\s*\*/\s*$", line):
+    if _COMMENT_START_RE.match(line):
+        m = _BLOCK_COMMENT_LINE_RE.match(line)
+        if m is not None and not _AUTODEF_MARKER_RE.match(line):
             line = line[m.end() :] if line[m.end() :].strip() else ""
     line = strip_line_comments(line)  # // cut; /* */ markers kept visible
-    return re.sub(r"^\s*,", "", line)
+    return _LEADING_COMMA_RE.sub("", line)
 
 
 def _strip_inline_comment(text: str) -> str:
@@ -297,7 +317,7 @@ def _norm_marker(s: str) -> str:
     """Whitespace-normalised section-marker text: generated marker lines like
     ``// End of automatic     define`` (old files have irregular spacing)
     must still match."""
-    return re.sub(r"\s+", " ", s.strip())
+    return _WS_RE.sub(" ", s.strip())
 
 
 def _ansi_header_lines(lines: Sequence[str]) -> frozenset[int]:
@@ -415,19 +435,19 @@ def conn_net_name(rest: str) -> str | None:
             if depth == 0:
                 break
         out.append(ch)
-    inner = re.sub(r"/\*.*?\*/", " ", "".join(out))
+    inner = _BLOCK_COMMENT_RE.sub(" ", "".join(out))
     if inner.lstrip()[:1].isdigit():
         return None  # sized literal tie (1'b0 …): no declarable net
-    if re.match(r"\s*\w+\s*\.", inner):
+    if _HIER_REF_RE.match(inner):
         return None  # hierarchical/member reference (hi.ear.ial): not declarable here
     # Escaped identifier: backslash followed by non-whitespace (e.g. \o[10] , \i&e )
     # Must check before the normal identifier pattern.
-    m = re.search(r"\\[^\s]+", inner)
+    m = _ESCAPED_NAME_RE.search(inner)
     if m:
         # Include the trailing whitespace terminator? No, just the name part.
         # The escaped name is backslash + chars up to whitespace.
         return m.group(0)
-    m = re.search(r"[a-zA-Z_]\w*", inner)
+    m = _IDENT_RE.search(inner)
     return m.group(0) if m else None
 
 
@@ -1633,7 +1653,7 @@ def get_all_signals(lines: Sequence[str], defs: set[str], paras: set[str]) -> se
             token = m.group(0)
             if "`" in token or "." in token:
                 continue
-            if re.search(r"'[hHdDbBoO]", token) or re.fullmatch(r"\d+", token):
+            if _BASED_LITERAL_RE.search(token) or _DIGITS_RE.fullmatch(token):
                 continue
             if re.fullmatch(r"'[01xXzZ]", token):
                 continue  # SV unbased unsized literal ('0/'1/'x/'z)
@@ -1784,8 +1804,8 @@ def _generate_regions(lines: Sequence[str]) -> list[tuple[int, int]]:
     regions: list[tuple[int, int]] = []
     stack: list[int] = []
     for lineno, raw in enumerate(lines, start=1):
-        line = re.sub(r"//.*$", "", raw)
-        line = re.sub(r"/\*.*?\*/", " ", line)
+        line = _LINE_COMMENT_EOL_RE.sub("", raw)
+        line = _BLOCK_COMMENT_RE.sub(" ", line)
         for m in re.finditer(r"\b(endgenerate|generate)\b", line):
             if m.group(1) == "generate":
                 stack.append(lineno)
@@ -1802,7 +1822,7 @@ def _declared_loop_vars(lines: Sequence[str]) -> set[str]:
     declaration (comma-separated lists included)."""
     names: set[str] = set()
     for raw in lines:
-        m = _INT_GENVAR_DECL.search(re.sub(r"//.*$", "", raw))
+        m = _INT_GENVAR_DECL.search(_LINE_COMMENT_EOL_RE.sub("", raw))
         if m:
             for tok in m.group(1).split(","):
                 tok = re.sub(r"=.*", "", tok).strip()
@@ -1817,9 +1837,9 @@ def _function_regions(lines: Sequence[str]) -> list[tuple[int, int]]:
     regions: list[tuple[int, int]] = []
     stack: list[int] = []
     for lineno, raw in enumerate(lines, start=1):
-        line = re.sub(r"//.*$", "", raw)
-        line = re.sub(r"/\*.*?\*/", " ", line)
-        for m in re.finditer(r"\b(endfunction|endtask|function|task)\b", line):
+        line = _LINE_COMMENT_EOL_RE.sub("", raw)
+        line = _BLOCK_COMMENT_RE.sub(" ", line)
+        for m in _FUNC_TASK_KW_RE.finditer(line):
             kw = m.group(1)
             if kw in ("function", "task"):
                 stack.append(lineno)
@@ -1868,7 +1888,7 @@ def _function_names(lines: Sequence[str]) -> set[str]:
     """Names of the buffer's function/task definitions themselves."""
     names: set[str] = set()
     for raw in lines:
-        m = _FN_HEADER.search(re.sub(r"//.*$", "", raw))
+        m = _FN_HEADER.search(_LINE_COMMENT_EOL_RE.sub("", raw))
         if m:
             names.add(m.group(1))
     return names
@@ -1883,7 +1903,7 @@ def _only_in_regions(
     hits = [
         ln
         for ln, raw in enumerate(lines, start=1)
-        if pat.search(re.sub(r"//.*$", "", raw))
+        if pat.search(_LINE_COMMENT_EOL_RE.sub("", raw))
     ]
     return bool(hits) and all(
         any(s <= ln <= e for s, e in regions) for ln in hits
@@ -1922,7 +1942,7 @@ def _loop_var_decls(lines: Sequence[str]) -> list[tuple[str, str]]:
     for lineno, raw in enumerate(lines, start=1):
         if any(s <= lineno <= e for s, e in function_regions):
             continue
-        fm = re.search(r"\bfor\s*\(\s*([^;]+);", re.sub(r"//.*$", "", raw))
+        fm = re.search(r"\bfor\s*\(\s*([^;]+);", _LINE_COMMENT_EOL_RE.sub("", raw))
         if not fm:
             continue
         for vm in re.finditer(r"([A-Za-z_]\w*)\s*=", fm.group(1)):
@@ -1942,16 +1962,17 @@ def _eval_bound(expr: str, consts: Mapping[str, int], symbolic: bool = False):
     if symbolic:
         # fold pure-integer subexpressions but keep named constants symbolic;
         # `define keeps its backtick so it stays a valid macro reference
-        if re.fullmatch(r"-?\d+", expr):
+        if _INT_LITERAL_RE.fullmatch(expr):
             return expr
-        return re.sub(r"\s+", "", expr)
-    expr = re.sub(r"`(\w+)", r"\1", expr)  # `define -> name
+        return _WS_RE.sub("", expr)
+    expr = _BACKTICK_WORD_RE.sub(r"\1", expr)  # `define -> name
+    name_res = {n: re.compile(r"\b" + re.escape(n) + r"\b") for n in consts}
     for name, val in consts.items():
-        expr = re.sub(r"\b" + re.escape(name) + r"\b", str(val), expr)
-    if re.fullmatch(r"-?\d+", expr):
+        expr = name_res[name].sub(str(val), expr)
+    if _INT_LITERAL_RE.fullmatch(expr):
         # plain literal — the common case; skip the eval machinery
         return int(expr)
-    if re.fullmatch(r"-?[\d\s+*/%()+-]+", expr):
+    if _NUMERIC_EXPR_RE.fullmatch(expr):
         try:
             return int(eval(expr, {"__builtins__": {}}, {}))  # noqa: S307
         except Exception:  # noqa: BLE001
@@ -2112,7 +2133,7 @@ def _eval_index(
     ``j:[0:NUM0-1]``, ``k:[0:NUM1-1]`` -> ``2*NUM0+NUM1-2``. Returns int for
     fully numeric, str for symbolic, None when unresolvable."""
     expr = expr.strip()
-    if re.fullmatch(r"-?\d+", expr):
+    if _INT_LITERAL_RE.fullmatch(expr):
         return int(expr)
     terms = re.findall(r"([+-]?\s*\w+(?:\s*\*\s*\w+)?|[+-]?\s*\d+)", expr)
     if not terms or "".join(t.replace(" ", "") for t in terms) != expr.replace(" ", ""):
@@ -3673,7 +3694,7 @@ def _instance_headers(
     masked = mask_comments("\n".join(lines)).split("\n")
     while i < n:
         raw = masked[i]
-        m = re.match(r"^\s*(\w+)\s*(#\s*\()\s*$", raw)
+        m = _INST_HDR_PARAM_ONLY_RE.match(raw)
         if m and m.group(1) in modules:
             # module #(   <- parameter override spans lines; find its close,
             # then the ``inst_name (`` that follows (same line or next)
@@ -3722,7 +3743,7 @@ def _instance_headers(
                     out[i] = (m.group(1), m2.group(1), j + 1)
                     i = j + 1
                     continue
-        m = re.match(r"^\s*(\w+)\s+(#\s*\(.*\)\s*)?(\w+)\s*\(\s*$", raw)
+        m = _INST_HDR_FULL_RE.match(raw)
         if m and m.group(1) in modules and m.group(3) not in _KEYWORDS:
             out[i] = (m.group(1), m.group(3), -1)
             i += 1
@@ -3733,7 +3754,7 @@ def _instance_headers(
         # (templated) was invisible to the driven-net scan and AUTOWIRE
         # dropped `wire templated`). Blank/comment-only lines between
         # are skipped; the header_end is the `(` line itself.
-        m = re.match(r"^\s*(\w+)\s+(\w+)\s*$", raw)
+        m = _INST_HDR_TWO_WORD_RE.match(raw)
         if m and m.group(1) in modules and m.group(2) not in _KEYWORDS:
             j = i + 1
             while j < n and not masked[j].strip():
@@ -3744,7 +3765,7 @@ def _instance_headers(
                 continue
         # body opens on the header line itself: `mod inst (.clk(clk), ...);`
         # (header_end -2 marks "scan the header line's own text")
-        m = re.match(r"^\s*(\w+)\s+(#\s*\(.*?\)\s*)?(\w+)\s*\((?!\s*$)", raw)
+        m = _INST_HDR_PAREN_RE.match(raw)
         if m and m.group(1) in modules and m.group(3) not in _KEYWORDS:
             out[i] = (m.group(1), m.group(3), -2)
         i += 1
@@ -3766,7 +3787,7 @@ def _structure_names(
     ones whose module resolves in MODULES via :func:`_instance_headers`)."""
     names: set[str] = set()
     for raw in lines:
-        line = re.sub(r"//.*$", "", raw)
+        line = _LINE_COMMENT_EOL_RE.sub("", raw)
         m = _GENVAR_DECL.search(line)
         if m:
             for tok in m.group(1).split(","):

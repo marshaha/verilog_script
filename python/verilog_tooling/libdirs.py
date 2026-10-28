@@ -37,6 +37,9 @@ _F_FLAG = re.compile(r"-f\s*(\S+)")
 _BIG_F_FLAG = re.compile(r"-F\s*(\S+)")
 _ENV_HEAD = re.compile(r"^\$(\w+)")
 _V_EXT = re.compile(r"\.(?:v|sv)$")
+_ALIGN_TYPEDEF_WORDS_RE = re.compile(r"verilog-align-typedef-words\s*:\s*\(([^)]*)\)")
+_QUOTED_WORD_RE = re.compile(r'"([^"]+)"')
+_TYPEDEF_REGEXP_RE = re.compile(r"verilog-typedef-regexp\s*:\s*\"([^\"]*)\"")
 
 
 def read_source_lines(path) -> list[str]:
@@ -170,9 +173,9 @@ def parse_align_typedef_words(lines: Iterable[str]) -> list[str]:
     words, so ports typed by them parse as (possibly modport'd) interface
     ports — e.g. ``svi.master m`` / ``svi m`` in a module header."""
     for line in lines:
-        m = re.search(r"verilog-align-typedef-words\s*:\s*\(([^)]*)\)", line)
+        m = _ALIGN_TYPEDEF_WORDS_RE.search(line)
         if m:
-            return re.findall(r'"([^"]+)"', m.group(1))
+            return _QUOTED_WORD_RE.findall(m.group(1))
     return []
 
 
@@ -206,7 +209,7 @@ def parse_typedef_regexp(lines: Iterable[str]) -> str | None:
     typedef regexp inside verilog-mode, so its words are honored too."""
     words = parse_align_typedef_words(lines)
     for line in lines:
-        m = re.search(r"verilog-typedef-regexp\s*:\s*\"([^\"]*)\"", line)
+        m = _TYPEDEF_REGEXP_RE.search(line)
         if m:
             pats = [m.group(1)] + [rf"\b{w}\b" for w in words]
             return "|".join(pats)

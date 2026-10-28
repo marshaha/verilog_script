@@ -57,6 +57,8 @@ import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Sequence
+_NET_TOKEN_RE = re.compile(r"(\\[^ \t]+|[a-zA-Z_]\w*)")
+_UNPACKED_DIM_COMMENT_RE = re.compile(r"\.\s*\[([^\]:]+)\]\s*\*/")
 
 from .autodef import (
     Signal,
@@ -286,7 +288,7 @@ def _elem_net(expr: str) -> "tuple[str, list[str]] | None":
     brackets inside it (\\o[10]) are name characters, not a bit-select
     — only a bracket group AFTER whitespace is a select
     (\\c-escaped-vec [2:0] -> name + width 2)."""
-    m = re.match(r"(\\[^ \t]+|[a-zA-Z_]\w*)", expr)
+    m = _NET_TOKEN_RE.match(expr)
     if not m:
         return None
     name = m.group(1)
@@ -1277,7 +1279,7 @@ def _pin_record(
     # it as an unpacked multidim, rendered before the packed dims.
     uidx = ""
     mdim = ""
-    um = re.search(r"\.\s*\[([^\]:]+)\]\s*\*/", expr)
+    um = _UNPACKED_DIM_COMMENT_RE.search(expr)
     if um:
         # A note dot-part equal to the port's own unpacked dim is
         # the array's SIZE, not an element index: parameter_in_array

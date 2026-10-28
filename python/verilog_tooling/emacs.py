@@ -44,6 +44,11 @@ from .comments import mask_comments
 from typing import Mapping, Sequence
 
 from .inst import ModuleDef, Port
+_NONWORD_RE = re.compile(r"\W")
+_PAREN_PAIR_RE = re.compile(r"\(\((\w+)\)\)")
+_CLOG2_RE = re.compile(r"\$clog2\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)")
+_NUMERIC_PAREN_EXPR_RE = re.compile(r"\(?\s*[\d+\-*/%() ]+\s*\)?")
+_TEMPLATED_SPAN_RE = re.compile(r"[ \t]*,?[ \t]*//[^\n]*Templated")
 from .template import (
     AutoTemplate,
     _auto_re_to_python,
@@ -460,6 +465,7 @@ def _apply_param_values(expr: str, param_values: Mapping[str, str]) -> str:
     Doubled parens are collapsed each round and the original-text guard
     cuts substitution CYCLES so they cannot pile up nested parens."""
     original = expr
+    name_res = {n: re.compile(r"\b" + re.escape(n) + r"\b") for n in param_values}
     for _ in range(8):
         prev = expr
         for name, value in reversed(list(param_values.items())):
@@ -468,10 +474,10 @@ def _apply_param_values(expr: str, param_values: Mapping[str, str]) -> str:
             # Only wrap in parens if the value needs it (contains operators).
             # A simple identifier (KeyWidth) doesn't need parens; adding them
             # causes dim mismatches like (KeyWidth)-1:0 vs KeyWidth-1:0.
-            replacement = f"({value})" if re.search(r"\W", value) else value
-            expr = re.sub(r"\b" + re.escape(name) + r"\b", replacement, expr)
+            replacement = f"({value})" if _NONWORD_RE.search(value) else value
+            expr = name_res[name].sub(replacement, expr)
         while "((" in expr:  # collapse substitution-added nesting, one level at a time
-            collapsed = re.sub(r"\(\((\w+)\)\)", r"(\1)", expr)
+            collapsed = _PAREN_PAIR_RE.sub(r"(\1)", expr)
             if collapsed == expr:
                 break  # unbalanced/unnested remainder — nothing more to do
             expr = collapsed
@@ -548,8 +554,8 @@ def _fold_numeric_expr(expr: str) -> str:
             return m.group(0)
         return str(math.ceil(math.log2(v)) if v > 1 else 0)
 
-    expr = re.sub(r"\$clog2\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)", clog2, expr)
-    if re.fullmatch(r"\(?\s*[\d+\-*/%() ]+\s*\)?", expr.strip()):
+    expr = _CLOG2_RE.sub(clog2, expr)
+    if _NUMERIC_PAREN_EXPR_RE.fullmatch(expr.strip()):
         try:
             return str(int(eval(expr, {"__builtins__": {}}, {})))
         except Exception:
@@ -1293,7 +1299,7 @@ def inst_pin_connections(
             # emits `.pin (templated), // Templated`). Masking
             # preserves offsets, so the unmasked span reads at j too.
             templated = (
-                re.match(r"[ \t]*,?[ \t]*//[^\n]*Templated", span[j:]) is not None
+                _TEMPLATED_SPAN_RE.match(span[j:]) is not None
             )
         item = (
             (pin, span[k + 1 : j - 1], False, templated)

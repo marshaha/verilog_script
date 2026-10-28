@@ -6,6 +6,8 @@ from typing import Iterable
 
 _IDENT = re.compile(r"\b[A-Za-z_]\w*\b")
 _BRACKET = re.compile(r"\[([^\]]+)\]")
+_BEGIN_RE = re.compile(r"\bbegin\b")
+_END_RE = re.compile(r"\bend\b")
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,12 @@ def parse_declaration(line: str) -> Declaration | None:
 
 
 _FOR_INIT_TYPES = r"int|integer|genvar|longint|shortint|byte|bit|logic|reg"
+_FOR_HEADER_RE = re.compile(
+    r"for\s*\(\s*(?:("
+    + _FOR_INIT_TYPES
+    + r")\s+)?([A-Za-z_]\w*)\s*=\s*(.*?)\s*;\s*(.*?)\s*;\s*"
+    r"((?:\+\+\s*\2|--\s*\2|\2\s*(?:\+\+|--|\+=|-=|\*=|/=|%=|=).*?))\)"
+)
 
 
 def parse_for_header(
@@ -74,13 +82,7 @@ def parse_for_header(
     assignment (``i = i + 1``), a compound assignment (``i += 2``) or a
     bare ``i++`` / ``++i`` / ``i--`` / ``--i``.
     """
-    m = re.search(
-        r"for\s*\(\s*(?:("
-        + _FOR_INIT_TYPES
-        + r")\s+)?([A-Za-z_]\w*)\s*=\s*(.*?)\s*;\s*(.*?)\s*;\s*"
-        r"((?:\+\+\s*\2|--\s*\2|\2\s*(?:\+\+|--|\+=|-=|\*=|/=|%=|=).*?))\)",
-        line,
-    )
+    m = _FOR_HEADER_RE.search(line)
     if not m:
         return None
     inline_type, var, init, cond, step = m.groups()
@@ -99,8 +101,8 @@ def discover_for_scopes(lines: list[str]) -> list[LoopInfo]:
 
     for lineno, line in enumerate(lines, start=1):
         header = parse_for_header(line)
-        begin_count = len(re.findall(r"\bbegin\b", line))
-        end_count = len(re.findall(r"\bend\b", line))
+        begin_count = len(_BEGIN_RE.findall(line))
+        end_count = len(_END_RE.findall(line))
 
         if header:
             var, init, cond, step, inline_type = header

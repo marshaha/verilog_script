@@ -25,6 +25,7 @@ from functools import lru_cache
 _MC_TOKEN = re.compile(r'//|/\*|"')
 
 
+_NON_NEWLINE_RE = re.compile(r"[^\n]")
 def _mask_comments_impl(text: str, line: bool, block: bool, cut_line: bool) -> str:
     # token-driven scan: only comment/string openers are visited, code
     # between them is copied through untouched — the char-by-char state
@@ -72,7 +73,7 @@ def _mask_comments_impl(text: str, line: bool, block: bool, cut_line: bool) -> s
     for s, e, cut in edits:
         out.append(text[pos:s])
         if not cut:
-            out.append(re.sub(r"[^\n]", " ", text[s:e]))
+            out.append(_NON_NEWLINE_RE.sub(" ", text[s:e]))
         pos = e
     out.append(text[pos:])
     return "".join(out)

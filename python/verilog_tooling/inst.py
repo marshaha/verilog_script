@@ -52,6 +52,9 @@ _LOG_T0: float | None = None
 
 
 _ARG_PORT_MARK = re.compile(r"/\*\s*\b(?:autoarg|AUTOARG)\b")
+_MODULE_TICKED_RE = re.compile(r"\s*module\s+(`?)(\w+)")
+_MODULE_RE = re.compile(r"\s*module\s+\w+")
+_ENDMODULE_RE = re.compile(r"\s*endmodule\b")
 _ARG_PORT_CLOSE = re.compile(r"\)\s*;\s*$")
 _ARG_PORT_NOT_LIST = re.compile(
     r";|\b(?:input|output|inout|wire|reg|logic|assign|always|module|endmodule)\b"
@@ -2590,11 +2593,11 @@ def buffer_module_defs(text: str) -> dict[str, list[str]]:
     i = 0
     n = len(lines)
     while i < n:
-        m = re.match(r"\s*module\s+(`?)(\w+)", lines[i])
+        m = _MODULE_TICKED_RE.match(lines[i])
         if m:
             name = emacs.detick_name(m.group(1) + m.group(2), defines)
             start = i
-            while i < n and not re.match(r"\s*endmodule\b", lines[i]):
+            while i < n and not _ENDMODULE_RE.match(lines[i]):
                 i += 1
             mods.setdefault(name, lines[start : i + 1])
         i += 1
@@ -2607,9 +2610,9 @@ def module_spans(lines: Sequence[str]) -> list[tuple[int, int]]:
     i = 0
     n = len(lines)
     while i < n:
-        if re.match(r"\s*module\s+\w+", lines[i]):
+        if _MODULE_RE.match(lines[i]):
             start = i
-            while i < n and not re.match(r"\s*endmodule\b", lines[i]):
+            while i < n and not _ENDMODULE_RE.match(lines[i]):
                 i += 1
             spans.append((start, i))
         i += 1
