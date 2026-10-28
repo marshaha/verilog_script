@@ -936,3 +936,31 @@ def test_section_order_pins_outputs_before_inputs():
         ("c", "z"),
         ("a", "x"),
     ]
+
+
+def test_note_net_skips_noop_merge_copy():
+    """The merge-path copy is skipped when the merge changes nothing:
+    a repeat note with identical widths from another instance leaves
+    the stored record object untouched; a genuinely wider bus still
+    replaces it with the max width (first driver's inst/module kept)."""
+    from verilog_tooling.wire import InstNet, _note_net
+
+    nets = {}
+    first = InstNet("d", "7", "u1", "sub", ("7:0",))
+    _note_net(nets, first, _presimplified=True)
+    assert nets["d"] is first
+    # Second driver, same widths: only multi flips, so this replaces.
+    _note_net(nets, InstNet("d", "7", "u2", "sub", ("7:0",)), _presimplified=True)
+    second = nets["d"]
+    assert second is not first
+    assert second.multi is True and second.width == "7"
+    assert second.packed_dims == ("7:0",)
+    # Identical repeat: nothing changes, stored object untouched.
+    _note_net(nets, InstNet("d", "7", "u3", "sub", ("7:0",)), _presimplified=True)
+    assert nets["d"] is second
+    # Wider bus: real merge, max width wins, new object stored.
+    _note_net(nets, InstNet("d", "15", "u4", "sub", ("15:0",)), _presimplified=True)
+    third = nets["d"]
+    assert third is not second
+    assert third.width == "15" and third.packed_dims == ("15:0",)
+    assert third.multi is True

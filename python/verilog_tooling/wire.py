@@ -389,6 +389,37 @@ def _simplify_rec(rec: InstNet) -> InstNet:
     return rec
 
 
+def _note_net_parse_range(r: str):
+    """\"223:128\" -> (223, 128), \"10:10\" -> (10, 10); None when the string
+    is not a numeric range.  (Hoisted out of _note_net: it was rebuilt
+    on every note; it closes over nothing.)"""
+    parts = r.split(":")
+    if len(parts) != 2:
+        return None
+    msb = _eval_bound(parts[0].strip(), {})
+    lsb = _eval_bound(parts[1].strip(), {})
+    if isinstance(msb, int) and isinstance(lsb, int):
+        return (msb, lsb)
+    return None
+
+
+def _note_net_bus_range(bus):
+    """Numeric (msb, lsb) of a bus string, or None for a bus string /
+    scalar.  verilog-signals-combine-bus (Emacs): numeric buses merge by
+    max highbit / min lowbit, but a non-numeric bus string wins over any
+    numeric merge (last bus string wins); a bus string already set that
+    differs from the next driver's bits adds \", Couldn't Merge\" —
+    except numeric-then-string, which is silent (autoinst_rogoff.v:
+    [15:0] then [WIDTH-1:0] stays [WIDTH-1:0] with no warning).
+    (Hoisted out of _note_net like _note_net_parse_range.)"""
+    if bus is None:
+        return None
+    if ":" in bus:
+        return _note_net_parse_range(bus)
+    v = _eval_bound(bus.strip(), {})
+    return (v, v) if isinstance(v, int) else None
+
+
 def _note_net(nets: "dict[str, InstNet]", rec: InstNet, _presimplified: bool = False) -> None:
     """Add REC to NETS; a second driver from a DIFFERENT instance marks the
     net multi (its comment gets ", ...", like verilog-mode's sig comment
@@ -424,36 +455,10 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet, _presimplified: bool = F
 
         # Multiple drivers: keep the maximum width (max MSB, min LSB).
         # Evaluate MSB expressions (e.g. "224*1-1" -> 223) and take max.
-        def _parse_range(r: str):
-            # "223:128" -> (223, 128), "10:10" -> (10, 10)
-            parts = r.split(":")
-            if len(parts) != 2:
-                return None
-            msb = _eval_bound(parts[0].strip(), {})
-            lsb = _eval_bound(parts[1].strip(), {})
-            if isinstance(msb, int) and isinstance(lsb, int):
-                return (msb, lsb)
-            return None
-
-        # verilog-signals-combine-bus (Emacs): numeric buses merge by
-        # max highbit / min lowbit, but a non-numeric bus string wins
-        # over any numeric merge (last bus string wins); a bus string
-        # already set that differs from the next driver's bits adds
-        # ", Couldn't Merge" — except numeric-then-string, which is
-        # silent (autoinst_rogoff.v: [15:0] then [WIDTH-1:0] stays
-        # [WIDTH-1:0] with no warning)
-        def _bus_range(bus):
-            if bus is None:
-                return None
-            if ":" in bus:
-                return _parse_range(bus)
-            v = _eval_bound(bus.strip(), {})
-            return (v, v) if isinstance(v, int) else None
-
         prev_bus = prev.packed_dims[0] if prev.packed_dims else None
         rec_bus = rec.packed_dims[0] if rec.packed_dims else None
-        prev_num = _bus_range(prev_bus)
-        rec_num = _bus_range(rec_bus)
+        prev_num = _note_net_bus_range(prev_bus)
+        rec_num = _note_net_bus_range(rec_bus)
         prev_is_string = prev_bus is not None and prev_num is None
         rec_is_string = rec_bus is not None and rec_num is None
         new_width = prev.width
@@ -481,12 +486,25 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet, _presimplified: bool = F
         elif prev_is_string:
             buswarn = True  # scalar driver after a bus string
         _merged = new_pdims != prev.packed_dims or new_width != prev.width
-        nets[rec.name] = replace(
-            prev,
-            multi=(prev.multi or not _same or _merged),
-            width=new_width, packed_dims=new_pdims,
-            merge_warn=buswarn,
-        )
+        _new_multi = prev.multi or not _same or _merged
+        # Most repeat notes change nothing (same widths, multi already
+        # set — 11940 of 11970 merge copies on the 400-instance bench
+        # were no-ops): skip the frozen-dataclass copy then.  The stored
+        # object stays the old one, equal in every field, so no
+        # value-based consumer can tell; the multi-driver trace below
+        # still fires.
+        if (
+            _new_multi != prev.multi
+            or new_width != prev.width
+            or new_pdims != prev.packed_dims
+            or buswarn != prev.merge_warn
+        ):
+            nets[rec.name] = replace(
+                prev,
+                multi=_new_multi,
+                width=new_width, packed_dims=new_pdims,
+                merge_warn=buswarn,
+            )
         if not _same:
             trace_sig(prev.name, f"multi-driver inst={rec.inst} module={rec.module}")
 

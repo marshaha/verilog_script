@@ -563,6 +563,19 @@ def _fold_numeric_expr(expr: str) -> str:
     return expr
 
 
+_SR_PRE_PAREN = r"[\[({:*/<>+-]"
+_SR_POST_PAREN = r"[])}:*/<>.+-]"
+_SR_PRE_PM = r"[\[({:<>+-]"
+_SR_POST_PM = r"[])}:<>+-]"
+_SR_PRE_SHIFT = r"[\[({:]"
+_SR_POST_SHIFT = r"[])}:<>]"
+_SR_PAREN_RE = re.compile(_SR_PRE_PAREN + r"\((\w+)\)" + _SR_POST_PAREN)
+_SR_CLOG2_RE = re.compile(_SR_PRE_PAREN + r"\$clog2\s*\((\d+)\)" + _SR_POST_PAREN)
+_SR_MUL_RE = re.compile(_SR_PRE_PAREN + r"([0-9]+)\s*([*/])\s*([0-9]+)" + _SR_POST_PAREN)
+_SR_PM_RE = re.compile(_SR_PRE_PM + r"([0-9]+)\s*([+-])\s*([0-9]+)" + _SR_POST_PM)
+_SR_SHIFT_RE = re.compile(_SR_PRE_SHIFT + r"([0-9]+)\s*(<<<?|>>>?)\s*([0-9]+)" + _SR_POST_SHIFT)
+
+
 def simplify_range_expression(expr: str) -> str:
     """Port of verilog-simplify-range-expression: fold constant
     arithmetic inside a bracketed bus string (``[DW-1+2:0]`` ->
@@ -592,20 +605,6 @@ def simplify_range_expression(expr: str) -> str:
 
     def _clog2(v):
         return 0 if v <= 1 else (v - 1).bit_length()
-
-    pre_paren = r"[\[({:*/<>+-]"
-    post_paren = r"[])}:*/<>.+-]"
-    pre_mul = r"[\[({:*/<>+-]"
-    post_mul = r"[])}:*/<>.+-]"
-    pre_pm = r"[\[({:<>+-]"
-    post_pm = r"[])}:<>+-]"
-    pre_shift = r"[\[({:]"
-    post_shift = r"[])}:<>]"
-    pat_paren = re.compile(pre_paren + r"\((\w+)\)" + post_paren)
-    pat_clog2 = re.compile(pre_paren + r"\$clog2\s*\((\d+)\)" + post_paren)
-    pat_mul = re.compile(pre_mul + r"([0-9]+)\s*([*/])\s*([0-9]+)" + post_mul)
-    pat_pm = re.compile(pre_pm + r"([0-9]+)\s*([+-])\s*([0-9]+)" + post_pm)
-    pat_shift = re.compile(pre_shift + r"([0-9]+)\s*(<<<?|>>>?)\s*([0-9]+)" + post_shift)
 
     def _paren(m):
         pre, ident, post = m.group(0)[0], m.group(1), m.group(0)[-1]
@@ -649,11 +648,11 @@ def simplify_range_expression(expr: str) -> str:
     last = None
     while last != out:
         last = out
-        out = _run(pat_paren, _paren, out)
-        out = _run(pat_clog2, _clog2_repl, out)
-        out = _run(pat_mul, _mul, out)
-        out = _run(pat_pm, _pm, out)
-        out = _run(pat_shift, _shift, out)
+        out = _run(_SR_PAREN_RE, _paren, out)
+        out = _run(_SR_CLOG2_RE, _clog2_repl, out)
+        out = _run(_SR_MUL_RE, _mul, out)
+        out = _run(_SR_PM_RE, _pm, out)
+        out = _run(_SR_SHIFT_RE, _shift, out)
     return out
 
 
