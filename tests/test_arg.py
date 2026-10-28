@@ -1093,3 +1093,40 @@ def test_auto_arg_reuses_pin_scan_cache(monkeypatch):
         assert "cache hit" in str(exc)
     else:
         raise AssertionError("un-cached call should have scanned inline")
+
+
+def test_auto_arg_pin_scan_cache_multi_module_matches_uncached():
+    """A per-span aall cache must not make AUTOARG see only the first
+    module's inout pins.  Multi-module buffers use the original full
+    scan; single-module buffers keep the cache fast path above."""
+    from verilog_tooling import wire
+    from verilog_tooling.inst import module_spans, parse_module_ports
+
+    sub = [
+        "module sub (inout wire pad);",
+        "endmodule",
+    ]
+    lines = [
+        "module m1 (/*autoarg*/",
+        "    //Inouts",
+        "    pad1,",
+        ");",
+        "    sub u1 (.pad (pad1));",
+        "endmodule",
+        "module m2 (/*autoarg*/",
+        "    //Inouts",
+        "    pad2,",
+        ");",
+        "    sub u2 (.pad (pad2));",
+        "endmodule",
+    ]
+    modules = {"sub": parse_module_ports(sub)}
+    cache: dict = {}
+    for start, end in module_spans(lines):
+        wire._cached_pin_scan(cache, lines[start : end + 1], modules)
+    assert set(cache) == {"m1", "m2"}
+
+    expected = auto_arg(lines, modules)
+    actual = auto_arg(lines, modules, pin_scan_cache=cache)
+    assert actual == expected
+    assert "pad2" in "\n".join(actual)

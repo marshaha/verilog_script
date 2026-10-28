@@ -826,12 +826,22 @@ def auto_arg(
 
         # The aall pin-scan cache (filled at AIO) serves here too: AUTOARG
         # runs last and edits no instance bodies, so the cached pin data
-        # is still the final text.  Without a cache (or on duplicate
-        # module names, where _main_aall passes None) this falls back to
-        # the inline scan, exactly as before.
+        # is still the final text.  Its entries are per module span, so only
+        # a single-module buffer can query it with the whole line list;
+        # multi-module buffers retain the original full-buffer scan.
+        pin_scan = None
+        if pin_scan_cache is not None:
+            from .inst import module_spans
+
+            spans = module_spans(lines)
+            if len(spans) == 1:
+                start, end = spans[0]
+                pin_scan = _cached_pin_scan(
+                    pin_scan_cache, lines[start : end + 1], modules
+                )
         for name, net in _inst_driven_nets(
             lines, modules, ("inout",), simple_only=True,
-            _pin_scan=_cached_pin_scan(pin_scan_cache, lines, modules),
+            _pin_scan=pin_scan,
         ).items():
             inout_nets[name] = net.width
     # Per-module header facts must be read before kill_auto_arg collapses
