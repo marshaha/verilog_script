@@ -34,7 +34,6 @@ from .inst import VerilogBuffer, _cal_margin, block_comment_mask
 
 _INST_MARGIN = " " * 8  # t:vlog_inst_margin
 
-_LINE_COMMENT = re.compile(r"^\s*//")
 _AUTOINST_MARK = re.compile(r"\(\s*/\*\b(?:autoinst|AUTOINST)\b\*/")
 _AUTO_MARK = re.compile(r"/\*\s*\bauto\w+\b", re.IGNORECASE)  # any AUTO marker comment
 _INST_PIN = re.compile(r"^\s*\..*[^\\]\(.*\)\s*.*$")
@@ -44,10 +43,24 @@ _WIDTH = re.compile(r"\[.*\]\s*[A-Za-z_]")
 
 _DEFINE_BONUS = {"wire": 3, "reg": 4, "integer": 0, "genvar": 1}
 _INIT_ASSIGN_RE = re.compile(r"(?<![<>=!])=(?![=])")
-_SLASH_COMMENT_RE = re.compile(r"//.*")
 _STRING_LIT_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
 _FMT_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/")
 _PIN_START_RE = re.compile(r"(^\s*\.\w+)\(")
+
+
+def _split_line_comment(line: str) -> tuple[str, str]:
+    """(body, comment) split on the first ``//`` — the ``//.*`` regex in
+    string-op form.  ``.`` excludes ``\\n``, so a ``\\n`` inside the line
+    ends the comment and stays in the body, exactly like the regex
+    (splitlines buffers never contain one, but the equivalence is kept
+    total rather than assumed)."""
+    idx = line.find("//")
+    if idx < 0:
+        return line, ""
+    nl = line.find("\n", idx)
+    if nl < 0:
+        return line[:idx], line[idx:]
+    return line[:idx] + line[nl:], line[idx:nl]
 
 
 def _top_level_comma(text: str) -> bool:
@@ -87,7 +100,7 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str, str] | None:
     Terminator is ``')'`` for ``))``, ``');'`` for ``));``, ``''`` for a
     bare ``)`` and ``','`` otherwise.
     """
-    if not _INST_PIN.match(line) or _LINE_COMMENT.match(line):
+    if not _INST_PIN.match(line) or line.lstrip().startswith("//"):
         return None
     header_tail = ""
     if _AUTO_MARK.search(line):
@@ -114,9 +127,7 @@ def _inst_pin_parts(line: str) -> tuple[str, str, str, str, str] | None:
             return None
         header_tail = tm.group(1)  # `inst (/*autoinst*/...`
         line = line[: j + 1]  # parse the pin part normally below
-    cm = _SLASH_COMMENT_RE.search(line)
-    comment = cm.group(0) if cm else ""
-    body = _SLASH_COMMENT_RE.sub("", line)
+    body, comment = _split_line_comment(line)
     # A connection value that continues on following lines (net paren
     # depth ends POSITIVE, e.g. a multi-line ?: in a #(...) parameter
     # override) is not a complete pin connection: emitting
@@ -189,7 +200,7 @@ def _auto_inst_format(self: VerilogBuffer) -> VerilogBuffer:
     # pass 1: explode ``... (/*autoinst*/ .a(x), .b(y));`` one-liners
     out: list[str] = []
     for li, line in enumerate(lines):
-        if comment_mask[li] or not _AUTOINST_MARK.search(line) or _LINE_COMMENT.match(line):
+        if comment_mask[li] or not _AUTOINST_MARK.search(line) or line.lstrip().startswith("//"):
             out.append(line)
             continue
         m = re.search(r"\b(?:autoinst|AUTOINST)\b\*/", line)
@@ -277,15 +288,13 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
             out.append(line)
             continue
         line = re.sub(r"\)\s*;", ");", line)
-        cm = _SLASH_COMMENT_RE.search(line)
-        comment = cm.group(0) if cm else ""
+        body, comment = _split_line_comment(line)
         # a trailing /* ... */ comment is comment text too — leaving it in
         # the body makes the name extraction fail (empty port name)
         if not comment:
             bcm = re.search(r"/\*.*?\*/\s*$", line)
             if bcm:
                 comment = bcm.group(0).strip()
-        body = _SLASH_COMMENT_RE.sub("", line)
         body = re.sub(r"/\*.*?\*/", " ", body)
         if re.search(r"\)\s*;?\s*$", body):
             terminator = ");"
@@ -377,7 +386,7 @@ def _auto_port_format(self: VerilogBuffer) -> VerilogBuffer:
         # /* synopsys enum ... */ shape in autoinst_rogoff.v, where
         # verilog-mode keeps the comment between width and name), or
         # after the terminator otherwise, so nothing is ever lost.
-        _no_linec = _SLASH_COMMENT_RE.sub("", line)
+        _no_linec, _ = _split_line_comment(line)
         _trail = re.search(r"/\*.*?\*/\s*$", _no_linec)
         _rest = _no_linec[: _trail.start()] if _trail else _no_linec
         pre_comments: list[str] = []

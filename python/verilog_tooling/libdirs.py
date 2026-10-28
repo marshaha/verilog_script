@@ -120,7 +120,9 @@ def parse_local_variables(
             if ")" in line:
                 pending = ""
             continue
-        m = _LIBDIRS_LINE.match(line)
+        m = None
+        if "verilog-library-directories" in line:
+            m = _LIBDIRS_LINE.match(line)
         if m:
             body = m.group(1)
             dirs.extend(
@@ -134,7 +136,9 @@ def parse_local_variables(
             if ")" not in body:
                 pending = "dirs"
             continue
-        m = _FLAGS_LINE.match(line)
+        m = None
+        if "verilog-library-flags" in line:
+            m = _FLAGS_LINE.match(line)
         if m:
             toks = _quoted_tokens(m.group(1))
             for idx, tok in enumerate(toks):
@@ -157,7 +161,9 @@ def parse_local_variables(
                 ):
                     vc_files.append(_resolve(toks[idx + 1], file_dir, env))
             continue
-        m = _INST_FILE_LINE.match(line)
+        m = None
+        if "verilog-inst-file" in line:
+            m = _INST_FILE_LINE.match(line)
         if m:
             raw = re.sub(r'[()"]', "", m.group(1)).strip()
             if raw:
@@ -173,9 +179,15 @@ def parse_align_typedef_words(lines: Iterable[str]) -> list[str]:
     words, so ports typed by them parse as (possibly modport'd) interface
     ports — e.g. ``svi.master m`` / ``svi m`` in a module header."""
     for line in lines:
-        m = _ALIGN_TYPEDEF_WORDS_RE.search(line)
-        if m:
-            return _QUOTED_WORD_RE.findall(m.group(1))
+        # Literal pre-filter: a line that cannot match never reaches the
+        # regex.  The literal is a necessary substring of any match, so
+        # this only skips lines the regex would reject anyway — but the
+        # `in` scan is C-speed where the search is engine-speed, and
+        # these functions re-scan the whole (growing) buffer per pass.
+        if "verilog-align-typedef-words" in line:
+            m = _ALIGN_TYPEDEF_WORDS_RE.search(line)
+            if m:
+                return _QUOTED_WORD_RE.findall(m.group(1))
     return []
 
 
@@ -194,11 +206,13 @@ def parse_star_settings(lines: Iterable[str]) -> dict:
     callers layer those under any explicit CLI choice."""
     out: dict = {}
     for line in lines:
-        m = re.search(r"verilog-auto-star-(expand|save)\s*:\s*(\S+)", line)
-        if m:
-            val = _elisp_bool(m.group(2))
-            if val is not None:
-                out[m.group(1)] = val
+        # See parse_align_typedef_words: literal pre-filter, same safety.
+        if "verilog-auto-star-" in line:
+            m = re.search(r"verilog-auto-star-(expand|save)\s*:\s*(\S+)", line)
+            if m:
+                val = _elisp_bool(m.group(2))
+                if val is not None:
+                    out[m.group(1)] = val
     return out
 
 
@@ -209,10 +223,12 @@ def parse_typedef_regexp(lines: Iterable[str]) -> str | None:
     typedef regexp inside verilog-mode, so its words are honored too."""
     words = parse_align_typedef_words(lines)
     for line in lines:
-        m = _TYPEDEF_REGEXP_RE.search(line)
-        if m:
-            pats = [m.group(1)] + [rf"\b{w}\b" for w in words]
-            return "|".join(pats)
+        # See parse_align_typedef_words: literal pre-filter, same safety.
+        if "verilog-typedef-regexp" in line:
+            m = _TYPEDEF_REGEXP_RE.search(line)
+            if m:
+                pats = [m.group(1)] + [rf"\b{w}\b" for w in words]
+                return "|".join(pats)
     if words:
         return "|".join(rf"\b{w}\b" for w in words)
     return None

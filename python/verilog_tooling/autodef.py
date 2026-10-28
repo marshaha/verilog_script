@@ -1953,6 +1953,22 @@ def _loop_var_decls(lines: Sequence[str]) -> list[tuple[str, str]]:
     return [(v, kinds[v]) for v in order]
 
 
+def _is_int_literal(expr: str) -> bool:
+    """``-?\\d+`` fullmatch in string-op form.
+
+    ASCII fast path: a leading ``-`` plus ``isdigit`` is exactly the
+    regex on ASCII input (``isdigit`` on an empty string is False, and
+    ``lstrip``-style stripping is deliberately NOT used — ``--5`` must
+    fail like the regex does).  Non-ASCII input falls back to the regex:
+    ``\\d`` matches Unicode decimal digits while ``isdigit`` also
+    accepts e.g. superscripts, so the fast path must never decide those.
+    """
+    body = expr[1:] if expr.startswith("-") else expr
+    if body.isascii():
+        return body.isdigit()
+    return _INT_LITERAL_RE.fullmatch(expr) is not None
+
+
 def _eval_bound(expr: str, consts: Mapping[str, int], symbolic: bool = False):
     """Resolve a loop-bound expression. With symbolic=False returns an int
     (or None). With symbolic=True returns a string where parameter/`define
@@ -1962,14 +1978,17 @@ def _eval_bound(expr: str, consts: Mapping[str, int], symbolic: bool = False):
     if symbolic:
         # fold pure-integer subexpressions but keep named constants symbolic;
         # `define keeps its backtick so it stays a valid macro reference
-        if _INT_LITERAL_RE.fullmatch(expr):
+        if _is_int_literal(expr):
             return expr
-        return _WS_RE.sub("", expr)
+        # Whitespace removal: on ASCII input ``split``/``join`` deletes
+        # exactly the ``\s+`` runs (same character set); non-ASCII falls
+        # back to the regex rather than trusting the equivalence.
+        return "".join(expr.split()) if expr.isascii() else _WS_RE.sub("", expr)
     expr = _BACKTICK_WORD_RE.sub(r"\1", expr)  # `define -> name
     name_res = {n: re.compile(r"\b" + re.escape(n) + r"\b") for n in consts}
     for name, val in consts.items():
         expr = name_res[name].sub(str(val), expr)
-    if _INT_LITERAL_RE.fullmatch(expr):
+    if _is_int_literal(expr):
         # plain literal — the common case; skip the eval machinery
         return int(expr)
     if _NUMERIC_EXPR_RE.fullmatch(expr):
@@ -2133,7 +2152,7 @@ def _eval_index(
     ``j:[0:NUM0-1]``, ``k:[0:NUM1-1]`` -> ``2*NUM0+NUM1-2``. Returns int for
     fully numeric, str for symbolic, None when unresolvable."""
     expr = expr.strip()
-    if _INT_LITERAL_RE.fullmatch(expr):
+    if _is_int_literal(expr):
         return int(expr)
     terms = re.findall(r"([+-]?\s*\w+(?:\s*\*\s*\w+)?|[+-]?\s*\d+)", expr)
     if not terms or "".join(t.replace(" ", "") for t in terms) != expr.replace(" ", ""):
