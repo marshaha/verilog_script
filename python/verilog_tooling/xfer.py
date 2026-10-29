@@ -1382,13 +1382,14 @@ def auto_outputevery(lines: Sequence[str]) -> list[str]:
 # AUTOREGINPUT (verilog-auto-reg-input)
 
 
-def auto_reginput(lines: Sequence[str], modules: Mapping[str, ModuleDef], pin_scan_cache: "dict | None" = None) -> list[str]:
+def auto_reginput(lines: Sequence[str], modules: Mapping[str, ModuleDef], ctx: "AallContext | None" = None) -> list[str]:
     """Regenerate /*AUTOREGINPUT*/ — ``reg`` for nets feeding input/inout
     ports of /*autoinst*/ instances that are neither declared nor assigned
     in this module.  Each carries ``// To {inst} of {module}.v``.  MODULES
-    maps instance module names to parsed definitions.  PIN_SCAN_CACHE shares
-    the per-span instance pin scan with the other aall passes (see
-    wire._cached_pin_scan); None scans inline."""
+    maps instance module names to parsed definitions.  CTX is the per-run
+    AallContext (wire.AallContext) holding the shared per-span pin scan;
+    None scans inline."""
+    pin_scan_cache = ctx.pin_scan_cache if ctx is not None else None
     from .wire import parse_ignore_concat, parse_param_value, parse_param_value_type, set_ignore_concat
     from .autodef import set_param_value, set_param_value_type
 

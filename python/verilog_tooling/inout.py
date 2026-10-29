@@ -600,7 +600,7 @@ def _regen(
 # AUTOINPUT / AUTOOUTPUT (verilog-auto-input / verilog-auto-output)
 
 
-def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, pin_scan_cache: "dict | None" = None) -> list[str]:
+def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, ctx: "AallContext | None" = None) -> list[str]:
     """Regenerate the /*AUTOINPUT*/ input declarations of a module.
 
     Declares an input port for every net feeding an input port of an
@@ -609,9 +609,10 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     :func:`verilog_tooling.wire.auto_wire`.
     ALLOW_SV_TYPES=False (pure Verilog input) drops reg/logic inherited
     from a submodule port, falling back to the implicit net.
-    PIN_SCAN_CACHE shares the per-span instance pin scan with the other
-    aall passes (see wire._cached_pin_scan); None scans inline.
+    CTX is the per-run AallContext (wire.AallContext) holding the shared per-span
+    pin scan; None scans inline.
     """
+    pin_scan_cache = ctx.pin_scan_cache if ctx is not None else None
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
     from .autodef import set_param_value, set_param_value_type
     from .wire import parse_param_value, parse_param_value_type
@@ -641,15 +642,16 @@ def auto_input(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     return map_module_spans(lines, _AUTOINPUT_MARK, _single)
 
 
-def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, pin_scan_cache: "dict | None" = None) -> list[str]:
+def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, ctx: "AallContext | None" = None) -> list[str]:
     """Regenerate the /*AUTOOUTPUT*/ output declarations of a module.
 
     Declares an output port for every net driven by an output port of an
     /*autoinst*/ instance that is not a port of this module and does not
     feed an instance input/inout.  ALLOW_SV_TYPES as in auto_input.
-    PIN_SCAN_CACHE shares the per-span instance pin scan with the other
-    aall passes (see wire._cached_pin_scan); None scans inline.
+    CTX is the per-run AallContext (wire.AallContext) holding the shared per-span
+    pin scan; None scans inline.
     """
+    pin_scan_cache = ctx.pin_scan_cache if ctx is not None else None
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
     from .autodef import set_param_value, set_param_value_type
     from .wire import parse_param_value, parse_param_value_type
@@ -679,15 +681,16 @@ def auto_output(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv
     return map_module_spans(lines, _AUTOOUTPUT_MARK, _single)
 
 
-def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, pin_scan_cache: "dict | None" = None) -> list[str]:
+def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, ctx: "AallContext | None" = None) -> list[str]:
     """Regenerate the /*AUTOINOUT*/ inout declarations of a module.
 
     Declares an inout port for every net connected to an inout port of an
     /*autoinst*/ instance that is not a port of this module and is not seen
     on an instance input/output port.  ALLOW_SV_TYPES as in auto_input.
-    PIN_SCAN_CACHE shares the per-span instance pin scan with the other
-    aall passes (see wire._cached_pin_scan); None scans inline.
+    CTX is the per-run AallContext (wire.AallContext) holding the shared per-span
+    pin scan; None scans inline.
     """
+    pin_scan_cache = ctx.pin_scan_cache if ctx is not None else None
     from .wire import parse_ignore_concat, set_ignore_concat, _wire_comment_enabled
     from .autodef import set_param_value, set_param_value_type
     from .wire import parse_param_value, parse_param_value_type
@@ -716,16 +719,17 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
     return map_module_spans(lines, _AUTOINOUT_MARK, _single)
 
 
-def auto_io(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, pin_scan_cache: "dict | None" = None) -> list[str]:
+def auto_io(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, ctx: "AallContext | None" = None) -> list[str]:
     """AUTOOUTPUT then AUTOINPUT then AUTOINOUT — the verilog-auto order
     (the AIO command).  ALLOW_SV_TYPES as in auto_input.  PARAM_VALUE
     threads verilog-auto-inst-param-value through (None = the buffer's
     file-local setting); without it the CLI flag never reached these
     entry points — each reset the global from file-local only.
-    PIN_SCAN_CACHE shares one per-span pin scan across all three passes."""
-    lines = auto_output(lines, modules, allow_sv_types, param_value, pin_scan_cache)
-    lines = auto_input(lines, modules, allow_sv_types, param_value, pin_scan_cache)
-    return auto_inout(lines, modules, allow_sv_types, param_value, pin_scan_cache)
+    CTX is the per-run AallContext (wire.AallContext), forwarded to the three
+    passes below."""
+    lines = auto_output(lines, modules, allow_sv_types, param_value, ctx)
+    lines = auto_input(lines, modules, allow_sv_types, param_value, ctx)
+    return auto_inout(lines, modules, allow_sv_types, param_value, ctx)
 
 
 # ---------------------------------------------------------------------------

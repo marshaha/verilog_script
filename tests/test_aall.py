@@ -492,12 +492,13 @@ def test_pin_scan_cache_shared_by_logic_wire_reg(tmp_path):
     assert "q" in "\n".join(ref)  # the scan really found driven nets
 
     cache: dict = {}
-    got = misc.auto_logic(lines, modules, cache)
-    assert len(cache) == 1  # one span: AUTOLOGIC fills the cache
-    assert len(cache["top"]["instances"]) == 2
-    got = wire.auto_wire(got, modules, cache)
-    got = wire.auto_reg(got, modules, cache)
-    assert len(cache) == 1  # AUTOWIRE/AUTOREG reused it — no rescan
+    ctx = wire.AallContext(pin_scan_cache=cache)
+    got = misc.auto_logic(lines, modules, ctx)
+    assert len(ctx.pin_scan_cache) == 1  # one span: AUTOLOGIC fills the cache
+    assert len(ctx.pin_scan_cache["top"]["instances"]) == 2
+    got = wire.auto_wire(got, modules, ctx)
+    got = wire.auto_reg(got, modules, ctx)
+    assert len(ctx.pin_scan_cache) == 1  # AUTOWIRE/AUTOREG reused it — no rescan
     assert got == ref
 
 
@@ -1003,19 +1004,19 @@ endmodule
 """
 
 
-def _wide_pin_pipeline(lines, modules, cache):
+def _wide_pin_pipeline(lines, modules, ctx):
     """The aall pass order for every pin-scan consumer, in pipeline order
     (AIO -> AUTOTIEOFF -> AUTOLOGIC/AUTOWIRE/AUTOREG -> AUTOREGINPUT ->
-    AUTOUNUSED); CACHE=None scans inline per pass."""
-    lines = inout.auto_output(lines, modules, True, None, cache)
-    lines = inout.auto_input(lines, modules, True, None, cache)
-    lines = inout.auto_inout(lines, modules, True, None, cache)
-    lines = misc.auto_tieoff(lines, modules, cache)
-    lines = misc.auto_logic(lines, modules, cache)
-    lines = wire.auto_wire(lines, modules, cache)
-    lines = wire.auto_reg(lines, modules, cache)
-    lines = xfer.auto_reginput(lines, modules, cache)
-    return misc.auto_unused(lines, modules, cache)
+    AUTOUNUSED); CTX=None scans inline per pass."""
+    lines = inout.auto_output(lines, modules, True, None, ctx)
+    lines = inout.auto_input(lines, modules, True, None, ctx)
+    lines = inout.auto_inout(lines, modules, True, None, ctx)
+    lines = misc.auto_tieoff(lines, modules, ctx)
+    lines = misc.auto_logic(lines, modules, ctx)
+    lines = wire.auto_wire(lines, modules, ctx)
+    lines = wire.auto_reg(lines, modules, ctx)
+    lines = xfer.auto_reginput(lines, modules, ctx)
+    return misc.auto_unused(lines, modules, ctx)
 
 
 def test_pin_scan_cache_shared_across_all_aall_pin_passes(monkeypatch):
@@ -1039,9 +1040,10 @@ def test_pin_scan_cache_shared_across_all_aall_pin_passes(monkeypatch):
 
     monkeypatch.setattr(wire, "_inst_pin_scan", counting)
     cache: dict = {}
-    got = _wide_pin_pipeline(lines, modules, cache)
+    ctx = wire.AallContext(pin_scan_cache=cache)
+    got = _wide_pin_pipeline(lines, modules, ctx)
     assert got == ref
-    assert len(cache) == 1  # one span
+    assert len(ctx.pin_scan_cache) == 1  # one span
     assert len(calls) == 1  # ...scanned once for all nine passes
 
 

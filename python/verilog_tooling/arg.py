@@ -799,7 +799,7 @@ def auto_arg(
     modules: "Mapping[str, ModuleDef] | None" = None,
     *,
     aio_cache_valid: bool = True,
-    pin_scan_cache: "dict | None" = None,
+    ctx: "AallContext | None" = None,
 ) -> list[str]:
     """Regenerate the ``/*autoarg*/`` port list in every module header.
 
@@ -819,12 +819,13 @@ def auto_arg(
     and an ``inout`` body declaration is emitted for it, making the port
     legal.
     """
+    pin_scan_cache = ctx.pin_scan_cache if ctx is not None else None
     old_names = _auto_arg_region_names(lines)
     inout_nets: dict[str, str] = {}
     if modules:
         from .wire import _cached_pin_scan, _inst_driven_nets
 
-        # The aall pin-scan cache (filled at AIO) serves here too: AUTOARG
+        # The shared pin scan in CTX (filled at AIO) serves here too: AUTOARG
         # runs last and edits no instance bodies, so the cached pin data
         # is still the final text.  Its entries are per module span, so only
         # a single-module buffer can query it with the whole line list;

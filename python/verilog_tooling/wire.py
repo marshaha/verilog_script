@@ -674,6 +674,18 @@ def _span_module_name(span: Sequence[str]) -> "str | None":
     return m.group(1) if m else None
 
 
+@dataclass
+class AallContext:
+    """Shared state for one aall run.
+
+    New shared per-run caches go HERE as fields. Do NOT thread another
+    cache parameter through the passes: extend this class instead, so
+    pass signatures stay stable (see CONTRIBUTING.md, rule 1).
+    """
+
+    pin_scan_cache: "dict | None" = None
+
+
 def _cached_pin_scan(
     pin_scan_cache: "dict | None",
     span: Sequence[str],
@@ -1649,7 +1661,7 @@ def _regen(
 def auto_wire(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef],
-    pin_scan_cache: "dict | None" = None,
+    ctx: "AallContext | None" = None,
     allow_sv_types: bool = True,
     param_value: "bool | None" = None,
 ) -> list[str]:
@@ -1659,11 +1671,12 @@ def auto_wire(
     instance that is not already declared (port, wire/reg/usrdef, parameter,
     or `define).  MODULES maps instance module names to their parsed
     definitions, as in :func:`verilog_tooling.inst.auto_inst`.
-    PIN_SCAN_CACHE shares the per-span instance pin scan with the
-    AUTOLOGIC/AUTOREG passes (see _cached_pin_scan); None scans inline.
+    CTX is the per-run AallContext (wire.AallContext) holding the shared per-span
+    pin scan; None scans inline.
     ALLOW_SV_TYPES=False (pure Verilog input) drops reg/logic inherited
     from a submodule port, falling back to the implicit net.
     """
+    pin_scan_cache = ctx.pin_scan_cache if ctx is not None else None
     lines = kill_auto_wire(lines)
     full = list(lines)
     from .inst import map_module_spans
@@ -1808,7 +1821,7 @@ def _auto_wire_single(
 def auto_reg(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef] | None = None,
-    pin_scan_cache: "dict | None" = None,
+    ctx: "AallContext | None" = None,
 ) -> list[str]:
     """Regenerate the /*AUTOREG*/ reg declarations of a module.
 
@@ -1816,9 +1829,10 @@ def auto_reg(
     wire/reg keyword and is not otherwise declared, assign-driven, or driven
     by an instance output/inout.  MODULES (optional) is used for the
     instance-driven exclusion, as in :func:`auto_wire`.
-    PIN_SCAN_CACHE shares the per-span instance pin scan with the
-    AUTOLOGIC/AUTOWIRE passes (see _cached_pin_scan); None scans inline.
+    CTX is the per-run AallContext (wire.AallContext) holding the shared per-span
+    pin scan; None scans inline.
     """
+    pin_scan_cache = ctx.pin_scan_cache if ctx is not None else None
     lines = kill_auto_reg(lines)
     full = list(lines)
     from .inst import map_module_spans

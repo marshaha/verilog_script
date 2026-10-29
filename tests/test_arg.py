@@ -1076,7 +1076,8 @@ def test_auto_arg_reuses_pin_scan_cache(monkeypatch):
     ]
     modules = {"sub": parse_module_ports(sub)}
     cache: dict = {}
-    out_cached = auto_arg(lines, modules, pin_scan_cache=cache)
+    ctx = wire.AallContext(pin_scan_cache=cache)
+    out_cached = auto_arg(lines, modules, ctx=ctx)
     assert cache, "first call should fill the cache"
     header = "\n".join(out_cached[: out_cached.index(");")])
     assert "//Inouts" in header and "pad" in header
@@ -1085,7 +1086,7 @@ def test_auto_arg_reuses_pin_scan_cache(monkeypatch):
         raise AssertionError("_inst_pin_scan must not run on a cache hit")
 
     monkeypatch.setattr(wire, "_inst_pin_scan", _boom)
-    out_cached2 = auto_arg(lines, modules, pin_scan_cache=cache)
+    out_cached2 = auto_arg(lines, modules, ctx=ctx)
     assert out_cached2 == out_cached
     try:
         auto_arg(lines, modules)
@@ -1127,6 +1128,6 @@ def test_auto_arg_pin_scan_cache_multi_module_matches_uncached():
     assert set(cache) == {"m1", "m2"}
 
     expected = auto_arg(lines, modules)
-    actual = auto_arg(lines, modules, pin_scan_cache=cache)
+    actual = auto_arg(lines, modules, ctx=wire.AallContext(pin_scan_cache=cache))
     assert actual == expected
     assert "pad2" in "\n".join(actual)

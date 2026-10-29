@@ -684,7 +684,7 @@ def _wire_like_single(
 def auto_logic(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef] | None = None,
-    pin_scan_cache: "dict | None" = None,
+    ctx: "AallContext | None" = None,
 ) -> list[str]:
     """Regenerate the /*AUTOLOGIC*/ ``logic`` declarations of each module.
 
@@ -692,9 +692,10 @@ def auto_logic(
     ``verilog-auto-wire-type`` set to ``"logic"`` (unless the file-local
     variable already sets it — cf. ``verilog-auto-logic-setup``); like emacs
     the region keeps the ``// Beginning of automatic wires`` header.
-    PIN_SCAN_CACHE shares the per-span instance pin scan with the
-    AUTOWIRE/AUTOREG passes (see wire._cached_pin_scan); None scans inline.
+    CTX is the per-run AallContext (wire.AallContext) holding the shared per-span
+    pin scan; None scans inline.
     """
+    pin_scan_cache = ctx.pin_scan_cache if ctx is not None else None
     lines = kill_auto_logic(lines)
     full = list(lines)
     # verilog-auto-logic-setup: default to "logic" unless already set
@@ -782,7 +783,7 @@ def _tieoff_value(
 def auto_tieoff(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef] | None = None,
-    pin_scan_cache: "dict | None" = None,
+    ctx: "AallContext | None" = None,
 ) -> list[str]:
     """Regenerate the /*AUTOTIEOFF*/ tieoff declarations of each module.
 
@@ -792,9 +793,10 @@ def auto_tieoff(
     tieoff to deasserted.  ``verilog-auto-tieoff-declaration`` selects the
     declaration form (``"wire"`` — the default — ``"assign"``, or another
     datatype); ``verilog-auto-tieoff-ignore-regexp`` skips signals.
-    PIN_SCAN_CACHE shares the per-span instance pin scan with the other
-    aall passes (see wire._cached_pin_scan); None scans inline.
+    CTX is the per-run AallContext (wire.AallContext) holding the shared per-span
+    pin scan; None scans inline.
     """
+    pin_scan_cache = ctx.pin_scan_cache if ctx is not None else None
     lines = kill_auto_tieoff(lines)
     full = list(lines)
     from .inst import map_module_spans
@@ -892,7 +894,7 @@ def _tieoff_decl_lines(
 def auto_unused(
     lines: Sequence[str],
     modules: Mapping[str, ModuleDef] | None = None,
-    pin_scan_cache: "dict | None" = None,
+    ctx: "AallContext | None" = None,
 ) -> list[str]:
     """Regenerate the /*AUTOUNUSED*/ unused-input regions of each module.
 
@@ -902,11 +904,12 @@ def auto_unused(
     filtered by ``verilog-auto-unused-ignore-regexp``.  The marker is inline
     (e.g. ``&{1'b0, /*AUTOUNUSED*/ 1'b0}``); generated lines sit at the
     column of the marker's ``/*``, each name followed by a comma.
-    PIN_SCAN_CACHE shares the per-span instance pin scan with the other
-    aall passes (see wire._cached_pin_scan); None scans inline.  Safe here
+    CTX is the per-run AallContext (wire.AallContext) holding the shared per-span
+    pin scan; None scans inline.  Safe here
     even though this pass forces ignore-concat off: phase 2 reads the live
     setting, not a fill-time snapshot.
     """
+    pin_scan_cache = ctx.pin_scan_cache if ctx is not None else None
     lines = kill_auto_unused(lines)
     full = list(lines)
     from .inst import map_module_spans
