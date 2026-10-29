@@ -32,7 +32,9 @@
   2. `bash tests/verify_against_emacs.sh`（7 场景全 IDENTICAL）
   3. 对比脚本 cmp2：265 PARITY / 24 DIFF（名单不变）
   4. bench 输出与基线逐字节一致
-- 红树绝不能 push（此条此前已立，此处重申）。
+- CI（`.github/workflows/test.yml`）在每次 push 与 PR 上跑 pytest；
+  红了先修门禁，再谈合入。分支保护未开，CI 目前只报告、不拦截——
+  但红树绝不能 push（此条此前已立，此处重申）。
 
 ## 其他已成文的约定
 

@@ -1,0 +1,29 @@
+name: tests
+
+on: [push, pull_request]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install system tools
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emacs-nox verilator
+      - name: Install test runner
+        run: pip install pytest
+      - name: Pin verilog-mode golden tree
+        run: |
+          git clone https://github.com/veripool/verilog-mode.git /tmp/verilog-mode-repo
+          git -C /tmp/verilog-mode-repo checkout 21799d6
+      - name: Run pytest
+        env:
+          PYTHONPATH: python
+          VM_REPO_DIR: /tmp/verilog-mode-repo
+        run: python -m pytest -q
