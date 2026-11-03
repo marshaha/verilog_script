@@ -789,12 +789,33 @@ def _autoarg_header_has_preproc(lines: Sequence[str]) -> bool:
     return any(_PREPROC_LINE.search(ln) for ln in lines[mk : end + 1])
 
 
+def _autoarg_header_has_unsupported_preproc(lines: Sequence[str]) -> bool:
+    """Whether the AUTOARG header has directives other than guard branches."""
+    from .inst import _PP_BRANCH
+
+    mk = next((k for k, ln in enumerate(lines) if _MARK_LINE.search(ln)), None)
+    if mk is None:
+        return False
+    if _CLOSE.search(lines[mk]):
+        end = mk
+    else:
+        end = next(
+            (k for k in range(mk, len(lines)) if _REGION_END.search(lines[k])),
+            len(lines) - 1,
+        )
+    return any(
+        _PREPROC_LINE.search(ln) and not _PP_BRANCH.match(ln)
+        for ln in lines[mk : end + 1]
+    )
+
+
 def _autoarg_header_guarded_names(lines: Sequence[str]) -> set[str]:
     """Bare port names under an `ifdef frame in an /*autoarg*/ header.
 
     Same span as :func:`_autoarg_header_has_preproc`.  A name counts
     only when a directive frame is open on its line; section comments
-    and the marker line itself yield no names.
+    and the marker line itself yield no names.  Leading commas and packed
+    comma-separated bare-name lists are both recognized.
     """
     from .inst import _flat_guard, _guard_stack_after, _PP_BRANCH
 
@@ -823,9 +844,7 @@ def _autoarg_header_guarded_names(lines: Sequence[str]) -> set[str]:
             _nm = _PORT_PREFIX.sub("", _seg)
             found.extend(_bare_port_names(_nm))
         if not found:
-            m = re.match(r"^\s*([A-Za-z_][\w$]*)\s*,?\s*$", code)
-            if m:
-                found = [m.group(1)]
+            found = _bare_port_names(code)
         names.update(found)
     return names
 
@@ -994,9 +1013,10 @@ def auto_arg(
             # conditional ports are all derivable from body declarations
             # regenerates with their guards (the run-1 case, where the
             # header's own directives came from a previous regeneration);
-            # only a header with a guarded port that has NO body
-            # declaration (the hand-written ibex RVFI shape) is left
-            # untouched — regenerating it would drop that port outright.
+            # A header with a guarded port that has NO body declaration
+            # (the hand-written ibex RVFI shape), or with a non-conditional
+            # directive whose effects cannot be reconstructed, is left
+            # untouched — regenerating it would drop source text outright.
             # "Body" means strictly after the header close: for a
             # hand-written header kill_auto_arg does not collapse, so
             # collecting the whole span would mistake header ANSI
@@ -1015,7 +1035,10 @@ def auto_arg(
                 for e in _p_inputs + _p_outputs + _p_inouts
                 for b in _bare_port_names(e)
             }
-            if old_guarded_by_module[mod_idx] - body_names:
+            if (
+                _autoarg_header_has_unsupported_preproc(orig_spans[mod_idx])
+                or old_guarded_by_module[mod_idx] - body_names
+            ):
                 import sys
 
                 orig = orig_spans[mod_idx]
@@ -1289,6 +1312,8 @@ def _expand_arg_markers(
                                 _ARG_MARGIN + ("`ifdef " if pol else "`ifndef ") + macro
                             )
                         out.append(_ARG_MARGIN + ",")
+                        for _macro, _pol in cond:
+                            out.append(_ARG_MARGIN + "`endif")
                         cur = ()
                     while cur != guard[: len(cur)]:
                         out.append(_ARG_MARGIN + "`endif")

@@ -5,6 +5,12 @@ stops compiling with the macro off.  Live Emacs 29.3 expands guarded
 ports unconditionally in all three spots; preserving them is a
 deliberate divergence, not parity."""
 
+import itertools
+import shutil
+import subprocess
+
+import pytest
+
 from verilog_tooling import arg as arg_mod
 from verilog_tooling import emacs, inout, inst, wire
 from verilog_tooling.inst import parse_module_ports
@@ -316,8 +322,8 @@ endmodule
 
 
 def test_aio_v2k_bridge_final_region():
-    # Two incomparable guards, final region, no unguarded follower:
-    # the separator between px and py is a bridge comma under X+Y.
+    # In addition to px/py under X+Y, dout/py needs a bridge under !X+Y:
+    # px is absent in that branch, so dout is py's direct predecessor.
     sub3 = """module sub3 (
 `ifdef HAS_X
   input  px,
@@ -342,7 +348,7 @@ endmodule
     top = "module sys3b (output dout,\n    /*AUTOINPUT*/\n);\n" + inst3 + "\nendmodule\n"
     out = inout.auto_io(top.splitlines(), mods)
     stripped = [ln.strip() for ln in out]
-    assert stripped.count(",") == 1  # exactly the X+Y bridge comma
+    assert stripped.count(",") == 2  # X+Y for px/py and !X+Y for dout/py
     assert _depth_of(out, "input                                   px") == 1
     assert _depth_of(out, "input                                   py") == 1
     assert out == inout.auto_io(out, mods)  # idempotent
@@ -365,3 +371,567 @@ def test_aall_v2k_guards_end_to_end(tmp_path):
     p2 = tmp_path / "p2.v"
     inst.main(["aall", "-i", str(p1), "-o", str(p2), "-y", str(tmp_path)])
     assert p2.read_text() == out1  # idempotent
+
+
+# ---------------------------------------------------------------------------
+# Review regressions: balanced bridges, hand-written v2k boundaries, smart-skip
+# recognition, and direct predecessors across nested guards.
+
+
+def _assert_directives_balanced(lines):
+    stack = []
+    for ln in lines:
+        s = ln.strip()
+        if s.startswith("`ifdef ") or s.startswith("`ifndef "):
+            stack.append(s)
+        elif s.startswith("`else") or s.startswith("`elsif"):
+            assert stack, f"branch without opener: {ln}"
+        elif s.startswith("`endif"):
+            assert stack, f"unmatched endif: {ln}"
+            stack.pop()
+    assert not stack, f"unclosed directives: {stack}\n" + "\n".join(lines)
+
+
+def _lint_combos(tmp_path, lines, macros, stem, top="top"):
+    if shutil.which("verilator") is None:
+        pytest.skip("verilator not installed")
+    for values in itertools.product([False, True], repeat=len(macros)):
+        src = tmp_path / (stem + "_" + "".join(str(int(v)) for v in values) + ".sv")
+        src.write_text("\n".join(lines) + "\n")
+        cmd = ["verilator", "--lint-only", "-Wno-fatal", "--top-module", top]
+        cmd += ["-D" + m for m, value in zip(macros, values) if value]
+        cmd.append(str(src))
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        diagnostics = proc.stdout + proc.stderr
+        assert proc.returncode == 0 and "%Warning-NULLPORT" not in diagnostics, (
+            f"macro combo {dict(zip(macros, values))}:\n{diagnostics}"
+        )
+
+
+def test_autoarg_two_guarded_outputs_bridge_balanced(tmp_path):
+    lines = [
+        "module m (/*autoarg*/);",
+        "`ifdef A",
+        "output a;",
+        "`endif",
+        "`ifdef B",
+        "output b;",
+        "`endif",
+        "endmodule",
+    ]
+    out = arg_mod.auto_arg(lines)
+    _assert_directives_balanced(out)
+    assert arg_mod.auto_arg(out) == out
+    _lint_combos(tmp_path, out, ["A", "B"], "autoarg_bridge", top="m")
+
+
+_TWO_GUARDED_SUB = """\
+module sub (
+`ifdef A
+    output a
+`endif
+`ifdef A
+`ifdef B
+    ,
+`endif
+`endif
+`ifdef B
+    output b
+`endif
+);
+endmodule
+"""
+
+
+def test_autoinst_two_guarded_ports_bridge_balanced_all_emitters(tmp_path):
+    mods = {"sub": parse_module_ports(_TWO_GUARDED_SUB.splitlines(), with_params=True)}
+    for name, producer in [("emacs", emacs.auto_inst), ("vim", inst.auto_inst)]:
+        out = producer(["module top;", "sub u (/*AUTOINST*/);", "endmodule"], mods)
+        _assert_directives_balanced(out)
+        assert producer(out, mods) == out
+        _lint_combos(
+            tmp_path, out + _TWO_GUARDED_SUB.splitlines(), ["A", "B"], "inst_" + name
+        )
+
+
+def _aio_handwritten_boundary(before):
+    if before:
+        sub = """module sub (\n`ifdef A\n    input z\n`endif\n);\nendmodule\n"""
+        header = "module top (\n    input hand\n    /*AUTOINPUT*/\n);\n"
+        pins = "`ifdef A\n    .z (z)\n`endif"
+    else:
+        sub = """module sub (\n    input a\n`ifdef A\n    , input z\n`endif\n);\nendmodule\n"""
+        header = "module top (\n    /*AUTOINPUT*/\n    input hand\n);\n"
+        pins = "    .a (a)\n`ifdef A\n    , .z (z)\n`endif"
+    top = header + "sub u (\n" + pins + "\n);\nendmodule\n"
+    return top, sub
+
+
+@pytest.mark.parametrize("before", [True, False], ids=["hand-before", "hand-after"])
+def test_aio_v2k_handwritten_boundary_all_combos(tmp_path, before):
+    top, sub = _aio_handwritten_boundary(before)
+    mods = {"sub": parse_module_ports(sub.splitlines())}
+    out = inout.auto_io(top.splitlines(), mods)
+    _assert_directives_balanced(out)
+    assert inout.auto_io(out, mods) == out
+    _lint_combos(tmp_path, out + sub.splitlines(), ["A"], "aio_hand_" + str(before))
+
+
+@pytest.mark.parametrize("before", [True, False], ids=["hand-before", "hand-after"])
+@pytest.mark.parametrize(
+    "tail", ["", " // hand comment   ", " /* hand comment */   "],
+    ids=["plain", "line-comment", "block-comment"],
+)
+def test_aio_v2k_multiline_handwritten_boundary_all_combos(
+    tmp_path, before, tail
+):
+    if before:
+        sub = """module sub (\n`ifdef A\n    input z\n`endif\n);\nendmodule\n"""
+        header = (
+            "module top (\n    input logic [3:0]\n        hand"
+            + tail
+            + "\n    /*AUTOINPUT*/\n);\n"
+        )
+        pins = "`ifdef A\n    .z (z)\n`endif"
+    else:
+        sub = """module sub (\n    input a\n`ifdef A\n    , input z\n`endif\n);\nendmodule\n"""
+        header = (
+            "module top (\n    /*AUTOINPUT*/\n    input logic [3:0]\n        hand"
+            + tail
+            + "\n);\n"
+        )
+        pins = "    .a (a)\n`ifdef A\n    , .z (z)\n`endif"
+    top = header + "sub u0 (\n" + pins + "\n);\nendmodule\n"
+    mods = {"sub": parse_module_ports(sub.splitlines())}
+    out = inout.auto_input(top.splitlines(), mods)
+    _assert_directives_balanced(out)
+    assert inout.auto_input(out, mods) == out
+    _lint_combos(
+        tmp_path,
+        out + sub.splitlines(),
+        ["A"],
+        "aio_multiline_{}_{}".format(before, len(tail)),
+    )
+
+
+@pytest.mark.parametrize("before", [True, False], ids=["hand-before", "hand-after"])
+@pytest.mark.parametrize("guarded", [False, True], ids=["unguarded", "guarded"])
+@pytest.mark.parametrize("comma", [False, True], ids=["no-comma", "same-line-comma"])
+@pytest.mark.parametrize("tail", ["", " // hand comment   "], ids=["plain", "comment"])
+def test_aio_v2k_bare_handwritten_boundary_all_combos(
+    tmp_path, before, guarded, comma, tail
+):
+    hand = ("    " if before or not comma else "    , ") + "hand"
+    if before and comma:
+        hand += ","
+    hand += tail
+    hand_lines = ["`ifdef H", hand, "`endif"] if guarded else [hand]
+    body_decl = ["`ifdef H", "input hand;", "`endif"] if guarded else ["input hand;"]
+    if before:
+        sub = """module sub (\n`ifdef A\n    input z\n`endif\n);\nendmodule\n"""
+        header_lines = ["module top ("] + hand_lines + ["    /*AUTOINPUT*/", ");"]
+        pins = "`ifdef A\n    .z (z)\n`endif"
+    else:
+        sub = """module sub (\n    input a\n`ifdef A\n    , input z\n`endif\n);\nendmodule\n"""
+        header_lines = ["module top (", "    /*AUTOINPUT*/"] + hand_lines + [");"]
+        pins = "    .a (a)\n`ifdef A\n    , .z (z)\n`endif"
+    top_lines = (
+        header_lines
+        + ["sub u0 ("]
+        + pins.splitlines()
+        + [");"]
+        + body_decl
+        + ["endmodule"]
+    )
+    mods = {"sub": parse_module_ports(sub.splitlines())}
+    out = inout.auto_input(top_lines, mods)
+    _assert_directives_balanced(out)
+    assert inout.auto_input(out, mods) == out
+    macros = ["A", "H"] if guarded else ["A"]
+    _lint_combos(
+        tmp_path,
+        out + sub.splitlines(),
+        macros,
+        "aio_bare_{}_{}_{}_{}".format(before, guarded, comma, len(tail)),
+    )
+
+
+@pytest.mark.parametrize(
+    "prefix, unpacked",
+    [
+        ("input logic signed [3:0]", ""),
+        ("output reg [2:0]", " [1:0]"),
+    ],
+    ids=["input-logic-signed", "output-reg-unpacked"],
+)
+def test_aio_v2k_bare_after_preserves_full_decl_and_comments(
+    tmp_path, prefix, unpacked
+):
+    sub = """module sub (
+    input a
+`ifdef A
+    , input z
+`endif
+);
+endmodule
+"""
+    top_lines = [
+        "module top (",
+        "    /*AUTOINPUT*/",
+        "`ifdef H",
+        "    , hand // header comment",
+        "`endif",
+        ");",
+        "sub u0 (",
+        "    .a (a)",
+        "`ifdef A",
+        "    , .z (z)",
+        "`endif",
+        ");",
+        "`ifdef H",
+        prefix + " hand" + unpacked + "; // body declaration comment",
+        "`endif",
+        "endmodule",
+    ]
+    mods = {"sub": parse_module_ports(sub.splitlines())}
+    out = inout.auto_input(top_lines, mods)
+    header = next(ln for ln in out if "hand" in ln and "header comment" in ln)
+    assert ", " + prefix + " hand" + unpacked + " // header comment" in header
+    body_comment = next(
+        ln for ln in out if ln.strip() == "// body declaration comment"
+    )
+    assert _depth_of(out, "hand" + unpacked + " // header comment") == 1
+    assert _depth_of(out, "// body declaration comment") == 1
+    assert body_comment.strip() == "// body declaration comment"
+    _assert_directives_balanced(out)
+    assert inout.auto_input(out, mods) == out
+    _lint_combos(
+        tmp_path,
+        out + sub.splitlines(),
+        ["A", "H"],
+        "aio_bare_full_" + prefix.split()[0],
+    )
+
+
+def test_aio_v2k_preceding_uses_global_direct_predecessors(tmp_path):
+    sub = """module sub (
+    inout d
+`ifdef A
+    , input za
+`endif
+`ifdef B
+    , input zb
+`endif
+);
+endmodule
+"""
+    top = """module top (
+    input hand
+    /*AUTOINPUT*/
+);
+sub u0 (
+    .d (d)
+`ifdef A
+    , .za (za)
+`endif
+`ifdef B
+    , .zb (zb)
+`endif
+);
+endmodule
+"""
+    mods = {"sub": parse_module_ports(sub.splitlines())}
+    out = inout.auto_input(top.splitlines(), mods)
+    _assert_directives_balanced(out)
+    assert inout.auto_input(out, mods) == out
+    _lint_combos(tmp_path, out + sub.splitlines(), ["A", "B"], "aio_pre_global")
+
+
+def test_aio_v2k_multiple_regions_correct_in_first_pass(tmp_path):
+    sub = """module sub (
+    inout d
+`ifdef A
+    , output oa
+`endif
+`ifdef B
+    , input ib
+`endif
+`ifdef C
+    , input ic
+`endif
+);
+endmodule
+"""
+    top = """module top (
+    /*AUTOOUTPUT*/
+    /*AUTOINPUT*/
+);
+sub u0 (
+    .d (d)
+`ifdef A
+    , .oa (oa)
+`endif
+`ifdef B
+    , .ib (ib)
+`endif
+`ifdef C
+    , .ic (ic)
+`endif
+);
+endmodule
+"""
+    mods = {"sub": parse_module_ports(sub.splitlines())}
+    out = inout.auto_io(top.splitlines(), mods)
+    _assert_directives_balanced(out)
+    assert inout.auto_io(out, mods) == out
+    _lint_combos(tmp_path, out + sub.splitlines(), ["A", "B", "C"], "aio_regions_first")
+
+
+def test_aall_v2k_multiple_regions_lint_all_combos(tmp_path, monkeypatch):
+    sub = """module sub (
+    inout d
+`ifdef A
+    , output oa
+`endif
+`ifdef B
+    , input ib
+`endif
+`ifdef C
+    , input ic
+`endif
+);
+endmodule
+"""
+    top = """module top (
+    /*AUTOOUTPUT*/
+    /*AUTOINPUT*/
+);
+sub u0 (/*AUTOINST*/);
+endmodule
+"""
+    (tmp_path / "sub.v").write_text(sub)
+    (tmp_path / "top.v").write_text(top)
+    real_auto_io = inout.auto_io
+    contexts = []
+
+    def checked_auto_io(lines, modules, allow_sv_types, param_value, ctx):
+        contexts.append(ctx)
+        return real_auto_io(lines, modules, allow_sv_types, param_value, ctx)
+
+    monkeypatch.setattr(inout, "auto_io", checked_auto_io)
+    p1 = tmp_path / "p1.v"
+    inst.main(["aall", "-i", str(tmp_path / "top.v"), "-o", str(p1), "-y", str(tmp_path)])
+    assert len(contexts) == 1 and contexts[0] is not None
+    out1 = p1.read_text()
+    _assert_directives_balanced(out1.splitlines())
+    _lint_combos(
+        tmp_path, out1.splitlines() + sub.splitlines(), ["A", "B", "C"], "aall_regions"
+    )
+    p2 = tmp_path / "p2.v"
+    inst.main(["aall", "-i", str(p1), "-o", str(p2), "-y", str(tmp_path)])
+    assert len(contexts) == 2 and contexts[1] is not None
+    assert p2.read_text() == out1
+
+
+@pytest.mark.parametrize(
+    "guarded_lines, body_lines",
+    [
+        (["    , rvfi_o"], []),
+        (["    a, missing,"], ["output a;"]),
+    ],
+    ids=["leading-comma", "bare-name-list"],
+)
+def test_autoarg_smart_skip_recognizes_bare_guarded_names(
+    guarded_lines, body_lines, capsys
+):
+    lines = (
+        ["module m (/*autoarg*/", "    //Outputs", "`ifdef RVFI"]
+        + guarded_lines
+        + ["`endif", ");"]
+        + body_lines
+        + ["endmodule"]
+    )
+    out = arg_mod.auto_arg(lines)
+    assert out == lines
+    assert "preprocessor directives" in capsys.readouterr().err
+    assert arg_mod.auto_arg(out) == out
+
+
+@pytest.mark.parametrize("directive", ["`include \"extra.svh\"", "`define EXTRA 1", "`undef EXTRA"])
+def test_autoarg_non_conditional_directive_stays_conservative(directive, capsys):
+    lines = [
+        "module m (/*autoarg*/",
+        "    //Outputs",
+        directive,
+        ");",
+        "output a;",
+        "endmodule",
+    ]
+    out = arg_mod.auto_arg(lines)
+    assert out == lines
+    assert "preprocessor directives" in capsys.readouterr().err
+
+
+def test_autoarg_derivable_guarded_bare_name_list_regenerates(tmp_path, capsys):
+    lines = [
+        "module m (/*autoarg*/);",
+        "`ifdef A",
+        "output a;",
+        "output b;",
+        "`endif",
+        "output c;",
+        "endmodule",
+    ]
+    once = arg_mod.auto_arg(lines)
+    assert "`ifdef A" in once
+    assert arg_mod.auto_arg(once) == once
+    assert "preprocessor directives" not in capsys.readouterr().err
+    _assert_directives_balanced(once)
+    _lint_combos(tmp_path, once, ["A"], "autoarg_bare_list", top="m")
+
+
+def _assert_plan_all_combos(guards):
+    trailing, leading, bridges = inst.guard_separator_plan(guards)
+    macros = sorted({m for guard in guards for m, _pol in guard})
+    for values in itertools.product([False, True], repeat=len(macros)):
+        env = dict(zip(macros, values))
+
+        def present(guard):
+            return all(env[m] == pol for m, pol in guard)
+
+        alive = [i for i, guard in enumerate(guards) if present(guard)]
+        if alive:
+            assert not trailing[alive[-1]], (env, trailing)
+        for first, second in zip(alive, alive[1:]):
+            count = int(trailing[first]) + int(leading[second])
+            count += sum(int(present(cond)) for cond in bridges.get(second, []))
+            assert count == 1, (env, first, second, trailing, leading, bridges)
+
+
+def test_nonadjacent_trailing_and_leading_do_not_double(tmp_path):
+    guards = [(), (("A", True),), (("A", False),), (("A", True),)]
+    _assert_plan_all_combos(guards)
+    lines = [
+        "module top (/*autoarg*/);",
+        "output u;",
+        "`ifdef A",
+        "output a;",
+        "`else",
+        "output n;",
+        "`endif",
+        "`ifdef A",
+        "output z;",
+        "`endif",
+        "endmodule",
+    ]
+    out = arg_mod.auto_arg(lines)
+    _assert_directives_balanced(out)
+    assert arg_mod.auto_arg(out) == out
+    _lint_combos(tmp_path, out, ["A"], "nonadjacent_double")
+
+
+def test_nested_intermediate_guard_plan_has_disjoint_bridge():
+    _assert_plan_all_combos([(), (("A", True), ("B", True)), (("A", True),)])
+
+
+@pytest.mark.parametrize(
+    "middle",
+    [(("A", True), ("B", True)), (("A", False), ("B", True))],
+    ids=["nested", "elsif-shaped"],
+)
+def test_multi_literal_negation_bridges_are_disjoint(middle):
+    _assert_plan_all_combos([(("X", True),), middle, (("Y", True),)])
+
+
+def test_elsif_intermediate_guard_autoarg(tmp_path):
+    lines = [
+        "module top (/*autoarg*/);",
+        "output u;",
+        "`ifdef A",
+        "`elsif B",
+        "output ab;",
+        "`endif",
+        "`ifdef B",
+        "output b;",
+        "`endif",
+        "endmodule",
+    ]
+    out = arg_mod.auto_arg(lines)
+    _assert_directives_balanced(out)
+    assert arg_mod.auto_arg(out) == out
+    _lint_combos(tmp_path, out, ["A", "B"], "elsif_autoarg")
+
+
+_NESTED_SUB = """\
+module sub (
+    input u
+`ifdef A
+`ifdef B
+    , input ab,
+`endif
+`endif
+`ifdef A
+`ifndef B
+    ,
+`endif
+    input a
+`endif
+);
+endmodule
+"""
+
+
+def test_nested_intermediate_guard_autoinst_all_emitters(tmp_path):
+    mods = {"sub": parse_module_ports(_NESTED_SUB.splitlines(), with_params=True)}
+    for name, producer in [("emacs", emacs.auto_inst), ("vim", inst.auto_inst)]:
+        out = producer(["module top;", "sub u_sub (/*AUTOINST*/);", "endmodule"], mods)
+        _assert_directives_balanced(out)
+        assert producer(out, mods) == out
+        _lint_combos(
+            tmp_path, out + _NESTED_SUB.splitlines(), ["A", "B"], "nested_inst_" + name
+        )
+
+
+def test_nested_intermediate_guard_autoarg(tmp_path):
+    lines = [
+        "module top (/*autoarg*/);",
+        "output u;",
+        "`ifdef A",
+        "`ifdef B",
+        "output ab;",
+        "`endif",
+        "`endif",
+        "`ifdef A",
+        "output a;",
+        "`endif",
+        "endmodule",
+    ]
+    out = arg_mod.auto_arg(lines)
+    _assert_directives_balanced(out)
+    assert arg_mod.auto_arg(out) == out
+    _lint_combos(tmp_path, out, ["A", "B"], "nested_autoarg")
+
+
+def test_nested_intermediate_guard_aio_v2k(tmp_path):
+    mods = {"sub": parse_module_ports(_NESTED_SUB.splitlines())}
+    top = """module top (
+    /*AUTOINPUT*/
+);
+sub u_sub (
+    .u (u)
+`ifdef A
+`ifdef B
+    , .ab (ab),
+`endif
+`ifndef B
+    ,
+`endif
+    .a (a)
+`endif
+);
+endmodule
+"""
+    out = inout.auto_io(top.splitlines(), mods)
+    _assert_directives_balanced(out)
+    assert inout.auto_io(out, mods) == out
+    _lint_combos(tmp_path, out + _NESTED_SUB.splitlines(), ["A", "B"], "nested_aio")

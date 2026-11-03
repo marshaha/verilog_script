@@ -446,17 +446,19 @@ def _combine_guards(*parts: "tuple[tuple[str, bool], ...]") -> "tuple | None":
     return tuple(out)
 
 
+def _is_bare_v2k_names(code: str) -> bool:
+    return re.match(
+        r"^,?\s*[A-Za-z_][\w$]*(?:\s*,\s*[A-Za-z_][\w$]*)*\s*,?$",
+        code.strip(),
+    ) is not None
+
+
 def _parse_following_v2k(text: str, insert_at: int):
-    """Parse already-expanded generated declarations following a v2k
-    marker region, up to the header close paren.  Markers expand in
-    reverse document order, so later regions already exist as text.
-    Returns (decls, ok): decls is a list of (guard, has_leading_comma)
-    in document order — the leading comma is read off the emitted
-    line itself, since a following region may itself have used a
-    combined plan.  ok is False when the following text holds anything
-    but generated regions, separator lines, comments, directives and
-    whitespace (hand-written ports, an unexpanded later marker) — the
-    caller then falls back to the per-region plan."""
+    """Parse declarations following a v2k marker, up to the header close.
+    Later generated regions already exist because markers expand in reverse
+    document order; hand-written ANSI and bare-name ports participate in the
+    same boundary plan.  Returns (decls, ok), where decls contains
+    (guard, has_leading_comma) in document order."""
     from .comments import mask_comments
     from .inst import _PP_BRANCH, _flat_guard, _guard_stack_after
 
@@ -480,17 +482,22 @@ def _parse_following_v2k(text: str, insert_at: int):
     for ln in text[:insert_at].split("\n"):
         _guard_stack_after(stack, ln)
     lines = text[insert_at:close].split("\n")
+    code_lines = masked[insert_at:close].split("\n")
     decls: list = []
     in_region = False
+    in_hand_decl = False
     for li, ln in enumerate(lines):
         s = ln.strip()
+        code = code_lines[li].strip()
         if "Beginning of automatic" in ln:
             in_region = True
+            in_hand_decl = False
             continue
         if "End of automatics" in ln:
             in_region = False
+            in_hand_decl = False
             continue
-        if not s or s.startswith("//") or s.startswith("/*"):
+        if not code or s.startswith("//") or s.startswith("/*"):
             # A /*AUTO...*/ marker line aborts only when no generated
             # region follows it (an unexpanded later marker); an
             # expanded region's own marker line is followed by its
@@ -504,28 +511,201 @@ def _parse_following_v2k(text: str, insert_at: int):
                 if nxt is None or "Beginning of automatic" not in rest[nxt]:
                     return [], False
             continue
-        if _PP_BRANCH.match(ln):
-            _guard_stack_after(stack, ln)
+        if _PP_BRANCH.match(code):
+            _guard_stack_after(stack, code)
             continue
-        if s == ",":
+        if code == ",":
             continue  # a separator line from another region's plan
         if in_region:
-            decls.append((_flat_guard(stack), s.startswith(",")))
+            decls.append((_flat_guard(stack), code.startswith(",")))
+            continue
+        if re.match(r"^,?\s*(?:input|output|inout)\b", code):
+            decls.append((_flat_guard(stack), code.startswith(",")))
+            in_hand_decl = True
+            continue
+        if in_hand_decl:
+            continue  # continuation of a multi-line hand-written declaration
+        if _is_bare_v2k_names(code):
+            decls.append((_flat_guard(stack), code.startswith(",")))
             continue
         return [], False
     return decls, True
 
 
+def _parse_preceding_v2k(text: str, insert_at: int):
+    """Locate the nearest preceding ANSI or bare-name port and its guard.
+    Continuation lines advance the comma position to the declaration's actual
+    end; a bare name after a completed declaration starts a new node with its
+    own guard.  The result also records whether the port belongs to a generated
+    region, whose own boundary plan retains ownership of cross-region commas."""
+    from .comments import mask_comments
+    from .inst import _PP_BRANCH, _flat_guard, _guard_stack_after
+
+    prefix = text[:insert_at]
+    masked = mask_comments(prefix)
+    stack: list = []
+    found = None
+    decl_guard = None
+    decl_generated = False
+    decl_complete = False
+    in_generated = False
+    offset = 0
+    for raw, ln in zip(
+        prefix.splitlines(keepends=True), masked.splitlines(keepends=True)
+    ):
+        if "Beginning of automatic" in raw:
+            in_generated = True
+        elif "End of automatics" in raw:
+            in_generated = False
+        code = ln.rstrip("\r\n")
+        if _PP_BRANCH.match(code):
+            _guard_stack_after(stack, code)
+        else:
+            if re.search(r"\bmodule\b", code):
+                found = None
+                decl_guard = None
+                decl_generated = False
+                decl_complete = False
+            end = len(code.rstrip())
+            if end and code.strip() != ",":
+                if re.search(r"\b(?:input|output|inout)\b", code):
+                    decl_guard = _flat_guard(stack)
+                    decl_generated = in_generated
+                elif _is_bare_v2k_names(code) and (found is None or decl_complete):
+                    decl_guard = _flat_guard(stack)
+                    decl_generated = in_generated
+                elif found is None:
+                    decl_guard = None
+                if decl_guard is not None:
+                    has_comma = code[end - 1] == ","
+                    pos = end - 1 if has_comma else end
+                    found = (decl_guard, offset + pos, has_comma, decl_generated)
+                    decl_complete = has_comma
+        offset += len(ln)
+    return found
+
+
+def _set_preceding_v2k_comma(text: str, preceding, want: bool):
+    _guard, pos, has_comma, _generated = preceding
+    if want == has_comma:
+        return text, 0
+    if want:
+        return text[:pos] + "," + text[pos:], 1
+    return text[:pos] + text[pos + 1 :], -1
+
+
+def _ansiify_following_bare_v2k(text: str, offset: int) -> str:
+    """Move full body declarations onto bare ports following generated ANSI ports.
+
+    A body-declared bare name is legal before the first ANSI declaration, but
+    is a duplicate declaration after one.  Convert only names with a matching
+    body declaration under the same guard, preserving types, dimensions, header
+    position, commas, comments and preprocessor conditions.  A body trailing
+    comment remains as a standalone comment in the same guard.
+    """
+    from .comments import mask_comments
+    from .inst import _PP_BRANCH, _flat_guard, _guard_stack_after
+
+    masked = mask_comments(text)
+    depth = 0
+    close = -1
+    i = offset
+    while i < len(masked):
+        if masked[i] == "(":
+            depth += 1
+        elif masked[i] == ")":
+            if depth == 0:
+                close = i
+                break
+            depth -= 1
+        i += 1
+    if close < 0:
+        return text
+    endmodule = re.search(r"^\s*endmodule\b", masked[close + 1 :], re.M)
+    body_end = close + 1 + endmodule.start() if endmodule else len(text)
+
+    candidates = []
+    stack: list = []
+    for ln in text[:offset].split("\n"):
+        _guard_stack_after(stack, ln)
+    pos = offset
+    for code_line in masked[offset:close].splitlines(keepends=True):
+        code = code_line.rstrip("\r\n")
+        _guard_stack_after(stack, code)
+        if _is_bare_v2k_names(code):
+            for match in re.finditer(r"[A-Za-z_][\w$]*", code):
+                candidates.append((match.group(0), _flat_guard(stack), pos + match.start()))
+        pos += len(code_line)
+
+    edits = []
+    used_body_lines = set()
+    for name, guard, header_pos in candidates:
+        body_stack: list = []
+        body_pos = close + 1
+        found = None
+        for raw_line, code_line in zip(
+            text[close + 1 : body_end].splitlines(keepends=True),
+            masked[close + 1 : body_end].splitlines(keepends=True),
+        ):
+            code = code_line.rstrip("\r\n")
+            line_end = body_pos + len(code_line)
+            if _PP_BRANCH.match(code):
+                _guard_stack_after(body_stack, code)
+            elif (
+                body_pos not in used_body_lines
+                and _flat_guard(body_stack) == guard
+                and "," not in code
+            ):
+                name_match = re.search(
+                    r"\b" + re.escape(name) + r"\b((?:\s*\[[^\]]*\])*)\s*;\s*$",
+                    code,
+                )
+                if name_match:
+                    prefix = code[: name_match.start()].strip()
+                    if re.match(r"^(?:input|output|inout)\b", prefix):
+                        found = (
+                            prefix,
+                            name_match.group(1),
+                            body_pos,
+                            line_end,
+                            raw_line,
+                            len(code.rstrip()),
+                        )
+                        break
+            body_pos = line_end
+        if found is not None:
+            prefix, unpacked, body_start, body_end_line, raw_line, code_end = found
+            used_body_lines.add(body_start)
+            edits.append((header_pos, len(name), prefix + " " + name + unpacked))
+            tail = raw_line[code_end:].strip()
+            if tail:
+                indent = re.match(r"[ \t]*", raw_line).group(0)
+                newline = "\r\n" if raw_line.endswith("\r\n") else "\n"
+                body_replacement = indent + tail + newline
+            else:
+                body_replacement = ""
+            edits.append((body_start, body_end_line - body_start, body_replacement))
+    for pos, length, replacement in sorted(edits, reverse=True):
+        text = text[:pos] + replacement + text[pos + length :]
+    return text
+
+
+def _guard_negation_choices(guard):
+    """Disjoint disjuncts for NOT guard, without a raw negated conjunction."""
+    choices = []
+    prefix = []
+    for macro, pol in guard:
+        choices.append(tuple(prefix + [(macro, not pol)]))
+        prefix.append((macro, pol))
+    return choices
+
+
 def _boundary_bridge_conds(my_guards, following_guards, trailing_my, emitted_leading):
-    """Bridge conditions for pairs (my decl, following decl) whose
-    separator is on neither side: my decl carries no trailing comma
-    and the following line carries no leading comma.  Mirrors the
-    direct-predecessor bridge step of guard_separator_plan: the bridge
-    fires exactly where the first decl is the present decl immediately
-    before the second, so every intermediate guard must be a single
-    literal (its negation is one literal); unguarded and multi-literal
-    intermediates block the bridge, as in the plan."""
+    """Bridge cross-region direct predecessors not separated by a pin line."""
+    from itertools import product
+
     conds = []
+    seen_conds = set()
     n = len(my_guards)
     all_guards = my_guards + following_guards
     for fj, fg in enumerate(following_guards):
@@ -535,19 +715,22 @@ def _boundary_bridge_conds(my_guards, following_guards, trailing_my, emitted_lea
         for i in range(n):
             if trailing_my[i]:
                 continue
-            parts: list = [my_guards[i], fg]
+            choices = []
             blocked = False
             for k in range(i + 1, j):
-                if len(all_guards[k]) != 1:
+                alternatives = _guard_negation_choices(all_guards[k])
+                if not alternatives:
                     blocked = True
                     break
-                macro, pol = all_guards[k][0]
-                parts.append(((macro, not pol),))
+                choices.append(alternatives)
             if blocked:
                 continue
-            cond = _combine_guards(*parts)
-            if cond is not None:
-                conds.append(cond)
+            for negated in product(*choices):
+                cond = _combine_guards(my_guards[i], fg, *negated)
+                key = frozenset(cond) if cond is not None else None
+                if cond is not None and key not in seen_conds:
+                    seen_conds.add(key)
+                    conds.append(cond)
     return conds
 
 
@@ -644,6 +827,9 @@ def _expand_marker(
         msigs = emacs._filter_regexp(list(sigs), marker.regexp)
         if ignore_re:
             msigs = emacs._filter_regexp(msigs, "?!" + ignore_re)
+    if v2k and msigs:
+        text = _ansiify_following_bare_v2k(text, marker.end)
+        masked = mask_comments(text)
     shift = 0
     if v2k:
         text, masked, shift = _repair_open_comma(text, masked, marker.offset)
@@ -678,48 +864,64 @@ def _expand_marker(
         rows = [pad + header]
         cur: tuple = ()
         if v2k:
-            # House rule 2026-11-03 (extended to v2k): a signal whose
-            # instance pin sits under an `ifdef is declared under the
-            # same guard inside the header list, so the port exists
-            # exactly in the configurations where the pin does.  Header
-            # lists are comma-separated, so the separators come from
-            # guard_separator_plan (trailing/leading/bridge), exactly
-            # like AUTOINST pins and AUTOARG name lists.  The plan runs
-            # over this region's declarations PLUS the already-expanded
-            # generated declarations that follow it in the header
-            # (markers expand in reverse document order), so a trailing
-            # comma reflects a following port that is always present
-            # and a boundary bridge covers a following port that is
-            # only sometimes present — a per-region plan alone would
-            # lose the separator exactly when the region's last
-            # declaration is guarded and off while an earlier one is
-            # present and more ports follow.  When the following text
-            # cannot be parsed as generated regions only (hand-written
-            # ports, an unexpanded later marker), the plan falls back
-            # to this region alone and the last declaration carries a
-            # boundary comma, which _repair_close_comma deletes when
-            # the close paren follows (it now scans past `endif
-            # lines); that fallback keeps the corner above for
-            # hand-written-following shapes, and the bridge plan's own
-            # documented limits (multi-literal intermediates) apply.
+            # Plan both hand-written and generated neighbours together.  The
+            # preceding declaration's comma is repaired from the same plan as
+            # this region; following declarations already have their own text,
+            # so cross-region bridges account for their actual leading commas.
+            # Unsupported following shapes retain the legacy boundary comma,
+            # which _repair_close_comma removes when the header closes here.
             from .inst import guard_separator_plan
 
             _my_guards = [s.guard for s in msigs]
             _following, _combined_ok = _parse_following_v2k(text, insert_at)
-            if _combined_ok:
-                _following_guards = [g for g, _ in _following]
-                _emit_leading = [hl for _, hl in _following]
-                _all_guards = _my_guards + _following_guards
-                _trailing_all, _leading_all, _bridges_all = guard_separator_plan(_all_guards)
-                _trailing = _trailing_all[: len(msigs)]
-                _leading = _leading_all[: len(msigs)]
-                _bridges = {j: v for j, v in _bridges_all.items() if j < len(msigs)}
-                _boundary = _boundary_bridge_conds(
-                    _my_guards, _following_guards, _trailing, _emit_leading
+            _following_guards = [g for g, _ in _following]
+            _emit_leading = [hl for _, hl in _following]
+            _all_guards = _my_guards + (_following_guards if _combined_ok else [])
+            _forced_leading = [False] * len(msigs) + (
+                _emit_leading if _combined_ok else []
+            )
+            _trailing_all, _leading_all, _bridges_all = guard_separator_plan(
+                _all_guards, forced_leading=_forced_leading
+            )
+            _preceding = _parse_preceding_v2k(text, insert_at)
+            if _preceding is not None and _preceding[3]:
+                _preceding = None
+            _offset = 0
+            if _preceding is not None:
+                _offset = 1
+                _fixed_leading = (
+                    [False, None]
+                    + list(_leading_all[1:len(msigs)])
+                    + (_emit_leading if _combined_ok else [])
                 )
-                _last_comma = None  # combined trailing already covers it
+                _trailing_all, _leading_all, _bridges_all = guard_separator_plan(
+                    [_preceding[0]] + _all_guards,
+                    fixed_leading=_fixed_leading,
+                )
+                text, _shift = _set_preceding_v2k_comma(
+                    text, _preceding, _trailing_all[0]
+                )
+                insert_at += _shift
+            _end = _offset + len(msigs)
+            _trailing = _trailing_all[_offset:_end]
+            _leading = _leading_all[_offset:_end]
+            _bridges = {
+                j - _offset: v
+                for j, v in _bridges_all.items()
+                if _offset <= j < _end
+            }
+            if _combined_ok:
+                _before_boundary = (
+                    ([_preceding[0]] if _preceding is not None else []) + _my_guards
+                )
+                _boundary = _boundary_bridge_conds(
+                    _before_boundary,
+                    _following_guards,
+                    _trailing_all[: len(_before_boundary)],
+                    _emit_leading,
+                )
+                _last_comma = None
             else:
-                _trailing, _leading, _bridges = guard_separator_plan(_my_guards)
                 _boundary = []
                 _last_comma = True
         for idx, sig in enumerate(msigs):
@@ -961,16 +1163,33 @@ def auto_inout(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_
 
 
 def auto_io(lines: Sequence[str], modules: Mapping[str, ModuleDef], allow_sv_types: bool = True, param_value: "bool | None" = None, ctx: "AallContext | None" = None) -> list[str]:
-    """AUTOOUTPUT then AUTOINPUT then AUTOINOUT — the verilog-auto order
-    (the AIO command).  ALLOW_SV_TYPES as in auto_input.  PARAM_VALUE
-    threads verilog-auto-inst-param-value through (None = the buffer's
-    file-local setting); without it the CLI flag never reached these
-    entry points — each reset the global from file-local only.
-    CTX is the per-run AallContext (wire.AallContext), forwarded to the three
-    passes below."""
-    lines = auto_output(lines, modules, allow_sv_types, param_value, ctx)
-    lines = auto_input(lines, modules, allow_sv_types, param_value, ctx)
-    return auto_inout(lines, modules, allow_sv_types, param_value, ctx)
+    """Run AUTOOUTPUT/AUTOINPUT/AUTOINOUT in verilog-auto order.
+
+    v2k header regions affect earlier regions' boundary commas.  Iterate that
+    order internally until the text is stable so one AIO call sees every later
+    region expanded and still returns an idempotent result.
+    """
+    def _once(current):
+        current = auto_output(current, modules, allow_sv_types, param_value, ctx)
+        current = auto_input(current, modules, allow_sv_types, param_value, ctx)
+        return auto_inout(current, modules, allow_sv_types, param_value, ctx)
+
+    text = "\n".join(lines)
+    masked = mask_comments(text)
+    marker_count = sum(
+        1
+        for match in re.finditer(r"/\*\s*AUTO(?:INPUT|OUTPUT|INOUT)\b", text, re.I)
+        if _in_paren(masked, match.start())
+    )
+    if not marker_count:
+        return _once(lines)
+    current = list(lines)
+    for _attempt in range(marker_count + 1):
+        updated = _once(current)
+        if updated == current:
+            return current
+        current = updated
+    return current
 
 
 # ---------------------------------------------------------------------------

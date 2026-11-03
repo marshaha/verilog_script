@@ -291,6 +291,8 @@ def _flat_guard(stack: "list[list[tuple[str, bool]]]") -> tuple[tuple[str, bool]
 
 def guard_separator_plan(
     guards: "list[tuple[tuple[str, bool], ...]]",
+    forced_leading: "Sequence[bool] | None" = None,
+    fixed_leading: "Sequence[bool | None] | None" = None,
 ) -> "tuple[list[bool], list[bool], dict[int, list[tuple]]]":
     """Comma placement for a pin sequence with preprocessor guards.
 
@@ -308,12 +310,18 @@ def guard_separator_plan(
     maps a pin index j to the list of bridge guards to emit before
     that pin; the last pin never carries a trailing comma.
 
-    Direct-predecessor bridges cover every intermediate pin whose
-    guard is a single literal (the negation is one literal).  An
-    intermediate pin with a multi-literal guard (`elsif chains,
-    nested guards) still blocks that pair: negating a conjunction
-    would need one bridge per disjunct, which is not emitted yet.
+    The negation of a multi-literal intermediate guard is expanded into
+    disjoint disjuncts: NOT (A AND B) becomes NOT A, or A AND NOT B.
+    Taking the product of those choices across all intermediates keeps
+    every bridge complete without emitting two commas in one branch.
+    FORCED_LEADING marks existing leading commas that the caller cannot
+    rewrite; those pins are excluded as witnesses for a trailing comma.
+    FIXED_LEADING additionally fixes False decisions when region-internal
+    separator style must be retained.  Conflicts are checked using direct-
+    predecessor reachability, not merely whether two guards can coexist.
     """
+    from itertools import product
+
     gsets = [set(g) for g in guards]
     n = len(guards)
     trailing = [False] * n  # pin i carries the separator after it
@@ -333,32 +341,71 @@ def guard_separator_plan(
                 out.append((macro, pol))
         return tuple(out)
 
-    for i in range(n - 1):
-        trailing[i] = any(gsets[j] <= gsets[i] for j in range(i + 1, n))
-    for j in range(1, n):
-        leading[j] = not trailing[j - 1] and any(
-            gsets[i] <= gsets[j] for i in range(j)
+    def negation_choices(guard):
+        choices = []
+        prefix = []
+        for macro, pol in guard:
+            choices.append(tuple(prefix + [(macro, not pol)]))
+            prefix.append((macro, pol))
+        return choices
+
+    def direct_predecessor_possible(i, j):
+        choices = []
+        for k in range(i + 1, j):
+            alternatives = negation_choices(guards[k])
+            if not alternatives:
+                return False
+            choices.append(alternatives)
+        return any(
+            combine(guards[i], guards[j], *negated) is not None
+            for negated in product(*choices)
         )
+
+    forced = [False] * n if forced_leading is None else list(forced_leading)
+    fixed = [None] * n if fixed_leading is None else list(fixed_leading)
+    if len(forced) != n or len(fixed) != n:
+        raise ValueError("leading constraints must match guards")
+    locked = [forced[k] or fixed[k] is True for k in range(n)]
+    for i in range(n - 1):
+        trailing[i] = any(
+            gsets[j] <= gsets[i] and not locked[j] for j in range(i + 1, n)
+        )
+        if trailing[i] and any(
+            locked[j] and direct_predecessor_possible(i, j)
+            for j in range(i + 1, n)
+        ):
+            trailing[i] = False
+    for j in range(n):
+        if fixed[j] is not None:
+            leading[j] = fixed[j]
+        elif forced[j]:
+            leading[j] = True
+        else:
+            leading[j] = any(gsets[i] <= gsets[j] for i in range(j)) and not any(
+                trailing[i] and direct_predecessor_possible(i, j)
+                for i in range(j)
+            )
     for j in range(1, n):
+        seen_bridges = set()
         for i in range(j):
             if trailing[i] or leading[j]:
                 continue  # separator already carried by a pin line
-            parts: list[tuple[tuple[str, bool], ...]] = [guards[i], guards[j]]
+            choices = []
             blocked = False
             for k in range(i + 1, j):
-                if len(guards[k]) != 1:
-                    # Unguarded pins are always present (no bridge can
-                    # ever fire past them); multi-literal guards cannot
-                    # be negated into a single bridge yet.
-                    blocked = True
+                alternatives = negation_choices(guards[k])
+                if not alternatives:
+                    blocked = True  # an unguarded intermediate is always present
                     break
-                macro, pol = guards[k][0]
-                parts.append(((macro, not pol),))
+                choices.append(alternatives)
             if blocked:
                 continue
-            cond = combine(*parts)
-            if cond is not None:
-                bridges.setdefault(j, []).append(cond)
+            for negated in product(*choices):
+                cond = combine(guards[i], guards[j], *negated)
+                key = frozenset(cond) if cond is not None else None
+                if cond is not None and key not in seen_bridges:
+                    seen_bridges.add(key)
+                    bridges.setdefault(j, []).append(cond)
     return trailing, leading, bridges
 
 
@@ -1872,6 +1919,8 @@ class VerilogBuffer:
                     for macro, pol in cond:
                         out.append("    " + ("`ifdef " if pol else "`ifndef ") + macro)
                     out.append("    ,")
+                    for _macro, _pol in cond:
+                        out.append("    `endif")
                     cur = ()
                 while cur != entry.guard[: len(cur)]:
                     out.append("    `endif")
@@ -3059,9 +3108,7 @@ def _main_aall(text: str, lines: list[str], args) -> list[str]:
         modules_p = modules_w
     lines = xfer.auto_inoutparam(lines, modules_p)
     _log("aall: AUTOINOUTPARAM done")
-    lines = inout.auto_output(lines, modules_w, _allow_sv_types, _pv_arg, ctx)
-    lines = inout.auto_input(lines, modules_w, _allow_sv_types, _pv_arg, ctx)
-    lines = inout.auto_inout(lines, modules_w, _allow_sv_types, _pv_arg, ctx)
+    lines = inout.auto_io(lines, modules_w, _allow_sv_types, _pv_arg, ctx)
     _log("aall: AUTOOUTPUT/AUTOINPUT/AUTOINOUT done")
     # 10. AUTOTIEOFF; 11. AUTOUNDEF; 12. AUTOASSIGNMODPORT
     lines = misc.auto_tieoff(lines, modules_w, ctx)
