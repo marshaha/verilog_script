@@ -416,6 +416,9 @@ class Signal:
     # shape conflicting with this usrdef line, e.g. "wire[1:0][35:0]" —
     # emitted as a //AD_CONFLICT: note instead of rewriting the line
     conflict: str = ""
+    guard: tuple = ()  # `ifdef frame conditions enclosing the instance
+    # pin that produced this signal (house rule 2026-11-03); () =
+    # unconditional.  Only the AIO family sets it, from InstNet.guard.
 
 
 def conn_net_name(rest: str) -> str | None:

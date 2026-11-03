@@ -240,12 +240,17 @@ def test_auto_inst_preserves_keep_lines():
     )
     out = auto_inst(lines, {"proc": moddef})
     assert out[0] == "proc u_p (/*autoinst*/"
-    # Live Emacs 29.3 AUTOINST drops submodule-header guards entirely
-    # (fredrickson): no `ifdef/`endif lines around the guarded pin,
-    # while the comment Keep line still passes through indented.
-    assert not any("`ifdef" in ln or "`endif" in ln for ln in out)
-    assert out[1].startswith("    .cfg")
-    assert out[2] == "    " + "    // data path"  # comment keeps indented
+    # House rule 2026-11-03 (user direction): submodule-header guards
+    # are preserved end to end — the guarded pin expands inside its
+    # `ifdef/`endif (live Emacs 29.3 drops them; that Emacs behavior is
+    # a deliberate divergence, not parity: unguarded pins reference
+    # ports that do not exist when the macro is off).  The comment Keep
+    # line still passes through indented.
+    assert out[1] == "    `ifdef HAS_CFG"
+    cfg_i = next(i for i, ln in enumerate(out) if ln.strip().startswith(".cfg"))
+    endif_i = next(i for i, ln in enumerate(out) if ln.strip() == "`endif")
+    assert 1 < cfg_i < endif_i
+    assert "        // data path" in out  # comment keeps indented
     assert out[-1] == ");"
 
 
@@ -1493,11 +1498,14 @@ def test_auto_inst_regen_guarded_last_port():
     )
     out = auto_inst(["g3 u_g (/*autoinst*/);"], {"g3": sub})
     stripped = [ln.strip() for ln in out]
-    # Live Emacs 29.3 AUTOINST drops submodule-header guards entirely
-    # (fredrickson mid-list and g3 trailing alike): the guarded port
-    # expands as an ordinary pin, no `ifdef/`endif lines.
-    assert not any("`ifdef" in ln or "`endif" in ln for ln in stripped)
-    assert any(ln.startswith(".tail") for ln in stripped)
+    # House rule 2026-11-03 (user direction): the trailing guarded port
+    # expands inside its `ifdef/`endif (live Emacs 29.3 drops them;
+    # deliberate divergence, see above).  The comma rides as a leading
+    # comma on the guarded pin, so both branches stay comma-correct.
+    assert "`ifdef TAIL_G" in stripped
+    assert "`endif" in stripped
+    tail = next(ln for ln in stripped if ".tail" in ln)
+    assert tail.startswith(", .tail")
     assert stripped[-1] == ");"
 
 
@@ -1583,7 +1591,29 @@ def test_eai_incomparable_guards_emit_direct_predecessor_bridge():
 
     out = emacs_auto_inst(["gsub3 u_g (/*autoinst*/);"], {"gsub3": sub})
     joined = "\n".join(out)
-    # Live Emacs 29.3 AUTOINST drops submodule-header guards entirely:
-    # all three guarded ports expand as ordinary pins, no directives.
-    assert "`ifdef" not in joined and "`endif" not in joined
+    # House rule 2026-11-03 (user direction): all three guarded ports
+    # expand inside their own `ifdef blocks (live Emacs 29.3 drops them;
+    # deliberate divergence, see the fredrickson/g3 updates above).
+    # The bridge commas must separate every present-pair in every macro
+    # combination — including the X+Z pair with Y off, the combo the old
+    # adjacent-only plan lost.
+    assert "`ifdef HAS_X" in joined
+    assert "`ifdef HAS_Y" in joined
+    assert "`ifdef HAS_Z" in joined
     assert ".px" in joined and ".py" in joined and ".pz" in joined
+    stack: list = []
+    bridge_guards = []
+    for ln in out:
+        s = ln.strip()
+        if s.startswith("`ifdef "):
+            stack.append((s.split()[1], True))
+        elif s.startswith("`ifndef "):
+            stack.append((s.split()[1], False))
+        elif s == "`endif":
+            stack.pop()
+        elif s == ",":
+            bridge_guards.append(tuple(stack))
+    assert len(bridge_guards) == 3  # X+Y, X+Z, Y+Z pairs
+    assert {("HAS_X", True), ("HAS_Z", True), ("HAS_Y", False)} in [
+        set(g) for g in bridge_guards
+    ]

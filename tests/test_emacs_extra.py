@@ -347,9 +347,11 @@ endmodule
 """
     out = _expand(top, _gmods())
     text = "\n".join(out)
-    # Live Emacs 29.3 AUTOINST drops submodule-header guards entirely:
-    # the guarded pin expands as an ordinary pin, no directives.
-    assert "`ifdef" not in text and "`endif" not in text
+    # House rule 2026-11-03 (user direction): the guarded pin expands
+    # inside its own `ifdef block (live Emacs 29.3 drops it; deliberate
+    # divergence — an unguarded pin would reference a port that does
+    # not exist when the macro is off).
+    assert "`ifdef HAS_EXTRA" in text and "`endif" in text
     assert ".extra" in text
     assert ".clk" in text and "(clk)," in text
     assert "(din[7:0]));" in text
@@ -374,13 +376,14 @@ endmodule
 """
     out = _expand(top, _gmods(sub))
     lines = [ln.strip() for ln in out]
-    # Live Emacs 29.3 AUTOINST drops submodule-header guards: sections
-    # regroup by direction (Outputs first) with .tail as an ordinary
-    # pin, no directives anywhere.
-    assert not any(ln.startswith("`ifdef") or ln == "`endif" for ln in lines)
+    # House rule 2026-11-03 (user direction): the guarded output stays
+    # inside its own section, wrapped in its `ifdef block (live Emacs
+    # 29.3 drops the guard; deliberate divergence).
+    assert lines[lines.index("`ifdef TAIL_G") + 1].startswith(".tail")
     (tail_line,) = [ln for ln in lines if ".tail" in ln]
     ti = lines.index(tail_line)
-    assert lines[ti + 1] == "// Inputs"
+    assert lines[ti + 1] == "`endif"
+    assert lines[ti + 2] == "// Inputs"
 
 
 def test_eai_guarded_last_pin_puts_closer_after_endif():
@@ -402,12 +405,15 @@ endmodule
 """
     out = _expand(top, _gmods(sub))
     lines = [ln.strip() for ln in out]
-    # Live Emacs 29.3 AUTOINST drops submodule-header guards: the
-    # formerly guarded input is the last pin overall and carries the
-    # closer on its own line, no directives.
-    assert not any(ln == "`endif" for ln in lines)
+    # House rule 2026-11-03 (user direction): the guarded last input
+    # takes a leading comma inside its `ifdef block, and the closer
+    # follows the `endif (live Emacs 29.3 drops the guard and puts
+    # the closer on the pin line; deliberate divergence).
     (tail_line,) = [ln for ln in lines if ".tail" in ln]
-    assert tail_line.endswith("));")
+    assert tail_line.startswith(", .tail")
+    ti = lines.index(tail_line)
+    assert lines[ti + 1] == "`endif"
+    assert lines[ti + 2] == ");"
 
 
 def test_eai_elsif_chain_becomes_ifndef_plus_ifdef():
@@ -433,9 +439,13 @@ endmodule
 """
     out = _expand(top, _gmods(sub))
     text = "\n".join(out)
-    # Live Emacs 29.3 AUTOINST drops submodule-header guards entirely:
-    # the `elsif/`else chain ports all expand as ordinary pins.
-    assert "`ifdef" not in text and "`endif" not in text
+    # House rule 2026-11-03 (user direction): the `elsif/`else chain
+    # expands as nested ifndef+ifdef blocks — oa under MODE_A, ob
+    # under (not MODE_A, MODE_B), oc under (not MODE_A, not MODE_B)
+    # (live Emacs 29.3 drops all guards; deliberate divergence).
+    assert "`ifdef MODE_A" in text
+    assert "`ifndef MODE_A" in text and "`ifdef MODE_B" in text
+    assert "`ifndef MODE_B" in text
     assert ".oa" in text and ".ob" in text and ".oc" in text
 
 
@@ -655,7 +665,7 @@ def test_collect_ports_escaped_trailing_semicolon():
     following whitespace is the statement terminator."""
     from verilog_tooling.arg import _collect_ports
 
-    inputs, outputs, _ = _collect_ports(
+    inputs, outputs, _inouts, _guards = _collect_ports(
         ["   output \\o[10] ;", "   output \\o[2] ;", "   input  \\i&e; ;"]
     )
     assert inputs == ["\\i&e;"]

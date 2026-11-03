@@ -1834,9 +1834,9 @@ class VerilogBuffer:
             for entry in moddef.entries:
                 if isinstance(entry, Keep):
                     if _PP_BRANCH.match(entry.line):
-                        # AUTOINST drops submodule-header guards (live
-                        # Emacs 29.3 expands guarded ports unconditionally);
-                        # comment/blank Keeps still pass through.
+                        # Guard directives are re-emitted from Port.guard
+                        # below (house rule 2026-11-03); comment/blank
+                        # Keeps still pass through.
                         continue
                     emitted.append((entry, ""))  # Keep lines pass through
                     continue
@@ -1846,23 +1846,50 @@ class VerilogBuffer:
                 if conn is None:
                     continue
                 emitted.append((entry, conn))
-            last_idx = max(
-                (k for k, (e, _) in enumerate(emitted) if isinstance(e, Port)),
-                default=-1,
-            )
+            # Comma placement from the guard plan (house rule 2026-11-03):
+            # a port's trailing comma is the plan's trailing value, not
+            # "is it the last port" — for all-unguarded ports the plan
+            # reproduces the old last-port rule exactly, and for guarded
+            # ports it keeps every macro branch comma-correct.
+            port_guards = [e.guard for e, _ in emitted if isinstance(e, Port)]
+            if any(port_guards):
+                trailing, leading, bridges = guard_separator_plan(port_guards)
+            else:
+                trailing = [k < len(port_guards) - 1 for k in range(len(port_guards))]
+                leading = [False] * len(port_guards)
+                bridges = {}
+            cur: tuple = ()
+            pidx = 0
             port_rows: list[tuple[int, Port]] = []
-            for k, (entry, conn) in enumerate(emitted):
+            for entry, conn in emitted:
                 if isinstance(entry, Keep):
                     out.append(self._emit_keep(entry))
                     continue
+                for cond in bridges.get(pidx, []):
+                    while cur:
+                        out.append("    `endif")
+                        cur = cur[:-1]
+                    for macro, pol in cond:
+                        out.append("    " + ("`ifdef " if pol else "`ifndef ") + macro)
+                    out.append("    ,")
+                    cur = ()
+                while cur != entry.guard[: len(cur)]:
+                    out.append("    `endif")
+                    cur = cur[:-1]
+                for macro, pol in entry.guard[len(cur):]:
+                    out.append("    " + ("`ifdef " if pol else "`ifndef ") + macro)
+                cur = entry.guard
                 port_rows.append((len(out), entry))
-                out.append(
-                    format_connection(
-                        entry, conn, prefix_max_len, suffix_max_len, k == last_idx
-                    )
+                line = format_connection(
+                    entry, conn, prefix_max_len, suffix_max_len, not trailing[pidx]
                 )
-            # (Guards are dropped above, so no leading-comma dance for a
-            # guarded last port: the normal `)` terminator applies.)
+                if leading[pidx]:
+                    line = "    , " + line[4:]
+                out.append(line)
+                pidx += 1
+            while cur:
+                out.append("    `endif")
+                cur = cur[:-1]
             out.append(");")
         return VerilogBuffer(out)
 

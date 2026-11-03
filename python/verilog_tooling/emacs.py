@@ -2175,12 +2175,16 @@ def _auto_inst_one(
                 comment = "// Implicit .*"
             else:
                 comment = None
-            # verilog-mode AUTOINST drops submodule-header guards: live
-            # Emacs 29.3 expands guarded ports unconditionally, whether
-            # the guard sits mid-list (fredrickson) or trailing (g3).
-            # (AIU keeps wrapping newly added guarded pins; that path
-            # does not go through here.)
-            entries.append((port.name, conn, comment, ()))
+            # House rule (user direction 2026-11-03): submodule-header
+            # guards are preserved end to end — a guarded port expands
+            # inside its `ifdef/`endif, so the design still compiles
+            # with the macro off.  Live Emacs 29.3 expands guarded ports
+            # unconditionally (fredrickson mid-list, g3 trailing); that
+            # Emacs behavior is a deliberate divergence, not parity:
+            # unguarded pins reference ports that do not exist when the
+            # macro is off.  (AIU already wrapped newly added guarded
+            # pins; this path now matches it.)
+            entries.append((port.name, conn, comment, port.guard))
         if entries:
             sections.append((header, entries))
     if not sections:

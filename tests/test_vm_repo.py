@@ -107,8 +107,10 @@ EXCLUDE_PREFIXES = (
 # vm-repo report).  xfail (non-strict): a fix turning one green shows up as
 # XPASS without breaking the gate; move it out of the set to lock it in.
 KNOWN_FAILURES = frozenset(
-    # autoinst_ifdef_fredrickson_200503_top.v: intentional emacs divergence:
-    # `ifdef guards preserved in expansions (emacs drops them)
+    # autoinst_ifdef_fredrickson_200503_top.v: intentional emacs
+    # divergence (house rule 2026-11-03, user direction): `ifdef
+    # guards preserved in expansions (emacs drops them); the only
+    # diff lines are the guard blocks and their comma plan
     # autoinst_name_bug245.v: pre-section pins fixed (#31); remaining diff
     # is exactly two decided rules: the .v downgrade covering inputs too
     # (user call 2026-10-26: keep — input logic clk stays demoted) and
@@ -120,7 +122,7 @@ KNOWN_FAILURES = frozenset(
     # mask this by omitting the flag): autoinst_array_braket.v,
     # autooutputevery_wire.v, autowire_pkg_bug195.v — all other tokens
     # identical, only the logic/reg keyword differs
-    ['autoinout_lovell.v', 'autoinput_array_bug294.v', 'autoinput_concat_lau.v', 'autoinput_concat_lau2.v', 'autoinput_nohookup.v', 'autoinst_array_braket.v', 'autoinst_attr.v', 'autoinst_belkind_concat.v', 'autoinst_cmtparen_tennant.sv', 'autoinst_func.v', 'autoinst_interface.v', 'autoinst_interface_star.v', 'autoinst_name_bug245.v', 'autoinst_param_cmt.v', 'autoinst_param_type.v', 'autoinst_param_value.v', 'autoinst_star.v', 'autoinst_sv_kulkarni.v', 'autoinst_sv_kulkarni_wire.v', 'autoinst_tieoff_vec.v', 'autoinst_wildcard.v', 'autoinst_wildcell.v', 'autoinstparam_local.v', 'autolisp_order_bug356.v', 'autooutputevery_wire.v', 'autowire_paramvec_bug302.v', 'autowire_pkg_bug195.v']
+    ['autoinst_ifdef_fredrickson_200503_top.v', 'autoinout_lovell.v', 'autoinput_array_bug294.v', 'autoinput_concat_lau.v', 'autoinput_concat_lau2.v', 'autoinput_nohookup.v', 'autoinst_array_braket.v', 'autoinst_attr.v', 'autoinst_belkind_concat.v', 'autoinst_cmtparen_tennant.sv', 'autoinst_func.v', 'autoinst_interface.v', 'autoinst_interface_star.v', 'autoinst_name_bug245.v', 'autoinst_param_cmt.v', 'autoinst_param_type.v', 'autoinst_param_value.v', 'autoinst_star.v', 'autoinst_sv_kulkarni.v', 'autoinst_sv_kulkarni_wire.v', 'autoinst_tieoff_vec.v', 'autoinst_wildcard.v', 'autoinst_wildcell.v', 'autoinstparam_local.v', 'autolisp_order_bug356.v', 'autooutputevery_wire.v', 'autowire_paramvec_bug302.v', 'autowire_pkg_bug195.v']
 )
 
 SKIP_TABLE = {

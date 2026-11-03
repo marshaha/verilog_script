@@ -269,7 +269,7 @@ def _region_port_names(body: Sequence[str]) -> tuple[dict, dict]:
         if state != "COLLECTING":
             continue
         if "End of automatics" in line:
-            inputs, outputs, inouts = _collect_ports(cur)
+            inputs, outputs, inouts, _ = _collect_ports(cur)
             target = aio if cur_reversed else other
             for direction, entries in (
                 ("input", inputs),
@@ -316,8 +316,8 @@ def _reorder_arg_bucket(
     return list(reversed(auto_aio)) + auto_other + hand
 
 
-def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str]]:
-    """(inputs, outputs, inouts) signal texts, in buffer order.
+def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str], dict[str, tuple]]:
+    """(inputs, outputs, inouts, guards) signal texts, in buffer order.
 
     One signal per declaration (a comma-separated declaration stays one
     entry, as in the Vim original); the direction, data-type and packed-width
@@ -327,17 +327,29 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
     declaration split across lines (``input [7:0]`` newline ``din,``) is
     joined first; unpacked dimensions after the name (``val[3:0]`` /
     ``val [3:0]``) are dropped.
+
+    GUARDS maps each bare name to the `ifdef frame conditions enclosing
+    its declaration (house rule 2026-11-03: AUTOARG mirrors a body
+    declaration's guard onto its header entry).  A name declared under
+    two different guards (the `ifdef/`else shape) widens to ()
+    (unconditional) — it exists under either branch.
     """
+    from .inst import _flat_guard, _guard_stack_after, _PP_BRANCH
+
     inputs: list[str] = []
     outputs: list[str] = []
     inouts: list[str] = []
     buckets = {"input": inputs, "output": outputs, "inout": inouts}
     seen: dict[str, set[str]] = {"input": set(), "output": set(), "inout": set()}
+    guards: dict[str, tuple] = {}
+    guard_stack: list = []
     i = 0
     n = len(lines)
     while i < n:
         segs = _dir_segments(lines[i])
         if not segs:
+            if _PP_BRANCH.match(lines[i]):
+                _guard_stack_after(guard_stack, lines[i])
             i += 1
             continue
         # join following lines while the LAST segment is unfinished:
@@ -398,14 +410,28 @@ def _collect_ports(lines: Sequence[str]) -> tuple[list[str], list[str], list[str
                 # every name is already listed for this direction; a
                 # partially-new declaration keeps its historical text.
                 # Escaped identifiers stay opaque (no name parsing).
+                # Guard merge on either path: a name seen under two
+                # different guards exists under either, so it widens
+                # to unconditional.
+                entry_guard = _flat_guard(guard_stack)
                 if "\\" not in name:
                     bare = _bare_port_names(name)
                     if bare and all(b in seen[direction] for b in bare):
+                        for b in bare:
+                            if guards.get(b, entry_guard) != entry_guard:
+                                guards[b] = ()
                         continue
                     seen[direction].update(bare)
+                    for b in bare:
+                        if b in guards and guards[b] != entry_guard:
+                            guards[b] = ()
+                        else:
+                            guards[b] = entry_guard
+                else:
+                    guards[name] = entry_guard
                 buckets[direction].append(name)
         i += 1
-    return inputs, outputs, inouts
+    return inputs, outputs, inouts, guards
 
 
 def _seg_unfinished(text: str) -> bool:
@@ -763,6 +789,47 @@ def _autoarg_header_has_preproc(lines: Sequence[str]) -> bool:
     return any(_PREPROC_LINE.search(ln) for ln in lines[mk : end + 1])
 
 
+def _autoarg_header_guarded_names(lines: Sequence[str]) -> set[str]:
+    """Bare port names under an `ifdef frame in an /*autoarg*/ header.
+
+    Same span as :func:`_autoarg_header_has_preproc`.  A name counts
+    only when a directive frame is open on its line; section comments
+    and the marker line itself yield no names.
+    """
+    from .inst import _flat_guard, _guard_stack_after, _PP_BRANCH
+
+    mk = next((k for k, ln in enumerate(lines) if _MARK_LINE.search(ln)), None)
+    if mk is None:
+        return set()
+    if _CLOSE.search(lines[mk]):
+        end = mk
+    else:
+        end = next(
+            (k for k in range(mk, len(lines)) if _REGION_END.search(lines[k])),
+            len(lines) - 1,
+        )
+    stack: list = []
+    names: set[str] = set()
+    for ln in lines[mk : end + 1]:
+        code = re.sub(r"//.*", "", ln)
+        code = re.sub(r"/\*.*?\*/", "", code)
+        if _PP_BRANCH.match(code):
+            _guard_stack_after(stack, code)
+            continue
+        if not _flat_guard(stack):
+            continue
+        found: list[str] = []
+        for _direction, _seg in _dir_segments(code):
+            _nm = _PORT_PREFIX.sub("", _seg)
+            found.extend(_bare_port_names(_nm))
+        if not found:
+            m = re.match(r"^\s*([A-Za-z_][\w$]*)\s*,?\s*$", code)
+            if m:
+                found = [m.group(1)]
+        names.update(found)
+    return names
+
+
 def _pack_ports(ports: Sequence[str], *, trailing_comma: bool) -> list[str]:
     """Greedily pack PORTS onto ``    a, b, c`` lines, like the Vim loop.
 
@@ -853,6 +920,7 @@ def auto_arg(
     # collapsed body through would delete the port list.
     bare_by_module: list[bool] = []
     skip_by_module: list[bool] = []
+    old_guarded_by_module: list[set[str]] = []
     orig_spans: list[list[str]] = []
     dt_ports_by_module: list[list[str]] = []
     _k = 0
@@ -865,6 +933,7 @@ def auto_arg(
             orig_spans.append(_span)
             bare_by_module.append(_header_region_is_bare_name_list(_span))
             skip_by_module.append(_autoarg_header_has_preproc(_span))
+            old_guarded_by_module.append(_autoarg_header_guarded_names(_span))
             # Scan header for hand-written ports protected by //DT
             _header_close = next((idx for idx, ln in enumerate(_span) if _CLOSE.search(ln)), len(_span))
             _mod_dts: list[str] = []
@@ -919,28 +988,48 @@ def auto_arg(
             out.extend(body)
             i = j
             continue
+        inputs, outputs, inouts, port_guards = _collect_ports(_filter_lines(body))
         if mod_idx < len(skip_by_module) and skip_by_module[mod_idx]:
-            # A name-list regeneration cannot preserve conditional port
-            # groups: it would have to move the directives or drop the
-            # association between a directive and the ports it gates.
-            # Leaving the header untouched is strictly better than turning
-            # `` `ifdef``/`` `endif`` into bogus port-name entries.  Emit
-            # the pre-collapse span so a re-run cannot lose the list.
-            import sys
+            # Smart skip (house rule 2026-11-03): a header whose
+            # conditional ports are all derivable from body declarations
+            # regenerates with their guards (the run-1 case, where the
+            # header's own directives came from a previous regeneration);
+            # only a header with a guarded port that has NO body
+            # declaration (the hand-written ibex RVFI shape) is left
+            # untouched — regenerating it would drop that port outright.
+            # "Body" means strictly after the header close: for a
+            # hand-written header kill_auto_arg does not collapse, so
+            # collecting the whole span would mistake header ANSI
+            # entries for body declarations and skip nothing.
+            # Leaving such a header untouched is strictly better than
+            # turning `` `ifdef``/`` `endif`` into bogus port-name
+            # entries.  Emit the pre-collapse span so a re-run cannot
+            # lose the list.
+            if close_idx is not None:
+                _post = _filter_lines(body[close_idx + 1 :])
+            else:
+                _post = []
+            _p_inputs, _p_outputs, _p_inouts, _ = _collect_ports(_post)
+            body_names = {
+                b
+                for e in _p_inputs + _p_outputs + _p_inouts
+                for b in _bare_port_names(e)
+            }
+            if old_guarded_by_module[mod_idx] - body_names:
+                import sys
 
-            orig = orig_spans[mod_idx]
-            mname = _MODULE_NAME.search("\n".join(orig[:4]))
-            label = f"module {mname.group(1)}: " if mname else ""
-            print(
-                "warning: autoarg: "
-                f"{label}preprocessor directives in the /*autoarg*/ "
-                "header; module left unchanged",
-                file=sys.stderr,
-            )
-            out.extend(orig)
-            i = j
-            continue
-        inputs, outputs, inouts = _collect_ports(_filter_lines(body))
+                orig = orig_spans[mod_idx]
+                mname = _MODULE_NAME.search("\n".join(orig[:4]))
+                label = f"module {mname.group(1)}: " if mname else ""
+                print(
+                    "warning: autoarg: "
+                    f"{label}preprocessor directives in the /*autoarg*/ "
+                    "header; module left unchanged",
+                    file=sys.stderr,
+                )
+                out.extend(orig)
+                i = j
+                continue
         # verilog-auto-arg-sort: declaration order is the default; sorted
         # order reduces churn when declarations move around
         if _local_arg_sort(lines):
@@ -1007,7 +1096,7 @@ def auto_arg(
         pre_expand = list(body)
         expanded = _expand_arg_markers(
             body, inputs, outputs, inouts + infer,
-            arg_format=_local_arg_format(lines),
+            arg_format=_local_arg_format(lines), guards=port_guards,
         )
         if ansi_decls:
             ins = next(
@@ -1085,13 +1174,24 @@ def _expand_arg_markers(
     inouts: Sequence[str],
     *,
     arg_format: str = "packed",
+    guards: "Mapping[str, tuple] | None" = None,
 ) -> list[str]:
     """Expand every /*autoarg*/ marker in one module's LINES with the given
     Inputs/Outputs/Inouts sections.
 
     Only markers inside the header (at or before the module's first ``);``
     line) are expanded; a marker after the header close is misplaced and is
-    left verbatim."""
+    left verbatim.
+
+    GUARDS maps bare names to their `ifdef frame conditions (from
+    :func:`_collect_ports`); an entry's guard is the common guard of its
+    bare names, or () when they differ.  Guarded entries are emitted one
+    per line inside their directives, with commas from
+    :func:`verilog_tooling.inst.guard_separator_plan` over the whole
+    header sequence, so every macro branch keeps exactly the commas it
+    needs.  For all-unguarded sections the plan reproduces the old
+    trailing_comma=later behavior exactly.
+    """
     # emacs verilog-auto-arg order: Outputs, Inouts, Inputs
     sections = (("//Outputs", outputs), ("//Inouts", inouts), ("//Inputs", inputs))
     close_idx = next((k for k, ln in enumerate(lines) if _CLOSE.search(ln)), None)
@@ -1140,17 +1240,88 @@ def _expand_arg_markers(
             out.append(line if ")" in line else line + ");")
             continue
         out.append(re.sub(r"\).*", "", line))
-        for pos, (header, ports) in enumerate(_sections):
-            if not ports:
+        # Guard-aware comma planning over the whole header sequence
+        # (house rule 2026-11-03): guards never span a section header,
+        # but commas are entry-to-entry, so the plan runs over all
+        # sections concatenated in emission order.
+        _guards = guards or {}
+
+        def _entry_guard(entry: str) -> tuple:
+            names = _bare_port_names(entry)
+            if names:
+                gs = {_guards.get(nm, ()) for nm in names}
+                return gs.pop() if len(gs) == 1 else ()
+            return _guards.get(entry, ())
+
+        _paired = [
+            (header, [(p, _entry_guard(p)) for p in ports])
+            for header, ports in _sections
+        ]
+        _flat_guards = [g for _, pairs in _paired for _, g in pairs]
+        if any(_flat_guards):
+            from .inst import guard_separator_plan
+
+            _trailing, _leading, _bridges = guard_separator_plan(_flat_guards)
+        else:
+            _trailing = [k < len(_flat_guards) - 1 for k in range(len(_flat_guards))]
+            _leading = [False] * len(_flat_guards)
+            _bridges = {}
+        _idx = 0
+        _emitted_any = False
+        for header, pairs in _paired:
+            if not pairs:
                 continue
-            if pos and any(ports_ for _, ports_ in _sections[:pos]):
+            if _emitted_any:
                 out.append("")
-            later = any(ports_ for _, ports_ in _sections[pos + 1 :])
             out.append(_ARG_MARGIN + header)
-            if arg_format == "single":
-                out.extend(_single_ports(ports, trailing_comma=later))
+            if any(g for _, g in pairs):
+                # Guarded section: one entry per line — directive lines
+                # need their own lines, like the guarded-pin oneline
+                # fallback in AUTOINST.  Commas come from the plan.
+                cur: tuple = ()
+                for entry, guard in pairs:
+                    for cond in _bridges.get(_idx, []):
+                        while cur:
+                            out.append(_ARG_MARGIN + "`endif")
+                            cur = cur[:-1]
+                        for macro, pol in cond:
+                            out.append(
+                                _ARG_MARGIN + ("`ifdef " if pol else "`ifndef ") + macro
+                            )
+                        out.append(_ARG_MARGIN + ",")
+                        cur = ()
+                    while cur != guard[: len(cur)]:
+                        out.append(_ARG_MARGIN + "`endif")
+                        cur = cur[:-1]
+                    for macro, pol in guard[len(cur):]:
+                        out.append(
+                            _ARG_MARGIN + ("`ifdef " if pol else "`ifndef ") + macro
+                        )
+                    cur = guard
+                    out.append(
+                        _ARG_MARGIN
+                        + (", " if _leading[_idx] else "")
+                        + entry
+                        + ("," if _trailing[_idx] else "")
+                    )
+                    _idx += 1
+                while cur:
+                    out.append(_ARG_MARGIN + "`endif")
+                    cur = cur[:-1]
             else:
-                out.extend(_pack_ports(ports, trailing_comma=later))
+                # Unguarded section: existing helpers, but the trailing
+                # comma comes from the plan, not `later`: when every
+                # later entry is guarded, this section's last entry must
+                # NOT carry a comma in the all-off branch — the comma
+                # rides as a leading comma on the guarded entry instead.
+                entries = [e for e, _ in pairs]
+                last_trailing = _trailing[_idx + len(pairs) - 1]
+                if arg_format == "single":
+                    out.extend(_single_ports(entries, trailing_comma=last_trailing))
+                else:
+                    out.extend(_pack_ports(entries, trailing_comma=last_trailing))
+                _idx += len(pairs)
+            _emitted_any = True
         out.append(");")
     return out
 

@@ -249,6 +249,9 @@ class InstNet:
     driver: object = None  # scan-tuple occurrence index: two records
     # from the same instance never merge, but two same-named
     # instances ARE different drivers (autoinst_rogoff.v)
+    guard: tuple = ()  # `ifdef frame conditions enclosing the pin in
+    # the instance body (house rule 2026-11-03: AIO mirrors the pin's
+    # guard onto the promoted port); () = unconditional
 
 
 # ---------------------------------------------------------------------------
@@ -439,8 +442,11 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet, _presimplified: bool = F
             )
     elif _same_driver(prev, rec) and not rec.packed_dims:
         # Same instance repeating a net with no width evidence (a plain
-        # connection after a bus one): nothing to combine, keep prev.
-        pass
+        # connection after a bus one): nothing to combine, keep prev —
+        # except the guard: a repeat under a different guard means the
+        # net exists under either, so the merged guard is unconditional.
+        if prev.guard != rec.guard:
+            nets[rec.name] = replace(prev, guard=())
     else:
         # One merge path for every repeat, same instance or not
         # (verilog-signals-combine-bus merges same-name signals
@@ -487,6 +493,10 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet, _presimplified: bool = F
             buswarn = True  # scalar driver after a bus string
         _merged = new_pdims != prev.packed_dims or new_width != prev.width
         _new_multi = prev.multi or not _same or _merged
+        # Guard merge: identical guards survive; differing guards widen
+        # to unconditional — the net exists whenever any driver exists,
+        # so a promoted port must exist in every configuration.
+        _new_guard = prev.guard if prev.guard == rec.guard else ()
         # Most repeat notes change nothing (same widths, multi already
         # set — 11940 of 11970 merge copies on the 400-instance bench
         # were no-ops): skip the frozen-dataclass copy then.  The stored
@@ -498,12 +508,13 @@ def _note_net(nets: "dict[str, InstNet]", rec: InstNet, _presimplified: bool = F
             or new_width != prev.width
             or new_pdims != prev.packed_dims
             or buswarn != prev.merge_warn
+            or _new_guard != prev.guard
         ):
             nets[rec.name] = replace(
                 prev,
                 multi=_new_multi,
                 width=new_width, packed_dims=new_pdims,
-                merge_warn=buswarn,
+                merge_warn=buswarn, guard=_new_guard,
             )
         if not _same:
             trace_sig(prev.name, f"multi-driver inst={rec.inst} module={rec.module}")
@@ -945,7 +956,32 @@ def _inst_pin_scan(
             for p in pin_exprs
             if "AUTONOHOOKUP" not in _pin_trailing_comment(text, p[-1], p[2])
         ]
-        pin_exprs = [tuple(p[:4]) for p in pin_exprs]
+        # `ifdef frames enclosing each pin, from directives inside the
+        # pin list itself (the instance body's own conditional groups):
+        # a pin under `ifdef EMU_AICHIP carries guard
+        # (('EMU_AICHIP', True),), which AIO mirrors onto the promoted
+        # port and AUTOARG onto the header.  Directives are read from
+        # the comment-masked text so a commented-out `ifdef cannot gate
+        # a pin; positions are absolute text offsets, so the section
+        # reorder above does not affect the mapping.  Whole-instance
+        # wrapping (an `ifdef around the instance itself) is NOT
+        # tracked — only directives between the pin-list parens.
+        from .inst import _PP_BRANCH, _flat_guard, _guard_stack_after
+        _span_masked = text_masked[open_idx + 1 : (len(text_masked) if close_idx is None else close_idx)]
+        _directives = []
+        _off = open_idx + 1
+        for _ln in _span_masked.split("\n"):
+            if _PP_BRANCH.match(_ln):
+                _directives.append((_off, _ln))
+            _off += len(_ln) + 1
+        _guarded = []
+        for p in pin_exprs:
+            _stack: list = []
+            for _doff, _dln in _directives:
+                if _doff < p[-1]:
+                    _guard_stack_after(_stack, _dln)
+            _guarded.append(tuple(p[:4]) + (_flat_guard(_stack),))
+        pin_exprs = _guarded
         # verilog-auto-inst-param-value gates ALL substitution in the
         # sub-decl widths (Emacs default nil): when on, only the
         # instance's own #(...) overrides replace — submodule defaults
@@ -1394,12 +1430,14 @@ def _pin_records(
     """Parse each pin connection of one instance ONCE into its phase-1
     record (see _pin_record).  Everything here is independent of the
     caller's direction/simple/concat filtering, so one cached scan serves
-    every aall pass."""
+    every aall pass.  PIN_EXPRS carry the pin's `ifdef guard as their
+    fifth element; it rides the record so phase 2 can mirror it onto
+    promoted ports."""
     ports = {p.name: p for p in moddef.ports}
     return [
-        _pin_record(pin, expr, templated, ports.get(pin),
-                    param_values, const_map, type_values, simplify)
-        for pin, expr, _shorthand, templated in pin_exprs
+        (*_pin_record(pin, expr, templated, ports.get(pin),
+                      param_values, const_map, type_values, simplify), guard)
+        for pin, expr, _shorthand, templated, guard in pin_exprs
     ]
 
 
@@ -1427,7 +1465,7 @@ def _process_named_instance(
         want_dirs = ("output", "inout")
     else:
         want_dirs = directions
-    for kind, port, pin, payload in records:
+    for kind, port, pin, payload, guard in records:
         if port is None or port.direction not in want_dirs:
             continue
         if kind == _PK_SKIP:
@@ -1439,7 +1477,7 @@ def _process_named_instance(
             if kind == _PK_CONCAT and ignore_concat and not concat_ok:
                 continue
             for net, ewidth in payload:
-                _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver), _presimplified=presimplified)
+                _note_net(nets, InstNet(net, ewidth, inst, module, driver=driver, guard=guard), _presimplified=presimplified)
             continue
         pp = payload
         if pp.wrapped and ignore_concat and not concat_ok:
@@ -1457,7 +1495,7 @@ def _process_named_instance(
             InstNet(
                 pp.net, pp.width, inst, module, pp.pdims, pp.udims,
                 port.direction, port.signed, port.net_type, pp.data_type,
-                driver=driver,
+                driver=driver, guard=guard,
             ),
             _presimplified=presimplified,
         )

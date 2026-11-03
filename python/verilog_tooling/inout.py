@@ -264,6 +264,7 @@ def _input_sigs(
                 packed_dims=net.packed_dims, signed=net.signed,
                 net_type=net.net_type, data_type=net.data_type,
                 dims=_sig_dims(net, local_syms), multidim=net.multidim,
+                guard=net.guard,
             )
         )
         comments[name] = (
@@ -315,6 +316,7 @@ def _output_sigs(
                 packed_dims=net.packed_dims, signed=net.signed,
                 net_type=net.net_type, data_type=net.data_type,
                 dims=_sig_dims(net, local_syms), multidim=net.multidim,
+                guard=net.guard,
             )
         )
         comments[name] = (
@@ -367,6 +369,7 @@ def _inout_sigs(
                 packed_dims=net.packed_dims, signed=net.signed,
                 net_type=net.net_type, data_type=net.data_type,
                 dims=_sig_dims(net, local_syms), multidim=net.multidim,
+                guard=net.guard,
             )
         )
         comments[name] = (
@@ -525,10 +528,33 @@ def _expand_marker(
         pad = " " * indent
         max_len = _name_col_max(msigs)
         rows = [pad + header]
+        cur: tuple = ()
         for sig in msigs:
+            if not v2k:
+                # House rule 2026-11-03: a signal whose instance pin sits
+                # under an `ifdef is declared under the same guard, so
+                # the port exists exactly in the configurations where
+                # the pin does.  Conditions nest (one directive per
+                # condition, like the AUTOINST emitter); a flat guard
+                # from an `elsif chain re-emits as nested directives
+                # with the same conjunction.  v2k (header-embedded)
+                # regions keep the old unguarded emission: their comma
+                # placement needs branch-aware planning, which lives in
+                # AUTOARG's name-list emission, not here.
+                target = sig.guard
+                while cur != target[: len(cur)]:
+                    rows.append(pad + "`endif")
+                    cur = cur[:-1]
+                for macro, pol in target[len(cur):]:
+                    rows.append(pad + ("`ifdef " if pol else "`ifndef ") + macro)
+                cur = target
             rows.append(
                 _emit_io_line(sig, max_len, keyword, indent, v2k, comments.get(sig.name, ""), allow_sv_types, wire_type)
             )
+        if not v2k:
+            while cur:
+                rows.append(pad + "`endif")
+                cur = cur[:-1]
         rows.append(pad + _END_OF_AUTOMATICS)
         region = "\n".join(rows) + "\n"
         text = text[:insert_at] + region + text[insert_at:]
