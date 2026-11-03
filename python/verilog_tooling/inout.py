@@ -405,9 +405,13 @@ def _apply_declare_nettype(sigs: Sequence[Signal], nettype: str | None) -> list[
     return out
 
 
-def _emit_io_line(sig: Signal, max_len: int, keyword: str, indent: int, v2k: bool, comment: str, allow_sv_types: bool = True, wire_type: str = "") -> str:
-    body = _emit_signal(sig, max_len, keyword, emacs_dims=True, allow_sv_types=allow_sv_types, wire_type=wire_type)[:-1] + ("," if v2k else ";")
-    line = " " * indent + body
+def _emit_io_line(sig: Signal, max_len: int, keyword: str, indent: int, v2k: bool, comment: str, allow_sv_types: bool = True, wire_type: str = "", comma: "bool | None" = None, leading: bool = False) -> str:
+    if comma is None:
+        term = "," if v2k else ";"
+    else:
+        term = "," if comma else ("" if v2k else ";")
+    body = _emit_signal(sig, max_len, keyword, emacs_dims=True, allow_sv_types=allow_sv_types, wire_type=wire_type)[:-1] + term
+    line = " " * indent + (", " if leading else "") + body
     if comment:
         col = max(_COMMENT_COL, indent + 40)
         line += " " * max(col - len(line), 1) + comment
@@ -424,6 +428,127 @@ def _in_paren(masked: str, offset: int) -> bool:
         elif ch == ")":
             depth -= 1
     return depth > 0
+
+
+def _combine_guards(*parts: "tuple[tuple[str, bool], ...]") -> "tuple | None":
+    """Merge guard conditions, or None on a contradiction.  Mirrors the
+    combine step inside :func:`inst.guard_separator_plan`."""
+    seen: dict[str, bool] = {}
+    out: list[tuple[str, bool]] = []
+    for part in parts:
+        for macro, pol in part:
+            if macro in seen:
+                if seen[macro] != pol:
+                    return None
+                continue
+            seen[macro] = pol
+            out.append((macro, pol))
+    return tuple(out)
+
+
+def _parse_following_v2k(text: str, insert_at: int):
+    """Parse already-expanded generated declarations following a v2k
+    marker region, up to the header close paren.  Markers expand in
+    reverse document order, so later regions already exist as text.
+    Returns (decls, ok): decls is a list of (guard, has_leading_comma)
+    in document order — the leading comma is read off the emitted
+    line itself, since a following region may itself have used a
+    combined plan.  ok is False when the following text holds anything
+    but generated regions, separator lines, comments, directives and
+    whitespace (hand-written ports, an unexpanded later marker) — the
+    caller then falls back to the per-region plan."""
+    from .comments import mask_comments
+    from .inst import _PP_BRANCH, _flat_guard, _guard_stack_after
+
+    masked = mask_comments(text)
+    depth = 0
+    close = -1
+    i = insert_at
+    while i < len(masked):
+        c = masked[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            if depth == 0:
+                close = i
+                break
+            depth -= 1
+        i += 1
+    if close < 0:
+        return [], False
+    stack: list = []
+    for ln in text[:insert_at].split("\n"):
+        _guard_stack_after(stack, ln)
+    lines = text[insert_at:close].split("\n")
+    decls: list = []
+    in_region = False
+    for li, ln in enumerate(lines):
+        s = ln.strip()
+        if "Beginning of automatic" in ln:
+            in_region = True
+            continue
+        if "End of automatics" in ln:
+            in_region = False
+            continue
+        if not s or s.startswith("//") or s.startswith("/*"):
+            # A /*AUTO...*/ marker line aborts only when no generated
+            # region follows it (an unexpanded later marker); an
+            # expanded region's own marker line is followed by its
+            # Beginning comment.
+            if s.startswith("/*AUTO"):
+                rest = lines[li + 1 :]
+                nxt = next(
+                    (k for k, l2 in enumerate(rest) if l2.strip().startswith("/*AUTO") or "Beginning of automatic" in l2),
+                    None,
+                )
+                if nxt is None or "Beginning of automatic" not in rest[nxt]:
+                    return [], False
+            continue
+        if _PP_BRANCH.match(ln):
+            _guard_stack_after(stack, ln)
+            continue
+        if s == ",":
+            continue  # a separator line from another region's plan
+        if in_region:
+            decls.append((_flat_guard(stack), s.startswith(",")))
+            continue
+        return [], False
+    return decls, True
+
+
+def _boundary_bridge_conds(my_guards, following_guards, trailing_my, emitted_leading):
+    """Bridge conditions for pairs (my decl, following decl) whose
+    separator is on neither side: my decl carries no trailing comma
+    and the following line carries no leading comma.  Mirrors the
+    direct-predecessor bridge step of guard_separator_plan: the bridge
+    fires exactly where the first decl is the present decl immediately
+    before the second, so every intermediate guard must be a single
+    literal (its negation is one literal); unguarded and multi-literal
+    intermediates block the bridge, as in the plan."""
+    conds = []
+    n = len(my_guards)
+    all_guards = my_guards + following_guards
+    for fj, fg in enumerate(following_guards):
+        if emitted_leading[fj]:
+            continue
+        j = n + fj
+        for i in range(n):
+            if trailing_my[i]:
+                continue
+            parts: list = [my_guards[i], fg]
+            blocked = False
+            for k in range(i + 1, j):
+                if len(all_guards[k]) != 1:
+                    blocked = True
+                    break
+                macro, pol = all_guards[k][0]
+                parts.append(((macro, not pol),))
+            if blocked:
+                continue
+            cond = _combine_guards(*parts)
+            if cond is not None:
+                conds.append(cond)
+    return conds
 
 
 def _repair_open_comma(text: str, masked: str, offset: int) -> "tuple[str, str, int]":
@@ -445,9 +570,20 @@ def _repair_open_comma(text: str, masked: str, offset: int) -> "tuple[str, str, 
     return text[: j + 1] + "," + text[j + 1 :], masked[: j + 1] + "," + masked[j + 1 :], 1
 
 
-def _repair_close_comma(text: str, from_offset: int) -> str:
+def _repair_close_comma(text: str, from_offset: int, region_start: "int | None" = None) -> str:
     """verilog-repair-close-comma: delete a dangling ``,`` before the close
-    paren of the paren level open at FROM_OFFSET (the module header's)."""
+    paren of the paren level open at FROM_OFFSET (the module header's).
+    The scan back skips directive lines, but only inside the region
+    being repaired (at or after REGION_START): a guarded last port's
+    boundary comma sits before its own `` `endif`` lines, and it is
+    dangling in every branch — the port is last overall, so its
+    trailing comma is never needed — so deleting it from the text is
+    unconditionally correct.  Past the region start the scan stops at
+    the first non-whitespace character: a directive line there closes
+    a guard opened before the region (a hand-written `` `ifdef`` around
+    an earlier port), and the comma before it is that port's separator
+    to the following ports, not a dangling comma.  With REGION_START
+    unset the scan never skips a directive line (the old behaviour)."""
     masked = mask_comments(text)
     i = from_offset
     depth = 0
@@ -465,9 +601,21 @@ def _repair_close_comma(text: str, from_offset: int) -> str:
     if close < 0:
         return text
     j = close - 1
-    while j >= 0 and masked[j] in " \t\n":
-        j -= 1
-    if j >= 0 and masked[j] == ",":
+    while True:
+        while j >= 0 and masked[j] in " \t\n":
+            j -= 1
+        if j < 0:
+            return text
+        ls = masked.rfind("\n", 0, j) + 1
+        if (
+            masked[ls : j + 1].strip().startswith("`")
+            and region_start is not None
+            and ls >= region_start
+        ):
+            j = ls - 1  # the region's own guard closer: skip it
+            continue
+        break
+    if masked[j] == ",":
         return text[:j] + text[j + 1 :]
     return text
 
@@ -529,37 +677,104 @@ def _expand_marker(
         max_len = _name_col_max(msigs)
         rows = [pad + header]
         cur: tuple = ()
-        for sig in msigs:
-            if not v2k:
-                # House rule 2026-11-03: a signal whose instance pin sits
-                # under an `ifdef is declared under the same guard, so
-                # the port exists exactly in the configurations where
-                # the pin does.  Conditions nest (one directive per
-                # condition, like the AUTOINST emitter); a flat guard
-                # from an `elsif chain re-emits as nested directives
-                # with the same conjunction.  v2k (header-embedded)
-                # regions keep the old unguarded emission: their comma
-                # placement needs branch-aware planning, which lives in
-                # AUTOARG's name-list emission, not here.
-                target = sig.guard
-                while cur != target[: len(cur)]:
-                    rows.append(pad + "`endif")
-                    cur = cur[:-1]
-                for macro, pol in target[len(cur):]:
-                    rows.append(pad + ("`ifdef " if pol else "`ifndef ") + macro)
-                cur = target
-            rows.append(
-                _emit_io_line(sig, max_len, keyword, indent, v2k, comments.get(sig.name, ""), allow_sv_types, wire_type)
-            )
-        if not v2k:
-            while cur:
+        if v2k:
+            # House rule 2026-11-03 (extended to v2k): a signal whose
+            # instance pin sits under an `ifdef is declared under the
+            # same guard inside the header list, so the port exists
+            # exactly in the configurations where the pin does.  Header
+            # lists are comma-separated, so the separators come from
+            # guard_separator_plan (trailing/leading/bridge), exactly
+            # like AUTOINST pins and AUTOARG name lists.  The plan runs
+            # over this region's declarations PLUS the already-expanded
+            # generated declarations that follow it in the header
+            # (markers expand in reverse document order), so a trailing
+            # comma reflects a following port that is always present
+            # and a boundary bridge covers a following port that is
+            # only sometimes present — a per-region plan alone would
+            # lose the separator exactly when the region's last
+            # declaration is guarded and off while an earlier one is
+            # present and more ports follow.  When the following text
+            # cannot be parsed as generated regions only (hand-written
+            # ports, an unexpanded later marker), the plan falls back
+            # to this region alone and the last declaration carries a
+            # boundary comma, which _repair_close_comma deletes when
+            # the close paren follows (it now scans past `endif
+            # lines); that fallback keeps the corner above for
+            # hand-written-following shapes, and the bridge plan's own
+            # documented limits (multi-literal intermediates) apply.
+            from .inst import guard_separator_plan
+
+            _my_guards = [s.guard for s in msigs]
+            _following, _combined_ok = _parse_following_v2k(text, insert_at)
+            if _combined_ok:
+                _following_guards = [g for g, _ in _following]
+                _emit_leading = [hl for _, hl in _following]
+                _all_guards = _my_guards + _following_guards
+                _trailing_all, _leading_all, _bridges_all = guard_separator_plan(_all_guards)
+                _trailing = _trailing_all[: len(msigs)]
+                _leading = _leading_all[: len(msigs)]
+                _bridges = {j: v for j, v in _bridges_all.items() if j < len(msigs)}
+                _boundary = _boundary_bridge_conds(
+                    _my_guards, _following_guards, _trailing, _emit_leading
+                )
+                _last_comma = None  # combined trailing already covers it
+            else:
+                _trailing, _leading, _bridges = guard_separator_plan(_my_guards)
+                _boundary = []
+                _last_comma = True
+        for idx, sig in enumerate(msigs):
+            if v2k:
+                for cond in _bridges.get(idx, []):
+                    # Self-contained bridge: close any open guard,
+                    # emit the comma under the bridge condition, close.
+                    while cur:
+                        rows.append(pad + "`endif")
+                        cur = cur[:-1]
+                    for macro, pol in cond:
+                        rows.append(pad + ("`ifdef " if pol else "`ifndef ") + macro)
+                    rows.append(pad + ",")
+                    for _macro, _pol in cond:
+                        rows.append(pad + "`endif")
+            # Guard transitions (body and v2k regions alike): conditions
+            # nest (one directive per condition, like the AUTOINST
+            # emitter); a flat guard from an `elsif chain re-emits as
+            # nested directives with the same conjunction.
+            target = sig.guard
+            while cur != target[: len(cur)]:
                 rows.append(pad + "`endif")
                 cur = cur[:-1]
+            for macro, pol in target[len(cur):]:
+                rows.append(pad + ("`ifdef " if pol else "`ifndef ") + macro)
+            cur = target
+            if v2k:
+                if _last_comma is None:
+                    comma = _trailing[idx]
+                else:
+                    comma = True if idx == len(msigs) - 1 else _trailing[idx]
+                rows.append(
+                    _emit_io_line(sig, max_len, keyword, indent, v2k, comments.get(sig.name, ""), allow_sv_types, wire_type, comma=comma, leading=_leading[idx])
+                )
+            else:
+                rows.append(
+                    _emit_io_line(sig, max_len, keyword, indent, v2k, comments.get(sig.name, ""), allow_sv_types, wire_type)
+                )
+        while cur:
+            rows.append(pad + "`endif")
+            cur = cur[:-1]
+        if v2k:
+            # Boundary bridges live inside the region (before the End
+            # line) so killing the region removes them too.
+            for cond in _boundary:
+                for macro, pol in cond:
+                    rows.append(pad + ("`ifdef " if pol else "`ifndef ") + macro)
+                rows.append(pad + ",")
+                for _macro, _pol in cond:
+                    rows.append(pad + "`endif")
         rows.append(pad + _END_OF_AUTOMATICS)
         region = "\n".join(rows) + "\n"
         text = text[:insert_at] + region + text[insert_at:]
     if v2k:
-        text = _repair_close_comma(text, insert_at + len(region))
+        text = _repair_close_comma(text, insert_at + len(region), insert_at)
     return text
 
 

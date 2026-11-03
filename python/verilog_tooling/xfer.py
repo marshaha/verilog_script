@@ -464,7 +464,7 @@ def _splice_region(
         region = "\n".join(rows) + "\n"
         text = text[:insert_at] + region + text[insert_at:]
     if v2k:
-        text = _repair_close_comma(text, insert_at + len(region))
+        text = _repair_close_comma(text, insert_at + len(region), insert_at)
     return text
 
 # ---------------------------------------------------------------------------
