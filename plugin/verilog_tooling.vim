@@ -59,6 +59,23 @@ let g:loaded_verilog_tooling = 1
 " package. Uses the system python3 by default — no venv needed.
 let s:tool_root = expand('<sfile>:p:h:h')
 let s:py_path = s:tool_root . '/python'
+let s:version_suffix = ''
+
+function! s:VersionSuffix() abort
+    if empty(s:version_suffix)
+        let l:init = s:py_path . '/verilog_tooling/__init__.py'
+        if filereadable(l:init)
+            for l:line in readfile(l:init)
+                let l:m = matchlist(l:line, '^__version__\s*=\s*"\([^"]*\)"')
+                if !empty(l:m)
+                    let s:version_suffix = ' ' . l:m[1]
+                    break
+                endif
+            endfor
+        endif
+    endif
+    return s:version_suffix
+endfunction
 
 function! s:Python() abort
     if exists('g:verilog_tooling_python')
@@ -128,7 +145,7 @@ function! s:ApplyResult(bufnr, new, cmd) abort
     endif
     let l:old = getline(1, '$')
     if a:new ==# l:old
-        echom '[verilog_tooling] ' . a:cmd . ': no changes [Done!]'
+        echom '[verilog_tooling] ' . a:cmd . ': no changes [Done!' . s:VersionSuffix() . ']'
         return
     endif
     let l:view = winsaveview()
@@ -165,8 +182,8 @@ function! s:ApplyResult(bufnr, new, cmd) abort
     call winrestview(l:view)
     setlocal modified
     let l:deleted = len(l:old) - l:j - l:i
-    echom printf('[verilog_tooling] %s: line %d: %d -> %d line(s) [Done!]',
-          \ a:cmd, l:i + 1, l:deleted, len(l:mid))
+    echom printf('[verilog_tooling] %s: line %d: %d -> %d line(s) [Done!%s]',
+          \ a:cmd, l:i + 1, l:deleted, len(l:mid), s:VersionSuffix())
 endfunction
 
 " stderr lines of the async job: python progress logs and tracebacks.
@@ -285,7 +302,7 @@ function! s:DiffAuto() abort
     let l:lines = readfile(l:out)
     call delete(l:out)
     if empty(l:lines)
-        echom '[verilog_tooling] ADIF: no differences — AUTOs are up to date [Done!]'
+        echom '[verilog_tooling] ADIF: no differences — AUTOs are up to date [Done!' . s:VersionSuffix() . ']'
         return
     endif
     pedit! [AUTO-diff]
@@ -317,7 +334,7 @@ function! s:LintTemplates() abort
         return
     endif
     if l:result ==# ''
-        echom '[verilog_tooling] ATLINT: no unused AUTO_TEMPLATE lines [Done!]'
+        echom '[verilog_tooling] ATLINT: no unused AUTO_TEMPLATE lines [Done!' . s:VersionSuffix() . ']'
         return
     endif
     cgetexpr split(l:result, "\n")
@@ -370,7 +387,7 @@ function! s:NewFromTemplate(fname) abort
         return
     endif
     execute 'edit ' . fnameescape(a:fname)
-    echom '[verilog_tooling] ATpl: ' . a:fname . ' created [Done!]'
+    echom '[verilog_tooling] ATpl: ' . a:fname . ' created [Done!' . s:VersionSuffix() . ']'
 endfunction
 
 " generators (AM/AME need the cursor line; APM/AFM are buffer-wide)

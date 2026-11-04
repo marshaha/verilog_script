@@ -1186,7 +1186,7 @@ def test_aall_star_in_block_comment_is_not_a_marker(tmp_path, capsys):
 def test_final_done_log_contains_version(tmp_path, capsys):
     from verilog_tooling import __version__
 
-    assert __version__ == "v1.0.0"
+    assert __version__ == "v1.0.1"
     src = tmp_path / "top.v"
     src.write_text("module top;\nendmodule\n")
     for command in ("aall", "ainj"):
@@ -1195,3 +1195,35 @@ def test_final_done_log_contains_version(tmp_path, capsys):
         final_log = capsys.readouterr().err.splitlines()[-1]
         assert f"{command}: done" in final_log
         assert f"[Done! {__version__}]" in final_log
+
+
+def test_vim_final_done_log_contains_version(tmp_path):
+    import shutil
+    import subprocess
+
+    import pytest
+    from verilog_tooling import __version__
+
+    if shutil.which("vim") is None:
+        pytest.skip("vim not installed")
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "top.v"
+    src.write_text("module top (/*autoarg*/);\ninput a;\nendmodule\n")
+    messages = tmp_path / "messages.txt"
+    script = tmp_path / "run.vim"
+    script.write_text(
+        "set nocompatible\nset nomore\n"
+        f"execute 'set runtimepath^=' . fnameescape({str(root)!r})\n"
+        "runtime plugin/verilog_tooling.vim\n"
+        f"edit {src}\nAALL\nsleep 2000m\n"
+        "redir => g:vt_messages\nsilent messages\nredir END\n"
+        f"call writefile(split(g:vt_messages, \"\\n\"), {str(messages)!r})\n"
+        "qa!\n"
+    )
+    subprocess.run(
+        ["vim", "-Nu", "NONE", "-n", "-es", "-S", str(script)],
+        check=True, capture_output=True, text=True, timeout=15,
+    )
+    final_log = messages.read_text().splitlines()[-1]
+    assert "aall: line" in final_log
+    assert final_log.endswith(f"[Done! {__version__}]")
