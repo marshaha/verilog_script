@@ -104,6 +104,7 @@ def _log(msg: str) -> None:
     _LOG_T0 = now
     print(f"[verilog_tooling] {msg} (+{dt:.1f}s)", file=sys.stderr)
 
+from . import __version__
 from .comments import mask_comments, strip_comments as _strip_c, strip_line_comments as _strip_lc
 from .libdirs import read_source_lines, resolve_libdirs
 from .template import (
@@ -3269,7 +3270,7 @@ def main(argv=None) -> None:
     if args.command == "aall":
         _t0 = time.monotonic()
         out = _main_aall(text, lines, args)
-        _log(f"aall: done, {len(lines)} -> {len(out)} line(s), {time.monotonic() - _t0:.1f}s total [Done!]")
+        _log(f"aall: done, {len(lines)} -> {len(out)} line(s), {time.monotonic() - _t0:.1f}s total [Done! {__version__}]")
     elif args.command == "ainj":
         # verilog-inject-auto + verilog-auto: insert AUTOARG/AS/AUTOINST
         # markers into legacy code, then run the full pipeline
@@ -3278,7 +3279,7 @@ def main(argv=None) -> None:
         lines = _inject.inject_auto(lines)
         text = "\n".join(lines)
         out = _main_aall(text, lines, args)
-        _log(f"ainj: done, {time.monotonic() - _t0:.1f}s total [Done!]")
+        _log(f"ainj: done, {time.monotonic() - _t0:.1f}s total [Done! {__version__}]")
     elif args.command == "kill":
         out = kill_auto_inst(lines, args.which)
     elif args.command in ("aif", "apf", "adf", "af"):

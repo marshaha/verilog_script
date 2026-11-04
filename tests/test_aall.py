@@ -1181,3 +1181,17 @@ def test_aall_star_in_block_comment_is_not_a_marker(tmp_path, capsys):
     star_text = out_star.read_text()
     assert re.search(r"u_star \(\.\*,\s+// Outputs", star_text)
     assert re.search(r"\.clk\s*\(clk\s*\),\s+// Implicit \.\*", star_text)
+
+
+def test_final_done_log_contains_version(tmp_path, capsys):
+    from verilog_tooling import __version__
+
+    assert __version__ == "v1.0.0"
+    src = tmp_path / "top.v"
+    src.write_text("module top;\nendmodule\n")
+    for command in ("aall", "ainj"):
+        out = tmp_path / (command + ".v")
+        inst.main([command, "-i", str(src), "-o", str(out)])
+        final_log = capsys.readouterr().err.splitlines()[-1]
+        assert f"{command}: done" in final_log
+        assert f"[Done! {__version__}]" in final_log
